@@ -6,17 +6,20 @@
       "type": "shell",
       "command": "npm run compile",
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
+        "shell": {
+          "executable": "cmd.exe",
+          "args": ["/d", "/c"]
+        }
       },
       "group": {
         "kind": "build",
         "isDefault": true
       },
       "presentation": {
-        "reveal": "always",
-        "panel": "shared"
+        "reveal": "silent"
       },
-      "problemMatcher": []
+      "problemMatcher": "$ts-webpack"
     }
   ]
 }
