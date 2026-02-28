@@ -8,6 +8,10 @@ This document describes the workflow orchestration API for developers who want t
 
 ---
 
+> **Looking for step-by-step examples?** See [Workflow & Handoff Examples](workflow-examples.md) for
+> end-to-end walkthroughs covering feature delivery, handoffs, reviews, blockers, overrides, and
+> custom templates.
+
 ## Table of Contents
 
 1. [Entity Model](#entity-model)

@@ -338,6 +338,13 @@ Workflows can require explicit human approval before key transitions. The **Revi
 
 Workflow state is persisted to disk under `.bormagi/workflows/<workflow-id>/`. If VS Code restarts mid-workflow, the engine recovers all active tasks, pending reviews, unresolved blockers, and execution locks on next activation. Tasks that were active at the time of restart are marked `requires_attention` so you can review and resume them.
 
+### Further reading
+
+| Document | Contents |
+|---|---|
+| [docs/workflow-examples.md](docs/workflow-examples.md) | End-to-end walkthroughs: creating a workflow, handoffs, reviews, blockers, overrides, and custom templates — with real JSON payloads |
+| [docs/workflow-developer-api.md](docs/workflow-developer-api.md) | Template schema reference, engine API, storage layout, agent completion protocol |
+
 ---
 
 ## Virtual Meetings
