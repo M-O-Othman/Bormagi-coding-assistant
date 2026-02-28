@@ -27,9 +27,7 @@
     "color": "#1a1a2e",
     "theme": "dark"
   },
-  "activationEvents": [
-    "onView:bormagi.chatView"
-  ],
+  "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
