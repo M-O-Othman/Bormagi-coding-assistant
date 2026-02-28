@@ -8,6 +8,7 @@ import { ChatViewProvider } from './chat/ChatViewProvider';
 import { ChatController } from './chat/ChatController';
 import { AgentSettingsPanel } from './ui/AgentSettingsPanel';
 import { MainPanel } from './ui/MainPanel';
+import { MeetingPanel } from './ui/MeetingPanel';
 import { StatusBar } from './ui/StatusBar';
 import { AuditLogger } from './audit/AuditLogger';
 import { MCPHost } from './mcp/MCPHost';
@@ -100,6 +101,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     vscode.commands.registerCommand('bormagi.openDashboard', () => {
       MainPanel.createOrShow();
+    }),
+
+    vscode.commands.registerCommand('bormagi.startMeeting', () => {
+      if (!workspaceRoot || !agentManager || !configManager || !secretsManager) {
+        vscode.window.showWarningMessage('Bormagi: Initialise the workspace first.');
+        return;
+      }
+      MeetingPanel.createOrShow(context.extensionUri, agentManager, configManager, workspaceRoot, secretsManager);
     }),
 
     vscode.commands.registerCommand('bormagi.showAuditLog', async () => {

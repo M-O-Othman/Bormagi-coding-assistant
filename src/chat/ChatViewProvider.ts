@@ -43,6 +43,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.controller.handleWebviewMessage(message);
       } else if (type === 'open_dashboard') {
         await vscode.commands.executeCommand('bormagi.openDashboard');
+      } else if (type === 'open_meeting') {
+        await vscode.commands.executeCommand('bormagi.startMeeting');
       } else if (type === 'open_agent_settings') {
         await vscode.commands.executeCommand('bormagi.openSettings');
       }

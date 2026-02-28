@@ -1,0 +1,48 @@
+# Exclude development and build artefacts from the packaged extension
+
+# Source and test files (only dist/ bundle is needed at runtime)
+src/
+out/
+.vscode-test/
+coverage/
+
+# Config and tooling files
+.eslintrc*
+eslint.config.*
+tsconfig*.json
+webpack.config.js
+jest.config.*
+
+# Scripts (dev-only utilities)
+scripts/
+
+# CI/CD
+.github/
+
+# Documentation (source copies — README.md is kept for the marketplace)
+docs/
+Open_questions/
+
+# Node modules (vsce bundles dependencies automatically via webpack dist/)
+node_modules/
+
+# Map and declaration files not needed at runtime
+out/**/*.js.map
+out/**/*.d.ts
+dist/**/*.js.map
+
+# Editor and OS artefacts
+.vscode/
+*.vsix
+.DS_Store
+Thumbs.db
+
+# Keep these in the package:
+# dist/            — webpack bundle
+# media/           — icons, HTML panels
+# predefined-agents/
+# predefined-workflows/
+# predefined-skills/
+# README.md
+# CHANGELOG.md (if present)
+# package.json

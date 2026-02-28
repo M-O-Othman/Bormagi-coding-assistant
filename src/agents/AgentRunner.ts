@@ -10,6 +10,7 @@ import { AuditLogger } from '../audit/AuditLogger';
 import { ProviderFactory } from '../providers/ProviderFactory';
 import { FileScanner } from '../utils/FileScanner';
 import { ConfigManager } from '../config/ConfigManager';
+import { generateDocx, generatePptx } from '../utils/DocumentGenerator';
 import {
   ChatMessage,
   MCPToolDefinition,
@@ -146,16 +147,43 @@ export class AgentRunner {
     this.memoryManager.addMessage(agentId, userMsg);
 
     // Gather available tools — inject virtual tools not backed by MCP servers
-    const virtualTools: MCPToolDefinition[] = [{
-      name: 'get_diagnostics',
-      description: 'Read VS Code diagnostics (Problems panel) for a file or the entire workspace.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Optional relative file path to filter diagnostics.' }
+    const virtualTools: MCPToolDefinition[] = [
+      {
+        name: 'get_diagnostics',
+        description: 'Read VS Code diagnostics (Problems panel) for a file or the entire workspace.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Optional relative file path to filter diagnostics.' }
+          }
+        }
+      },
+      {
+        name: 'create_document',
+        description: 'Create a Word document (.docx) from Markdown content and save it to the workspace.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            filename: { type: 'string', description: 'Output filename, e.g. "architecture.docx"' },
+            title: { type: 'string', description: 'Document title (optional)' },
+            content_markdown: { type: 'string', description: 'Full document body in Markdown. Use # h1, ## h2, ### h3, - bullets.' }
+          },
+          required: ['filename', 'content_markdown']
+        }
+      },
+      {
+        name: 'create_presentation',
+        description: 'Create a PowerPoint presentation (.pptx). Use ## for each slide title, then - bullets for content.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            filename: { type: 'string', description: 'Output filename, e.g. "design.pptx"' },
+            slides_markdown: { type: 'string', description: 'Slides in Markdown: ## Slide Title\\n- bullet 1\\n- bullet 2' }
+          },
+          required: ['filename', 'slides_markdown']
         }
       }
-    }];
+    ];
     const tools = [...this.mcpHost.getAllTools(), ...virtualTools];
 
     // Scan for secrets before sending context to the LLM
@@ -243,14 +271,13 @@ export class AgentRunner {
       });
 
       // Approval gate for sensitive tools
-      const APPROVAL_TOOLS = ['run_command', 'git_commit', 'git_push', 'git_create_pr', 'gcp_deploy'];
+      const APPROVAL_TOOLS = ['run_command', 'git_commit', 'git_push', 'git_create_pr', 'gcp_deploy', 'create_document', 'create_presentation'];
       let approved = true;
       if (APPROVAL_TOOLS.includes(event.name)) {
-        const detail = (event.input as { command?: string; message?: string; title?: string }).command
-          ?? (event.input as { command?: string; message?: string; title?: string }).message
-          ?? (event.input as { command?: string; message?: string; title?: string }).title
-          ?? JSON.stringify(event.input);
-        approved = await onApproval(`Agent wants to run:\n\n${detail}\n\nAllow?`);
+        const inp = event.input as { command?: string; message?: string; title?: string; filename?: string };
+        const detail = inp.command ?? inp.message ?? inp.filename ?? inp.title ?? JSON.stringify(event.input);
+        const verb = (event.name === 'create_document' || event.name === 'create_presentation') ? 'create' : 'run';
+        approved = await onApproval(`Agent wants to ${verb}:\n\n${detail}\n\nAllow?`);
         await this.auditLogger.logCommand(detail, agentId, approved);
       }
 
@@ -266,6 +293,26 @@ export class AgentRunner {
         );
       } else if (event.name === 'get_diagnostics') {
         toolResultText = this.handleGetDiagnostics(event.input as { path?: string });
+      } else if (event.name === 'create_document') {
+        const { filename, title, content_markdown } = event.input as { filename: string; title?: string; content_markdown: string };
+        const safeName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+        const finalPath = path.join(this.workspaceRoot, safeName.endsWith('.docx') ? safeName : safeName + '.docx');
+        try {
+          await generateDocx(title ?? '', content_markdown, finalPath);
+          toolResultText = `Document created: ${path.basename(finalPath)}`;
+        } catch (err) {
+          toolResultText = `Failed to create document: ${(err as Error).message}`;
+        }
+      } else if (event.name === 'create_presentation') {
+        const { filename, slides_markdown } = event.input as { filename: string; slides_markdown: string };
+        const safeName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+        const finalPath = path.join(this.workspaceRoot, safeName.endsWith('.pptx') ? safeName : safeName + '.pptx');
+        try {
+          await generatePptx(slides_markdown, finalPath);
+          toolResultText = `Presentation created: ${path.basename(finalPath)}`;
+        } catch (err) {
+          toolResultText = `Failed to create presentation: ${(err as Error).message}`;
+        }
       } else {
         // Determine which server owns this tool
         const serverName = this.findServerForTool(event.name);

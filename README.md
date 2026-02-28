@@ -1,8 +1,8 @@
 # Bormagi
 
-**Bormagi** is a VS Code extension that lets you create and manage named AI coding agents, each powered by your choice of LLM provider. Agents use the Model Context Protocol (MCP) to read and write files, run terminal commands, interact with Git, and deploy to Google Cloud Platform — all within your workspace.
+**Bormagi** is a VS Code extension that lets you create and manage named AI coding agents, each powered by your choice of LLM provider. Agents use the Model Context Protocol (MCP) to read and write files, run terminal commands, interact with Git, deploy to Google Cloud Platform, and produce Word/PowerPoint documents — all within your workspace.
 
-A unified **Dashboard** panel gives you a single place to chat with agents, manage multi-agent workflows, approve handoffs, resolve blockers, and configure the extension — without leaving VS Code.
+A unified **Dashboard** panel gives you a single place to chat with agents, manage multi-agent workflows, run virtual meetings, approve handoffs, resolve blockers, and configure the extension — without leaving VS Code.
 
 No admin permissions are required. Install from the VS Code Marketplace or from a `.vsix` file.
 
@@ -18,22 +18,26 @@ No admin permissions are required. Install from the VS Code Marketplace or from 
    - [Workflows Tab](#workflows-tab)
    - [Setup Tab](#setup-tab)
 3. [Workflow Orchestration](#workflow-orchestration)
-4. [Installing Predefined Agents](#installing-predefined-agents)
-5. [Creating a Custom Agent](#creating-a-custom-agent)
-6. [Connecting Agents to LLM Providers](#connecting-agents-to-llm-providers)
+4. [Virtual Meetings](#virtual-meetings)
+5. [Document and Presentation Creation](#document-and-presentation-creation)
+6. [Installing Predefined Agents](#installing-predefined-agents)
+7. [Creating a Custom Agent](#creating-a-custom-agent)
+8. [Workspace Default Provider](#workspace-default-provider)
+9. [Connecting Agents to LLM Providers](#connecting-agents-to-llm-providers)
    - [OpenAI](#openai)
    - [Anthropic (Claude)](#anthropic-claude)
    - [Google Gemini — API Key](#google-gemini--api-key)
    - [Google Gemini — GCP SSO (Corporate Identity)](#google-gemini--gcp-sso-corporate-identity)
    - [Deepseek](#deepseek)
    - [Qwen (Alibaba Cloud)](#qwen-alibaba-cloud)
-7. [Using a Proxy for LLM Calls](#using-a-proxy-for-llm-calls)
-8. [Chatting with an Agent](#chatting-with-an-agent)
-9. [Skills](#skills)
-10. [File and Folder Structure](#file-and-folder-structure)
-11. [Agent Configuration Reference](#agent-configuration-reference)
-12. [MCP Tools Reference](#mcp-tools-reference)
-13. [Security](#security)
+10. [Using a Proxy for LLM Calls](#using-a-proxy-for-llm-calls)
+11. [Chatting with an Agent](#chatting-with-an-agent)
+12. [Skills](#skills)
+13. [File and Folder Structure](#file-and-folder-structure)
+14. [Agent Configuration Reference](#agent-configuration-reference)
+15. [MCP Tools Reference](#mcp-tools-reference)
+16. [Security](#security)
+17. [Publishing to the Marketplace](#publishing-to-the-marketplace)
 
 ---
 
@@ -43,8 +47,11 @@ No admin permissions are required. Install from the VS Code Marketplace or from 
 2. Open the Command Palette (`Ctrl+Shift+P`) and run **`Bormagi: Initialise Workspace`**.
 3. Run **`Bormagi: Install Predefined Agents`** to add the built-in agent set.
 4. Run **`Bormagi: Open Dashboard`** (or click the robot icon in the Activity Bar sidebar).
-5. Go to the **Setup** tab → **Workspace** → **Agent Settings Panel** to add your API keys.
+5. Go to the **Setup** tab → **Workspace** → **Agent Settings Panel**.
+   - Set a **Default Provider** (provider, model, API key) and click **Apply to all agents** to configure every agent at once.
+   - Or configure each agent's provider individually.
 6. Switch to the **Chat** tab, select an agent, and start typing.
+7. *(Optional)* Run **`Bormagi: Start Virtual Meeting`** to hold a multi-agent discussion.
 
 ---
 
@@ -311,6 +318,7 @@ Available via the Command Palette (`Ctrl+Shift+P`):
 | `Bormagi: Initialise Workspace` | Create the `.bormagi/` folder structure |
 | `Bormagi: Install Predefined Agents` | Install agents from the built-in library |
 | `Bormagi: Open Agent Settings` | Open the agent configuration panel |
+| `Bormagi: Start Virtual Meeting` | Open the virtual meeting room |
 
 Workflow actions are also available via chat commands once a workflow is active:
 
@@ -329,6 +337,111 @@ Workflows can require explicit human approval before key transitions. The **Revi
 ### Persistence and crash recovery
 
 Workflow state is persisted to disk under `.bormagi/workflows/<workflow-id>/`. If VS Code restarts mid-workflow, the engine recovers all active tasks, pending reviews, unresolved blockers, and execution locks on next activation. Tasks that were active at the time of restart are marked `requires_attention` so you can review and resume them.
+
+---
+
+## Virtual Meetings
+
+Bormagi can run a **virtual meeting** — a structured multi-agent discussion where several of your installed agents each contribute their perspective to a shared agenda.
+
+### Starting a meeting
+
+Open a meeting in one of two ways:
+
+- **Command Palette** (`Ctrl+Shift+P`) → **`Bormagi: Start Virtual Meeting`**
+- Click the **meeting button** (group icon) in the chat toolbar
+
+### Setup tab
+
+Before the meeting starts, configure:
+
+| Field | Description |
+|---|---|
+| **Meeting title** | A short description of what the meeting is about |
+| **Agenda items** | One discussion point per line |
+| **Participants** | Select which installed agents should attend |
+| **Resource files** | Optional — attach workspace files as shared context (e.g. a spec, an ERD, a README) |
+
+Click **Start Meeting** to begin.
+
+### Meeting tab
+
+Agents respond sequentially per agenda item — each agent sees all prior responses for that item before composing its own. Responses stream in real-time.
+
+The left column shows the agenda with live status indicators (`pending` → `discussing` → `resolved`). The right column shows all agent responses for the selected item.
+
+For each agenda item you can:
+
+- **Record a Decision** — type the outcome and click **Mark resolved**
+- **Add an Action Item** — assign follow-up work to a specific agent
+
+### Action Items tab
+
+All action items for the meeting are listed here with their assigned agent. Action items appear in this tab as you add them during the meeting.
+
+### Minutes tab
+
+Click **Generate Minutes** to produce a complete Markdown summary of the meeting: agenda, all agent responses, decisions, and action items. Click **Save to File** to persist the minutes to `.bormagi/virtual-meetings/<meeting-id>/minutes.md`.
+
+### Storage
+
+Each meeting is saved under:
+
+```
+.bormagi/
+└── virtual-meetings/
+    └── <meeting-id>/
+        ├── meeting.json    ← full meeting state (agenda, rounds, action items)
+        └── minutes.md      ← generated minutes (after saving)
+```
+
+---
+
+## Document and Presentation Creation
+
+Agents can produce Word documents (`.docx`) and PowerPoint presentations (`.pptx`) directly from their Markdown output.
+
+### How to request a document
+
+In chat, ask the agent to create a document. For example:
+
+> "Write an architecture decision record for our API gateway choice and save it as a Word document."
+
+> "Create a slide deck summarising the onboarding process."
+
+The agent will call the `create_document` or `create_presentation` tool. You will see an approval prompt before the file is written to the workspace.
+
+### Markdown format for documents
+
+Use standard Markdown in the agent's content:
+
+| Markdown | Output |
+|---|---|
+| `# Heading 1` | Heading 1 style |
+| `## Heading 2` | Heading 2 style |
+| `### Heading 3` | Heading 3 style |
+| `- bullet item` | Bullet list |
+| Plain text | Normal paragraph |
+
+### Markdown format for presentations
+
+Use `## Slide Title` to start each slide. The first `##` becomes the title slide. Subsequent slides use `- bullets` for content:
+
+```markdown
+## My Presentation
+
+## Problem Statement
+- Current process takes 3 days
+- Manual handoffs cause errors
+
+## Proposed Solution
+- Automate via API
+- Zero manual steps
+```
+
+### Output files
+
+Documents and presentations are saved to the workspace root with the filename the agent specifies. Both tools require your approval before writing.
 
 ---
 
@@ -359,6 +472,31 @@ After installation, add API keys via **Setup → Workspace → Agent Settings Pa
 5. Click **Save Agent**.
 
 The agent folder is created at `.bormagi/agents-definition/<agent-id>/` with a default `system-prompt.md`. Edit this file to customise the agent's behaviour.
+
+---
+
+## Workspace Default Provider
+
+If you want all agents to share a single LLM provider and API key, use the **Workspace Default Provider** instead of configuring each agent individually.
+
+### Setting up
+
+1. In the Dashboard, go to **Setup → Workspace → Agent Settings Panel**.
+2. In the **Default Provider** section at the top, select your provider and model, and enter the API key.
+3. Click **Save Default Provider**.
+4. Click **Apply to all agents** — this sets every installed agent to use the workspace default provider.
+
+From now on, changing the default provider and clicking **Apply to all agents** updates all agents at once.
+
+### How it works
+
+- Agents with `useDefaultProvider: true` in their config always use the workspace default.
+- If an agent has no own API key configured, Bormagi automatically falls back to the workspace default when one is available.
+- The default API key is stored under the key `__default__` in VS Code `SecretStorage` — never written to disk.
+
+### Per-agent override
+
+Any agent can have its own provider configured independently via Agent Settings. Per-agent settings take priority over the workspace default.
 
 ---
 
@@ -557,8 +695,8 @@ Skills are automatically injected into every agent's context.
 
 ```
 .bormagi/                              ← All Bormagi data (auto-added to .gitignore)
-├── project.json                       ← Project name and agent index
-├── audit.log                          ← Append-only log of all agent actions
+├── project.json                       ← Project name, agent index, default provider config
+├── audit.log                          ← Append-only log of all agent actions (JSONL)
 ├── skills/
 │   └── my-skill.md                    ← Shared skills (all agents)
 ├── agents-definition/
@@ -567,17 +705,21 @@ Skills are automatically injected into every agent's context.
 │       ├── system-prompt.md           ← Main system prompt
 │       ├── [extra-prompt.md]          ← Optional additional prompt files
 │       └── Memory.md                  ← Append-only conversation history
-└── workflows/
-    └── <workflow-id>/
-        ├── workflow.json              ← Workflow state
-        ├── tasks-snapshot.json        ← Task states
-        ├── handoffs-snapshot.json     ← Handoff approvals
-        ├── reviews.json               ← QA review outcomes
-        ├── blockers.json              ← Active blockers
-        ├── artifacts.json             ← Artifact registry
-        ├── decisions.jsonl            ← Append-only decision log
-        ├── events.jsonl               ← Append-only workflow event log
-        └── execution.lock             ← Active task lock (prevents concurrent execution)
+├── workflows/
+│   └── <workflow-id>/
+│       ├── workflow.json              ← Workflow state
+│       ├── tasks-snapshot.json        ← Task states
+│       ├── handoffs-snapshot.json     ← Handoff approvals
+│       ├── reviews.json               ← QA review outcomes
+│       ├── blockers.json              ← Active blockers
+│       ├── artifacts.json             ← Artifact registry
+│       ├── decisions.jsonl            ← Append-only decision log
+│       ├── events.jsonl               ← Append-only workflow event log
+│       └── execution.lock             ← Active task lock (prevents concurrent execution)
+└── virtual-meetings/
+    └── <meeting-id>/
+        ├── meeting.json               ← Full meeting state (agenda, rounds, action items)
+        └── minutes.md                 ← Generated minutes (saved after meeting)
 ```
 
 > `.bormagi/` is automatically added to `.gitignore` on workspace initialisation. Configuration files — including API keys — are never committed to source control. API keys are stored in VS Code's encrypted `SecretStorage`.
@@ -604,6 +746,7 @@ Skills are automatically injected into every agent's context.
 | `mcp_servers` | array | Custom MCP server configurations (optional) |
 | `context_filter.include_extensions` | string[] | File extensions to include in workspace context |
 | `context_filter.exclude_patterns` | string[] | Directory/file patterns to exclude |
+| `useDefaultProvider` | boolean | If `true`, agent uses the workspace default provider instead of its own `provider` config |
 
 ---
 
@@ -628,6 +771,8 @@ Built-in tools available to all agents:
 | `gcp_auth_status` | Check gcloud authentication | No |
 | `gcp_deploy` | Run a gcloud deployment command | Yes — explicit prompt |
 | `get_diagnostics` | Read VS Code Problems panel diagnostics | No |
+| `create_document` | Create a Word document (`.docx`) from Markdown | Yes — approval prompt |
+| `create_presentation` | Create a PowerPoint presentation (`.pptx`) from slide Markdown | Yes — approval prompt |
 
 Custom MCP servers can be added per-agent in `config.json` under `mcp_servers`.
 
@@ -643,6 +788,40 @@ Custom MCP servers can be added per-agent in `config.json` under `mcp_servers`.
 - **Sensitive files** (`.env`, `*.key`, `*credentials*`) are excluded from workspace context sent to LLMs.
 - **Workflow overrides** (forcing a stage gate, reassigning a task) require a mandatory reason which is recorded in the workflow event log alongside the acting identity.
 - `.bormagi/` is excluded from source control via `.gitignore`.
+
+---
+
+---
+
+## Publishing to the Marketplace
+
+Bormagi can be published to the VS Code Marketplace as a packaged `.vsix` extension.
+
+### Prerequisites
+
+- Node.js ≥ 18
+- A Microsoft account
+- An Azure DevOps organisation (free — only needed to generate a Personal Access Token)
+- A unique publisher name on [marketplace.visualstudio.com](https://marketplace.visualstudio.com/manage)
+
+### Quick steps
+
+```bash
+# 1. Generate the marketplace icon (128×128 PNG)
+npm run generate-icon
+
+# 2. Authenticate vsce with your publisher ID and PAT
+npx vsce login <your-publisher-id>
+
+# 3. Package locally and test
+npm run vsce:package
+# → installs the .vsix in VS Code: Extensions → ··· → Install from VSIX
+
+# 4. Publish
+npm run vsce:publish
+```
+
+For the full step-by-step guide — including how to create an Azure DevOps organisation, generate a PAT, and set up automated publishing via GitHub Actions — see [PUBLISHING.md](PUBLISHING.md).
 
 ---
 
