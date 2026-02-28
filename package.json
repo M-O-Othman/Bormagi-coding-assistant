@@ -84,6 +84,11 @@
         "command": "bormagi.showAuditLog",
         "title": "Bormagi: Show Audit Log",
         "category": "Bormagi"
+      },
+      {
+        "command": "bormagi.openDashboard",
+        "title": "Bormagi: Open Dashboard",
+        "category": "Bormagi"
       }
     ],
     "configuration": {
@@ -181,6 +186,10 @@
         },
         {
           "command": "bormagi.showAuditLog",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "bormagi.openDashboard",
           "when": "workspaceFolderCount > 0"
         }
       ]

@@ -1,0 +1,1317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';" />
+  <title>Bormagi Dashboard</title>
+  <style>
+    /* ── Reset & base ────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Typography ──────────────────────────────────────────────── */
+    h1 { font-size: 1.3em; font-weight: 700; }
+    h2 { font-size: 1.1em; font-weight: 600; margin-bottom: 10px; }
+    h3 { font-size: 0.95em; font-weight: 600; margin-bottom: 8px; }
+    p  { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
+    small { color: var(--vscode-descriptionForeground); font-size: 0.82em; }
+    code {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.85em;
+      background: var(--vscode-textCodeBlock-background);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+
+    /* ── Scrollbar ───────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); border-radius: 3px; }
+
+    /* ── Header ──────────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 14px;
+      height: 46px;
+      min-height: 46px;
+      background: var(--vscode-titleBar-activeBackground, var(--vscode-editor-background));
+      border-bottom: 1px solid var(--vscode-panel-border);
+      flex-shrink: 0;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-weight: 700;
+      font-size: 0.95em;
+      margin-right: 8px;
+      white-space: nowrap;
+    }
+
+    .brand-icon {
+      width: 26px; height: 26px;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      font-weight: 800;
+      font-size: 13px;
+    }
+
+    /* Tab buttons */
+    nav.tabs { display: flex; gap: 2px; flex: 1; }
+
+    .tab-btn {
+      border: none;
+      background: transparent;
+      color: var(--vscode-tab-inactiveForeground, var(--vscode-descriptionForeground));
+      padding: 6px 12px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 0.88em;
+      font-family: inherit;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      transition: background 0.12s, color 0.12s;
+      white-space: nowrap;
+    }
+
+    .tab-btn:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
+    .tab-btn.active {
+      background: var(--vscode-tab-activeBackground, var(--vscode-button-background));
+      color: var(--vscode-tab-activeForeground, var(--vscode-button-foreground));
+    }
+
+    .badge {
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      font-size: 0.75em;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 10px;
+      min-width: 18px;
+      text-align: center;
+    }
+    .badge:empty { display: none; }
+
+    .header-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+
+    /* ── Main content ─────────────────────────────────────────────── */
+    main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+
+    .tab-panel { display: none; flex: 1; overflow: auto; padding: 16px; }
+    .tab-panel.active { display: flex; flex-direction: column; gap: 14px; }
+
+    /* ── Footer status bar ───────────────────────────────────────── */
+    footer {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 14px;
+      height: 24px;
+      min-height: 24px;
+      background: var(--vscode-statusBar-background);
+      color: var(--vscode-statusBar-foreground);
+      font-size: 0.78em;
+      white-space: nowrap;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    footer .sep { opacity: 0.4; }
+    footer .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--vscode-testing-iconPassed); display: inline-block; }
+
+    /* ── Cards ───────────────────────────────────────────────────── */
+    .card {
+      background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .card-sm { padding: 10px 12px; }
+
+    /* ── Grid layouts ─────────────────────────────────────────────── */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .stack  { display: flex; flex-direction: column; gap: 10px; }
+    .row    { display: flex; align-items: center; gap: 8px; }
+    .row-sb { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+
+    /* ── Buttons ─────────────────────────────────────────────────── */
+    .btn, .btn-ghost, .btn-danger, .btn-success, .btn-sm {
+      border-radius: 5px;
+      padding: 5px 12px;
+      font-size: 0.88em;
+      font-family: inherit;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: opacity 0.12s, filter 0.12s;
+      white-space: nowrap;
+    }
+    .btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+    .btn:hover { filter: brightness(1.12); }
+    .btn-ghost {
+      background: transparent;
+      color: var(--vscode-foreground);
+      border-color: var(--vscode-panel-border);
+    }
+    .btn-ghost:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .btn-success { background: var(--vscode-testing-iconPassed); color: #fff; }
+    .btn-success:hover { filter: brightness(1.1); }
+    .btn-danger  { background: var(--vscode-testing-iconFailed); color: #fff; }
+    .btn-danger:hover  { filter: brightness(1.1); }
+    .btn-sm { padding: 3px 8px; font-size: 0.8em; }
+
+    .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+
+    /* ── Status pills ─────────────────────────────────────────────── */
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 9px;
+      border-radius: 20px;
+      font-size: 0.8em;
+      border: 1px solid var(--vscode-panel-border);
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      white-space: nowrap;
+    }
+    .pill.done    { background: rgba(50,200,100,.18); color: var(--vscode-testing-iconPassed); border-color: var(--vscode-testing-iconPassed); }
+    .pill.active  { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+    .pill.blocked { background: rgba(240,80,80,.18); color: var(--vscode-testing-iconFailed); border-color: var(--vscode-testing-iconFailed); }
+    .pill.pending { opacity: 0.6; }
+
+    /* ── KPI boxes ───────────────────────────────────────────────── */
+    .kpi-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .kpi-box { background: var(--vscode-input-background); border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 10px 12px; }
+    .kpi-box .kpi-val { font-size: 1.6em; font-weight: 700; margin-top: 4px; }
+
+    /* ── Progress bar ─────────────────────────────────────────────── */
+    .progress-bar { height: 4px; background: var(--vscode-progressBar-background); border-radius: 2px; overflow: hidden; margin-top: 6px; }
+    .progress-fill { height: 100%; background: var(--vscode-button-background); border-radius: 2px; transition: width 0.3s; }
+
+    /* ── Stage breadcrumb ────────────────────────────────────────── */
+    .stages { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+
+    /* ── Attention list ──────────────────────────────────────────── */
+    .attention-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border-radius: 5px;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-panel-border);
+      font-size: 0.88em;
+    }
+
+    /* ── Empty states ────────────────────────────────────────────── */
+    .empty-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: var(--vscode-descriptionForeground);
+      text-align: center;
+      padding: 40px;
+    }
+    .empty-icon { font-size: 2.5em; }
+
+    /* ────────────────────────────────────────────────────────────────
+       CHAT TAB
+    ─────────────────────────────────────────────────────────────── */
+    #panel-chat {
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      overflow: hidden;
+    }
+
+    .chat-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    .agent-select {
+      background: var(--vscode-dropdown-background);
+      color: var(--vscode-dropdown-foreground);
+      border: 1px solid var(--vscode-dropdown-border);
+      border-radius: 5px;
+      padding: 4px 8px;
+      font-family: inherit;
+      font-size: 0.88em;
+      cursor: pointer;
+      max-width: 200px;
+    }
+
+    .provider-pill {
+      padding: 3px 9px;
+      border-radius: 20px;
+      font-size: 0.78em;
+      border: 1px solid var(--vscode-panel-border);
+      background: var(--vscode-input-background);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .provider-pill:hover { background: var(--vscode-toolbar-hoverBackground); }
+
+    .token-stats {
+      margin-left: auto;
+      font-size: 0.78em;
+      color: var(--vscode-descriptionForeground);
+      display: flex;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .msg {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-width: 90%;
+    }
+    .msg.user { align-self: flex-end; }
+    .msg.assistant { align-self: flex-start; }
+    .msg.system { align-self: center; max-width: 100%; }
+    .msg.error { align-self: stretch; max-width: 100%; }
+
+    .msg-header { font-size: 0.78em; font-weight: 600; color: var(--vscode-descriptionForeground); }
+    .msg.user .msg-header { text-align: right; }
+
+    .msg-body {
+      padding: 9px 13px;
+      border-radius: 8px;
+      border: 1px solid var(--vscode-panel-border);
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.9em;
+    }
+    .msg.user     .msg-body { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; }
+    .msg.assistant .msg-body { background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); }
+    .msg.system   .msg-body { background: var(--vscode-input-background); text-align: center; font-size: 0.82em; }
+    .msg.error    .msg-body { background: rgba(240,80,80,.12); border-color: var(--vscode-testing-iconFailed); color: var(--vscode-testing-iconFailed); }
+
+    .msg-body.streaming::after {
+      content: '▌';
+      animation: blink 0.9s step-end infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* Thought trace */
+    .thought-strip {
+      font-size: 0.78em;
+      color: var(--vscode-descriptionForeground);
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .thought-entry { padding: 2px 6px; border-left: 2px solid var(--vscode-panel-border); opacity: 0.8; }
+    .thought-entry.tool  { border-left-color: var(--vscode-button-background); }
+    .thought-entry.error { border-left-color: var(--vscode-testing-iconFailed); }
+
+    /* Chat input */
+    .chat-input-row {
+      display: flex;
+      gap: 8px;
+      padding: 10px 14px;
+      border-top: 1px solid var(--vscode-panel-border);
+      flex-shrink: 0;
+    }
+
+    textarea#chatInput {
+      flex: 1;
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border);
+      border-radius: 5px;
+      padding: 7px 10px;
+      font-family: inherit;
+      font-size: 0.9em;
+      resize: none;
+      min-height: 36px;
+      max-height: 120px;
+      line-height: 1.4;
+      outline: none;
+    }
+    textarea#chatInput:focus { border-color: var(--vscode-focusBorder); }
+
+    .typing-indicator { display: none; padding: 6px 0; }
+    .typing-indicator.visible { display: flex; gap: 4px; align-items: center; }
+    .typing-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--vscode-descriptionForeground);
+      animation: bounce 1.2s infinite;
+    }
+    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce { 0%,80%,100% { transform: translateY(0); } 40% { transform: translateY(-5px); } }
+
+    /* ────────────────────────────────────────────────────────────────
+       REVIEW TAB
+    ─────────────────────────────────────────────────────────────── */
+    .filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
+    .filter-btn {
+      padding: 4px 10px;
+      font-size: 0.82em;
+      border-radius: 20px;
+      border: 1px solid var(--vscode-panel-border);
+      background: transparent;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .filter-btn.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; }
+
+    .review-item {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 8px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+    }
+
+    .review-type-tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-size: 0.75em;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .tag-handoff  { background: rgba(100,150,255,.18); color: #6496ff; }
+    .tag-review   { background: rgba(50,200,100,.18);  color: var(--vscode-testing-iconPassed); }
+    .tag-blocker  { background: rgba(240,80,80,.18);   color: var(--vscode-testing-iconFailed); }
+    .tag-command  { background: rgba(200,160,60,.18);  color: #c8a03c; }
+
+    /* ────────────────────────────────────────────────────────────────
+       WORKFLOW / BOARD TAB
+    ─────────────────────────────────────────────────────────────── */
+    .sub-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--vscode-panel-border); margin-bottom: 12px; }
+    .sub-tab-btn {
+      padding: 5px 12px;
+      font-size: 0.85em;
+      border: none;
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      font-family: inherit;
+    }
+    .sub-tab-btn.active { color: var(--vscode-foreground); border-bottom-color: var(--vscode-button-background); }
+
+    .sub-panel { display: none; }
+    .sub-panel.active { display: flex; flex-direction: column; gap: 12px; }
+
+    /* Kanban */
+    .kanban { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; overflow-x: auto; }
+
+    .kanban-col { display: flex; flex-direction: column; gap: 8px; min-width: 140px; }
+    .kanban-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 5px 8px;
+      border-radius: 5px;
+      font-size: 0.82em;
+      font-weight: 600;
+      border: 1px solid var(--vscode-panel-border);
+      background: var(--vscode-input-background);
+    }
+
+    .task-card {
+      background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: 0.82em;
+      transition: border-color 0.12s;
+    }
+    .task-card:hover { border-color: var(--vscode-focusBorder); }
+    .task-card .task-title { font-weight: 600; margin-bottom: 4px; word-break: break-word; }
+    .task-card .task-meta { color: var(--vscode-descriptionForeground); font-size: 0.88em; }
+
+    /* Workflow creation form */
+    .form-group { display: flex; flex-direction: column; gap: 5px; }
+    .form-group label { font-size: 0.85em; font-weight: 600; }
+    .form-input, .form-select {
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border);
+      border-radius: 5px;
+      padding: 6px 10px;
+      font-family: inherit;
+      font-size: 0.88em;
+      outline: none;
+    }
+    .form-input:focus, .form-select:focus { border-color: var(--vscode-focusBorder); }
+
+    /* ────────────────────────────────────────────────────────────────
+       SETUP TAB
+    ─────────────────────────────────────────────────────────────── */
+    .agent-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 9px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--vscode-panel-border);
+      background: var(--vscode-input-background);
+      gap: 10px;
+    }
+    .agent-row-info { flex: 1; min-width: 0; }
+    .agent-row-name { font-weight: 600; font-size: 0.9em; }
+    .agent-row-meta { color: var(--vscode-descriptionForeground); font-size: 0.8em; }
+
+    .setup-action-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 10px 12px;
+      border-radius: 6px;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-panel-border);
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* ── Toast notification ──────────────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: 32px;
+      right: 16px;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 0.88em;
+      z-index: 999;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.2s, transform 0.2s;
+      pointer-events: none;
+    }
+    #toast.visible { opacity: 1; transform: translateY(0); }
+    #toast.success { background: var(--vscode-testing-iconPassed); color: #fff; }
+    #toast.error   { background: var(--vscode-testing-iconFailed); color: #fff; }
+    #toast.info    { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+
+    /* ── Detail overlay ──────────────────────────────────────────── */
+    #detail-overlay {
+      display: none;
+      position: fixed;
+      inset: 46px 0 24px 0;
+      background: var(--vscode-editor-background);
+      z-index: 50;
+      overflow-y: auto;
+      padding: 16px;
+    }
+    #detail-overlay.open { display: block; }
+    .overlay-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .overlay-header h2 { flex: 1; }
+
+    /* Responsive */
+    @media (max-width: 700px) {
+      .grid-2 { grid-template-columns: 1fr; }
+      .kpi-row { grid-template-columns: 1fr 1fr; }
+      .kanban  { grid-template-columns: repeat(3, minmax(130px, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Header ─────────────────────────────────────────────────────── -->
+  <header>
+    <div class="brand">
+      <div class="brand-icon">B</div>
+      Bormagi
+    </div>
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="work">Work</button>
+      <button class="tab-btn" data-tab="chat">Chat</button>
+      <button class="tab-btn" data-tab="review">
+        Review <span class="badge" id="reviewBadge"></span>
+      </button>
+      <button class="tab-btn" data-tab="workflows">Workflows</button>
+      <button class="tab-btn" data-tab="setup">Setup</button>
+    </nav>
+    <div class="header-right">
+      <span id="hdrWorkspace" style="font-size:0.8em;color:var(--vscode-descriptionForeground);"></span>
+    </div>
+  </header>
+
+  <!-- ── Main ───────────────────────────────────────────────────────── -->
+  <main>
+
+    <!-- WORK TAB ──────────────────────────────────────────────────── -->
+    <section class="tab-panel active" id="panel-work">
+      <div class="row-sb">
+        <h1>Work</h1>
+        <div class="row">
+          <button class="btn" onclick="switchTab('chat')">Open Chat</button>
+          <button class="btn-ghost" onclick="vscode.postMessage({type:'get_work_summary'})">↺ Refresh</button>
+        </div>
+      </div>
+
+      <div id="workContent">
+        <div class="empty-state">
+          <div class="empty-icon">🔄</div>
+          <p>Loading workspace…</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- CHAT TAB ──────────────────────────────────────────────────── -->
+    <section class="tab-panel" id="panel-chat">
+      <div class="chat-toolbar">
+        <select id="agentSelect" class="agent-select" onchange="selectAgent(this.value)">
+          <option value="">— select agent —</option>
+        </select>
+        <span id="providerPill" class="provider-pill" onclick="switchModel()" title="Click to switch model">—</span>
+        <button class="btn-ghost btn-sm" onclick="clearChat()">Clear</button>
+        <button class="btn-ghost btn-sm" onclick="exportChat()">Export</button>
+        <div class="token-stats" id="tokenStats">↑ 0 &nbsp; ↓ 0 &nbsp; $0.00</div>
+      </div>
+
+      <div id="messages"></div>
+
+      <div class="typing-indicator" id="typingIndicator">
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+      </div>
+
+      <div class="chat-input-row">
+        <textarea id="chatInput" rows="1" placeholder="Message… (↑/↓ for history, Enter to send, Shift+Enter for newline)"></textarea>
+        <button class="btn" id="sendBtn" onclick="sendChat()">Send</button>
+      </div>
+    </section>
+
+    <!-- REVIEW TAB ────────────────────────────────────────────────── -->
+    <section class="tab-panel" id="panel-review">
+      <div class="row-sb">
+        <h1>Review</h1>
+        <button class="btn-ghost" onclick="vscode.postMessage({type:'get_review_items'})">↺ Refresh</button>
+      </div>
+      <div class="filter-row" id="reviewFilters">
+        <button class="filter-btn active" data-filter="all" onclick="filterReview('all',this)">All</button>
+        <button class="filter-btn" data-filter="handoff" onclick="filterReview('handoff',this)">Handoffs</button>
+        <button class="filter-btn" data-filter="qa_review" onclick="filterReview('qa_review',this)">QA Reviews</button>
+        <button class="filter-btn" data-filter="blocker" onclick="filterReview('blocker',this)">Blockers</button>
+      </div>
+      <div id="reviewList" class="stack"></div>
+    </section>
+
+    <!-- WORKFLOWS TAB ─────────────────────────────────────────────── -->
+    <section class="tab-panel" id="panel-workflows">
+      <div class="row-sb">
+        <h1>Workflows</h1>
+        <button class="btn-ghost" onclick="vscode.postMessage({type:'get_board_data'})">↺ Refresh</button>
+      </div>
+      <div class="sub-tabs">
+        <button class="sub-tab-btn active" data-stab="board" onclick="switchSubTab('wf','board',this)">Board</button>
+        <button class="sub-tab-btn" data-stab="new" onclick="switchSubTab('wf','new',this)">+ New Workflow</button>
+      </div>
+      <!-- Board -->
+      <div class="sub-panel active" id="stab-wf-board">
+        <div class="kanban" id="kanban"></div>
+      </div>
+      <!-- New workflow form -->
+      <div class="sub-panel" id="stab-wf-new">
+        <div class="card" style="max-width:480px;">
+          <h2>Create Workflow</h2>
+          <div class="stack" style="gap:12px;">
+            <div class="form-group">
+              <label>Template</label>
+              <select id="wfTemplate" class="form-select">
+                <option value="feature-delivery">New Feature Delivery</option>
+                <option value="bug-fix">Bug Fix</option>
+                <option value="architecture-spike">Architecture Spike</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Title</label>
+              <input id="wfTitle" class="form-input" placeholder="e.g. Add dark mode support" />
+            </div>
+            <div class="form-group">
+              <label>Human Owner</label>
+              <input id="wfOwner" class="form-input" placeholder="Your name or ID" />
+            </div>
+            <div class="form-group">
+              <label>Linked Issue (optional)</label>
+              <input id="wfIssue" class="form-input" placeholder="e.g. #123 or JIRA-456" />
+            </div>
+            <div class="btn-row">
+              <button class="btn" onclick="createWorkflow()">Create Workflow</button>
+            </div>
+            <div id="wfCreateMsg" style="font-size:0.85em;"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETUP TAB ─────────────────────────────────────────────────── -->
+    <section class="tab-panel" id="panel-setup">
+      <div class="row-sb">
+        <h1>Setup</h1>
+      </div>
+      <div class="sub-tabs">
+        <button class="sub-tab-btn active" data-stab="agents" onclick="switchSubTab('setup','agents',this)">Agents</button>
+        <button class="sub-tab-btn" data-stab="workspace" onclick="switchSubTab('setup','workspace',this)">Workspace</button>
+        <button class="sub-tab-btn" data-stab="tools" onclick="switchSubTab('setup','tools',this)">Tools & Log</button>
+      </div>
+
+      <!-- Agents panel -->
+      <div class="sub-panel active" id="stab-setup-agents">
+        <div class="row-sb">
+          <h2>Agents</h2>
+          <div class="row">
+            <button class="btn" onclick="vscode.postMessage({type:'open_agent_settings',mode:'new'})">+ New Agent</button>
+            <button class="btn-ghost" onclick="vscode.postMessage({type:'install_predefined_agents'})">Install Predefined</button>
+          </div>
+        </div>
+        <div id="agentsList" class="stack"></div>
+        <p style="margin-top:4px;">Full configuration (providers, system prompts, MCP servers) is available in the Agent Settings panel.</p>
+      </div>
+
+      <!-- Workspace panel -->
+      <div class="sub-panel" id="stab-setup-workspace">
+        <h2>Workspace</h2>
+        <div class="stack">
+          <div class="setup-action-row">
+            <div>
+              <div style="font-weight:600;font-size:0.9em;">Initialise Workspace</div>
+              <small>Create the .bormagi folder structure in the current workspace.</small>
+            </div>
+            <button class="btn" onclick="vscode.postMessage({type:'initialise_workspace'})">Initialise</button>
+          </div>
+          <div class="setup-action-row">
+            <div>
+              <div style="font-weight:600;font-size:0.9em;">Install Predefined Agents</div>
+              <small>Choose from the built-in agent library (coder, architect, QA, etc.).</small>
+            </div>
+            <button class="btn-ghost" onclick="vscode.postMessage({type:'install_predefined_agents'})">Install</button>
+          </div>
+          <div class="setup-action-row">
+            <div>
+              <div style="font-weight:600;font-size:0.9em;">Agent Settings Panel</div>
+              <small>Open the full agent configuration panel (providers, API keys, prompts).</small>
+            </div>
+            <button class="btn-ghost" onclick="vscode.postMessage({type:'open_agent_settings'})">Open Settings</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tools & Log panel -->
+      <div class="sub-panel" id="stab-setup-tools">
+        <h2>Tools & Log</h2>
+        <div class="stack">
+          <div class="setup-action-row">
+            <div>
+              <div style="font-weight:600;font-size:0.9em;">Audit Log</div>
+              <small>View the structured JSONL audit trail of all agent actions.</small>
+            </div>
+            <button class="btn-ghost" onclick="vscode.postMessage({type:'show_audit_log'})">Open Log</button>
+          </div>
+          <div class="card">
+            <h3>Built-in MCP Tools</h3>
+            <div class="stack" style="gap:6px;margin-top:8px;">
+              ${[
+                ['read_file / write_file', 'Read and write workspace files (write requires diff approval)'],
+                ['list_files / search_files', 'Browse and search the workspace'],
+                ['run_command', 'Execute shell commands (requires approval each time)'],
+                ['git_status / git_diff / git_commit / git_log', 'Git operations'],
+                ['git_create_branch / git_push / git_create_pr', 'Branch and PR management'],
+                ['gcp_deploy / gcp_auth_status', 'Google Cloud deployment (requires approval)'],
+                ['get_diagnostics', 'Read VS Code Problems panel diagnostics'],
+              ].map(([t,d]) => `<div class="attention-item"><div><span style="font-weight:600;">${t}</span><br><small>${d}</small></div></div>`).join('')}
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── Footer ─────────────────────────────────────────────────────── -->
+  <footer>
+    <span id="ftWorkflow">No active workflow</span>
+    <span class="sep">•</span>
+    <span id="ftAgent">No agent</span>
+    <span class="sep">•</span>
+    <span id="ftTokens">↑ 0  ↓ 0</span>
+    <span class="sep">•</span>
+    <span><span class="dot"></span> Ready</span>
+  </footer>
+
+  <!-- ── Detail overlay (task / workflow) ──────────────────────────── -->
+  <div id="detail-overlay">
+    <div class="overlay-header">
+      <button class="btn-ghost btn-sm" onclick="closeDetail()">← Back</button>
+      <h2 id="detailTitle"></h2>
+    </div>
+    <div id="detailBody"></div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast"></div>
+
+  <script nonce="${nonce}">
+    const vscode = acquireVsCodeApi();
+
+    // ── State ──────────────────────────────────────────────────────────
+    const S = {
+      agents: [],
+      activeAgentId: null,
+      streaming: false,
+      streamEl: null,
+      thoughtEl: null,
+      inputHistory: [],
+      historyIndex: -1,
+      historyDraft: '',
+      sessionIn: 0, sessionOut: 0, sessionCost: 0,
+      model: '',
+      reviewItems: [],
+      reviewFilter: 'all',
+      boardData: null,
+      workData: null,
+    };
+
+    // ── Tab switching ──────────────────────────────────────────────────
+    function switchTab(name) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `panel-${name}`));
+      if (name === 'work')      vscode.postMessage({ type: 'get_work_summary' });
+      if (name === 'review')    vscode.postMessage({ type: 'get_review_items' });
+      if (name === 'workflows') vscode.postMessage({ type: 'get_board_data' });
+      if (name === 'setup')     vscode.postMessage({ type: 'get_setup_data' });
+    }
+    document.querySelectorAll('.tab-btn').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+
+    // Sub-tabs (namespace = 'wf' or 'setup')
+    function switchSubTab(ns, name, btn) {
+      const prefix = `stab-${ns}-`;
+      document.querySelectorAll(`[id^="${prefix}"]`).forEach(p => p.classList.toggle('active', p.id === `${prefix}${name}`));
+      btn.closest('.sub-tabs').querySelectorAll('.sub-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.stab === name));
+    }
+
+    // ── VS Code message handler ────────────────────────────────────────
+    window.addEventListener('message', ({ data: msg }) => {
+      switch (msg.type) {
+        // Chat stream
+        case 'text_delta':   appendDelta(msg.delta); break;
+        case 'text_done':    endStream(); break;
+        case 'thought':      appendThought(msg.event); break;
+        case 'error':        appendErrMsg(msg.message); endStream(); break;
+        case 'undo_result':
+        case 'wf_command_result': appendSysMsg(msg.message); endStream(); break;
+        case 'agent_changed':    onAgentChanged(msg); break;
+        case 'agent_list':       populateAgents(msg.agents, msg.activeAgentId); break;
+        case 'token_usage':      onTokenUsage(msg); break;
+        case 'model_switched':   updateProviderPill(S.model = msg.model); break;
+        // Work
+        case 'work_summary':     renderWork(msg.data); break;
+        // Review
+        case 'review_items':     onReviewItems(msg.items || []); break;
+        // Workflows
+        case 'board_data':       renderBoard(msg); break;
+        case 'workflow_created':
+          if (msg.error) showToast(msg.error, 'error');
+          else { showToast('Workflow created!', 'success'); vscode.postMessage({ type: 'get_board_data' }); }
+          break;
+        // Setup
+        case 'setup_data':       renderSetup(msg); break;
+        // Generic
+        case 'notification':     showToast(msg.message, msg.kind || 'info'); break;
+      }
+    });
+
+    // ── CHAT ────────────────────────────────────────────────────────────
+
+    function sendChat() {
+      const ta = document.getElementById('chatInput');
+      const text = ta.value.trim();
+      if (!text || S.streaming) return;
+      if (S.inputHistory[0] !== text) S.inputHistory.unshift(text);
+      if (S.inputHistory.length > 100) S.inputHistory.length = 100;
+      S.historyIndex = -1;
+      ta.value = '';
+      ta.style.height = '';
+      appendUserMsg(text);
+      beginStream();
+      vscode.postMessage({ type: 'chat_send', text });
+    }
+
+    function appendUserMsg(text) {
+      const m = document.createElement('div');
+      m.className = 'msg user';
+      m.innerHTML = `<div class="msg-header">You</div><div class="msg-body">${esc(text)}</div>`;
+      msgs().appendChild(m);
+      scrollMsgs();
+    }
+
+    function beginStream() {
+      S.streaming = true;
+      document.getElementById('typingIndicator').classList.add('visible');
+      document.getElementById('sendBtn').disabled = true;
+      const wrap = document.createElement('div');
+      wrap.className = 'msg assistant';
+      const header = document.createElement('div');
+      header.className = 'msg-header';
+      header.textContent = S.activeAgentId ? (S.agents.find(a => a.id === S.activeAgentId)?.name || 'Agent') : 'Agent';
+      const body = document.createElement('div');
+      body.className = 'msg-body streaming';
+      const thoughts = document.createElement('div');
+      thoughts.className = 'thought-strip';
+      wrap.appendChild(header);
+      wrap.appendChild(thoughts);
+      wrap.appendChild(body);
+      msgs().appendChild(wrap);
+      S.streamEl = body;
+      S.thoughtEl = thoughts;
+      S.streamBuf = '';
+      scrollMsgs();
+    }
+
+    function appendDelta(delta) {
+      if (!S.streamEl) beginStream();
+      S.streamBuf += delta;
+      S.streamEl.textContent = S.streamBuf;
+      scrollMsgs();
+    }
+
+    function appendThought(ev) {
+      if (!S.thoughtEl) return;
+      const d = document.createElement('div');
+      const isErr = ev.type === 'error';
+      d.className = `thought-entry ${ev.type === 'tool_call' || ev.type === 'tool_result' ? 'tool' : ''} ${isErr ? 'error' : ''}`;
+      const label = ev.label || ev.type;
+      const detail = ev.detail ? ` — ${ev.detail.substring(0, 120)}` : '';
+      d.textContent = `${label}${detail}`;
+      S.thoughtEl.appendChild(d);
+      scrollMsgs();
+    }
+
+    function endStream() {
+      S.streaming = false;
+      if (S.streamEl) { S.streamEl.classList.remove('streaming'); S.streamEl = null; }
+      S.thoughtEl = null;
+      document.getElementById('typingIndicator').classList.remove('visible');
+      document.getElementById('sendBtn').disabled = false;
+    }
+
+    function appendSysMsg(text) {
+      const m = document.createElement('div');
+      m.className = 'msg system';
+      m.innerHTML = `<div class="msg-body">${esc(text)}</div>`;
+      msgs().appendChild(m);
+      scrollMsgs();
+    }
+
+    function appendErrMsg(text) {
+      const m = document.createElement('div');
+      m.className = 'msg error';
+      m.innerHTML = `<div class="msg-header">Error</div><div class="msg-body">${esc(text)}</div>`;
+      msgs().appendChild(m);
+      scrollMsgs();
+    }
+
+    function clearChat() {
+      msgs().innerHTML = '';
+      S.sessionIn = 0; S.sessionOut = 0; S.sessionCost = 0;
+      updateTokenDisplay();
+    }
+
+    function exportChat() {
+      const lines = [];
+      document.querySelectorAll('#messages .msg').forEach(m => {
+        const role = m.querySelector('.msg-header')?.textContent?.trim() || '';
+        const body = m.querySelector('.msg-body')?.textContent?.trim() || '';
+        lines.push(`## ${role}\n${body}`);
+      });
+      navigator.clipboard.writeText(`# Bormagi Conversation\n\n${lines.join('\n\n')}`);
+      showToast('Conversation copied to clipboard', 'info');
+    }
+
+    function onAgentChanged(msg) {
+      S.activeAgentId = msg.agentId;
+      S.model = msg.model;
+      const sel = document.getElementById('agentSelect');
+      if (sel) sel.value = msg.agentId;
+      updateProviderPill(msg.model || msg.providerType);
+      document.getElementById('ftAgent').textContent = `Agent: ${msg.agentName}`;
+    }
+
+    function populateAgents(agents, activeId) {
+      S.agents = agents;
+      const sel = document.getElementById('agentSelect');
+      sel.innerHTML = '<option value="">— select agent —</option>' +
+        agents.map(a => `<option value="${esc(a.id)}" ${a.id === activeId ? 'selected' : ''}>${esc(a.name)} (${esc(a.providerType)})</option>`).join('');
+      if (activeId) S.activeAgentId = activeId;
+    }
+
+    function selectAgent(id) {
+      if (!id) return;
+      vscode.postMessage({ type: 'chat_select_agent', agentId: id });
+    }
+
+    function switchModel() {
+      vscode.postMessage({ type: 'chat_switch_model' });
+    }
+
+    function updateProviderPill(label) {
+      document.getElementById('providerPill').textContent = label || '—';
+    }
+
+    function onTokenUsage(msg) {
+      S.sessionIn = msg.sessionInputTokens;
+      S.sessionOut = msg.sessionOutputTokens;
+      S.sessionCost = estimateCost(msg.model, msg.sessionInputTokens, msg.sessionOutputTokens);
+      S.model = msg.model;
+      updateTokenDisplay();
+    }
+
+    function updateTokenDisplay() {
+      const fmt = n => n >= 1000 ? (n/1000).toFixed(1) + 'k' : n;
+      document.getElementById('tokenStats').textContent =
+        `↑ ${fmt(S.sessionIn)}  ↓ ${fmt(S.sessionOut)}  $${S.sessionCost.toFixed(4)}`;
+      document.getElementById('ftTokens').textContent =
+        `↑ ${fmt(S.sessionIn)}  ↓ ${fmt(S.sessionOut)}`;
+    }
+
+    const PRICING = {
+      'gpt-4o': {i:5,o:15}, 'gpt-4o-mini': {i:.15,o:.6}, 'gpt-4-turbo': {i:10,o:30},
+      'claude-opus-4-6': {i:15,o:75}, 'claude-sonnet-4-6': {i:3,o:15}, 'claude-haiku-4-5-20251001': {i:.8,o:4},
+      'gemini-2.0-flash': {i:.1,o:.4}, 'gemini-1.5-pro': {i:3.5,o:10.5}, 'gemini-1.5-flash': {i:.075,o:.3},
+      'deepseek-chat': {i:.27,o:1.1}, 'deepseek-coder': {i:.27,o:1.1}, 'deepseek-reasoner': {i:.55,o:2.19},
+      'qwen-max': {i:.8,o:2.4}, 'qwen-plus': {i:.3,o:.9}, 'qwen-turbo': {i:.05,o:.2},
+    };
+    function estimateCost(model, inTok, outTok) {
+      const p = PRICING[model]; if (!p) return 0;
+      return (inTok/1e6)*p.i + (outTok/1e6)*p.o;
+    }
+
+    // Input area auto-resize + history
+    const chatInput = document.getElementById('chatInput');
+    chatInput.addEventListener('input', () => {
+      chatInput.style.height = '';
+      chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+    });
+    chatInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); return; }
+      if (e.key === 'ArrowUp' && chatInput.selectionStart === 0 && S.inputHistory.length) {
+        e.preventDefault();
+        if (S.historyIndex === -1) S.historyDraft = chatInput.value;
+        S.historyIndex = Math.min(S.historyIndex + 1, S.inputHistory.length - 1);
+        chatInput.value = S.inputHistory[S.historyIndex];
+      } else if (e.key === 'ArrowDown' && S.historyIndex >= 0) {
+        e.preventDefault();
+        S.historyIndex--;
+        chatInput.value = S.historyIndex === -1 ? S.historyDraft : S.inputHistory[S.historyIndex];
+      }
+    });
+
+    function msgs() { return document.getElementById('messages'); }
+    function scrollMsgs() { const m = msgs(); m.scrollTop = m.scrollHeight; }
+
+    // ── WORK TAB ────────────────────────────────────────────────────────
+
+    function renderWork(data) {
+      const el = document.getElementById('workContent');
+      if (!data) {
+        el.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">🚀</div>
+            <h2>No active workflow</h2>
+            <p>Start a new workflow from the Workflows tab, or initialise the workspace first.</p>
+            <div class="btn-row" style="justify-content:center;">
+              <button class="btn" onclick="switchTab('workflows')">New Workflow</button>
+              <button class="btn-ghost" onclick="switchTab('setup')">Setup</button>
+            </div>
+          </div>`;
+        document.getElementById('ftWorkflow').textContent = 'No active workflow';
+        return;
+      }
+
+      const stages = data.stages || [];
+      const task   = data.currentTask;
+      const items  = data.attentionItems || [];
+
+      const stagePills = stages.map(s => {
+        const cls = s.status === 'completed' ? 'done' : s.status === 'active' ? 'active' : s.status === 'blocked' ? 'blocked' : 'pending';
+        const icon = s.status === 'completed' ? ' ✓' : s.status === 'active' ? ' ●' : '';
+        return `<span class="pill ${cls}">${esc(s.name || s.id)}${icon}</span>`;
+      }).join('');
+
+      document.getElementById('ftWorkflow').textContent = `Workflow: ${data.title}`;
+
+      el.innerHTML = `
+        <div class="card">
+          <div class="row-sb">
+            <div><strong>${esc(data.title)}</strong> <span class="pill ${data.status === 'active' ? 'active' : 'pending'}">${data.status}</span></div>
+            <small>${data.totalWorkflows} workflow(s)</small>
+          </div>
+          <div class="stages" style="margin-top:10px;">${stagePills || '<small>No stages</small>'}</div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <h2>Current Task</h2>
+            ${task ? `
+              <div style="font-size:1.05em;font-weight:700;margin-bottom:6px;">${esc(task.title)}</div>
+              <div class="row-sb"><small>ID: ${esc(task.id)}</small><span class="pill ${task.status === 'active' ? 'active' : task.status === 'blocked' ? 'blocked' : 'pending'}">${task.status}</span></div>
+              <small style="display:block;margin-top:4px;">Owner: ${esc(task.ownerAgentId || '—')}</small>
+              <div class="btn-row">
+                <button class="btn" onclick="switchTab('chat')">Open Chat</button>
+                <button class="btn-ghost" onclick="switchTab('review')">Review Items</button>
+              </div>
+            ` : '<p>No active task.</p>'}
+          </div>
+
+          <div class="card">
+            <h2>Needs Attention <span class="badge">${items.length || ''}</span></h2>
+            ${items.length === 0
+              ? '<p>Nothing requires attention right now.</p>'
+              : `<div class="stack">${items.map(i => `
+                  <div class="attention-item">
+                    <div>
+                      <span style="font-weight:600;">${esc(i.title)}</span>
+                      ${i.severity ? `<small> — ${i.severity}</small>` : ''}
+                    </div>
+                    <button class="btn-ghost btn-sm" onclick="switchTab('review')">View</button>
+                  </div>`).join('')}
+                </div>`}
+          </div>
+        </div>`;
+    }
+
+    // ── REVIEW TAB ──────────────────────────────────────────────────────
+
+    function onReviewItems(items) {
+      S.reviewItems = items;
+      const badge = document.getElementById('reviewBadge');
+      badge.textContent = items.length ? String(items.length) : '';
+      renderReviewList();
+    }
+
+    function filterReview(type, btn) {
+      S.reviewFilter = type;
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === type));
+      renderReviewList();
+    }
+
+    function renderReviewList() {
+      const items = S.reviewFilter === 'all'
+        ? S.reviewItems
+        : S.reviewItems.filter(i => i.type === S.reviewFilter);
+
+      const el = document.getElementById('reviewList');
+      if (items.length === 0) {
+        el.innerHTML = `<div class="empty-state"><div class="empty-icon">✅</div><p>Nothing to review right now.</p></div>`;
+        return;
+      }
+      el.innerHTML = items.map(item => {
+        const tagCls = { handoff:'tag-handoff', qa_review:'tag-review', blocker:'tag-blocker', command:'tag-command' }[item.type] || '';
+        const tagLabel = { handoff:'Handoff', qa_review:'QA Review', blocker:'Blocker', command:'Command' }[item.type] || item.type;
+        const actions = item.type === 'blocker'
+          ? `<button class="btn-success btn-sm" onclick="resolveBlocker('${esc(item.workflowId)}','${esc(item.id)}')">Resolve</button>`
+          : item.type === 'handoff'
+          ? `<button class="btn-success btn-sm" onclick="approveHandoff('${esc(item.workflowId)}','${esc(item.id)}')">Approve</button>
+             <button class="btn-danger btn-sm" onclick="rejectHandoff('${esc(item.workflowId)}','${esc(item.id)}')">Reject</button>`
+          : item.type === 'qa_review'
+          ? `<button class="btn-success btn-sm" onclick="approveReview('${esc(item.workflowId)}','${esc(item.id)}')">Approve</button>
+             <button class="btn-danger btn-sm" onclick="rejectReview('${esc(item.workflowId)}','${esc(item.id)}')">Reject</button>`
+          : '';
+        return `
+          <div class="review-item">
+            <div class="row-sb">
+              <span class="review-type-tag ${tagCls}">${tagLabel}</span>
+              <small>${esc(item.workflowTitle || item.workflowId || '')}</small>
+            </div>
+            <div style="font-weight:600;">${esc(item.title)}</div>
+            <p>${esc(item.description || '')}</p>
+            ${item.fromAgent || item.toAgent ? `<small>From: ${esc(item.fromAgent||'?')} → To: ${esc(item.toAgent||'?')}</small>` : ''}
+            ${item.severity ? `<small>Severity: ${esc(item.severity)}</small>` : ''}
+            <div class="btn-row">${actions}</div>
+          </div>`;
+      }).join('');
+    }
+
+    function approveHandoff(wfId, hId) {
+      vscode.postMessage({ type: 'approve_handoff', workflowId: wfId, handoffId: hId });
+    }
+    function rejectHandoff(wfId, hId) {
+      const reason = prompt('Rejection reason:');
+      if (reason === null) return;
+      vscode.postMessage({ type: 'reject_handoff', workflowId: wfId, handoffId: hId, reason });
+    }
+    function approveReview(wfId, rId) {
+      vscode.postMessage({ type: 'approve_review', workflowId: wfId, reviewId: rId, outcome: 'approved' });
+    }
+    function rejectReview(wfId, rId) {
+      const note = prompt('Rejection note:');
+      if (note === null) return;
+      vscode.postMessage({ type: 'approve_review', workflowId: wfId, reviewId: rId, outcome: 'rejected', note });
+    }
+    function resolveBlocker(wfId, bId) {
+      const note = prompt('Resolution note:');
+      if (note === null) return;
+      vscode.postMessage({ type: 'resolve_blocker', workflowId: wfId, blockerId: bId, note });
+    }
+
+    // ── WORKFLOWS / BOARD ───────────────────────────────────────────────
+
+    function renderBoard(msg) {
+      const { columns, workflows } = msg;
+      const kanban = document.getElementById('kanban');
+      if (!columns) { kanban.innerHTML = '<p>No workflows yet.</p>'; return; }
+
+      const COL_LABELS = { backlog:'Backlog', active:'Active', waiting_review:'Waiting Review', blocked:'Blocked', done:'Done' };
+      kanban.innerHTML = Object.entries(COL_LABELS).map(([key, label]) => {
+        const tasks = (columns[key] || []);
+        const cards = tasks.map(t => `
+          <div class="task-card" onclick="openTaskDetail('${esc(t.workflowId)}','${esc(t.id)}')">
+            <div class="task-title">${esc(t.title)}</div>
+            <div class="task-meta">${esc(t.ownerAgentId || '—')}</div>
+            <div class="task-meta">${esc(t.workflowTitle || t.workflowId || '')}</div>
+          </div>`).join('');
+        return `
+          <div class="kanban-col">
+            <div class="kanban-header">${label}<span class="badge">${tasks.length || ''}</span></div>
+            ${cards || '<small style="padding:6px;color:var(--vscode-descriptionForeground);">Empty</small>'}
+          </div>`;
+      }).join('');
+    }
+
+    function createWorkflow() {
+      const title = document.getElementById('wfTitle').value.trim();
+      const owner = document.getElementById('wfOwner').value.trim();
+      const template = document.getElementById('wfTemplate').value;
+      const issue = document.getElementById('wfIssue').value.trim();
+      if (!title) { document.getElementById('wfCreateMsg').textContent = 'Title is required.'; return; }
+      document.getElementById('wfCreateMsg').textContent = 'Creating…';
+      vscode.postMessage({ type: 'create_workflow', templateId: template, title, humanOwner: owner || 'human', linkedIssue: issue });
+    }
+
+    function openTaskDetail(wfId, taskId) {
+      vscode.postMessage({ type: 'get_task_detail', workflowId: wfId, taskId });
+      document.getElementById('detailTitle').textContent = 'Task Detail';
+      document.getElementById('detailBody').innerHTML = '<p>Loading…</p>';
+      document.getElementById('detail-overlay').classList.add('open');
+    }
+
+    function closeDetail() {
+      document.getElementById('detail-overlay').classList.remove('open');
+    }
+
+    window.addEventListener('message', ({ data: msg }) => {
+      if (msg.type === 'task_detail') {
+        if (msg.error) { document.getElementById('detailBody').innerHTML = `<p>Error: ${esc(msg.error)}</p>`; return; }
+        const t = msg.data;
+        if (!t) return;
+        document.getElementById('detailTitle').textContent = t.title || 'Task Detail';
+        const blockers = (t.blockers || []).map(b =>
+          `<div class="attention-item"><span>${esc(b.reason)}</span><span class="pill blocked">${esc(b.severity)}</span></div>`).join('');
+        document.getElementById('detailBody').innerHTML = `
+          <div class="stack">
+            <div class="card">
+              <div class="row-sb"><strong>${esc(t.title)}</strong><span class="pill ${t.status === 'active' ? 'active' : 'pending'}">${esc(t.status)}</span></div>
+              <p style="margin-top:6px;">${esc(t.objective || '')}</p>
+              <div style="margin-top:8px;font-size:0.85em;">
+                <div>Owner: <strong>${esc(t.ownerAgentId || '—')}</strong></div>
+                <div>Workflow: ${esc(t.workflowId || '—')}</div>
+                ${t.parentTaskId ? `<div>Parent task: ${esc(t.parentTaskId)}</div>` : ''}
+              </div>
+            </div>
+            ${blockers ? `<div class="card"><h3>Active Blockers</h3><div class="stack">${blockers}</div></div>` : ''}
+            <div class="btn-row">
+              <button class="btn-danger btn-sm" onclick="cancelTask('${esc(t.workflowId||'')}','${esc(t.id)}')">Cancel Task</button>
+            </div>
+          </div>`;
+      }
+    });
+
+    function cancelTask(wfId, taskId) {
+      vscode.postMessage({ type: 'cancel_task', workflowId: wfId, taskId });
+    }
+
+    // ── SETUP TAB ───────────────────────────────────────────────────────
+
+    function renderSetup(msg) {
+      const el = document.getElementById('agentsList');
+      const agents = msg.agents || [];
+      if (agents.length === 0) {
+        el.innerHTML = '<p>No agents configured. Install predefined agents or create a new one.</p>';
+      } else {
+        el.innerHTML = agents.map(a => `
+          <div class="agent-row">
+            <div class="agent-row-info">
+              <div class="agent-row-name">${esc(a.name)}</div>
+              <div class="agent-row-meta">${esc(a.category)} &nbsp;·&nbsp; ${esc(a.providerType)} / ${esc(a.model)}</div>
+            </div>
+            <button class="btn-ghost btn-sm" onclick="vscode.postMessage({type:'open_agent_settings',mode:'edit',agentId:'${esc(a.id)}'})">Edit</button>
+          </div>`).join('');
+      }
+      if (msg.workspaceName) document.getElementById('hdrWorkspace').textContent = msg.workspaceName;
+    }
+
+    // ── UTILS ────────────────────────────────────────────────────────────
+
+    function esc(s) {
+      return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    let _toastTimer;
+    function showToast(msg, kind = 'info') {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = `visible ${kind}`;
+      clearTimeout(_toastTimer);
+      _toastTimer = setTimeout(() => el.className = '', 3000);
+    }
+
+    // ── BOOT ─────────────────────────────────────────────────────────────
+    vscode.postMessage({ type: 'init' });
+  </script>
+</body>
+</html>

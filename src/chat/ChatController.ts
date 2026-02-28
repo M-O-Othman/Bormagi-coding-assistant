@@ -45,7 +45,7 @@ export class ChatController {
   private skillManager: SkillManager;
   private diffManager = new DiffManager();
   private approvalDialog = new ApprovalDialog();
-  private webviewPostMessage?: (msg: MessageToWebview) => void;
+  private readonly _subscribers = new Set<(msg: MessageToWebview) => void>();
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
   private currentModel = '';
@@ -94,8 +94,15 @@ export class ChatController {
     return this.agentManager.getAgent(this._activeAgentId)?.name;
   }
 
+  /** Register a webview to receive all chat messages (sidebar). */
   registerWebviewCallback(cb: (msg: MessageToWebview) => void): void {
-    this.webviewPostMessage = cb;
+    this._subscribers.add(cb);
+  }
+
+  /** Subscribe to chat messages (main panel). Returns an unsubscribe function. */
+  addSubscriber(cb: (msg: MessageToWebview) => void): () => void {
+    this._subscribers.add(cb);
+    return () => this._subscribers.delete(cb);
   }
 
   async handleUserMessage(rawMessage: string): Promise<void> {
@@ -512,7 +519,7 @@ export class ChatController {
   }
 
   private post(msg: MessageToWebview): void {
-    this.webviewPostMessage?.(msg);
+    this._subscribers.forEach(cb => { try { cb(msg); } catch { /* disposed */ } });
   }
 
   // Needed so ChatViewProvider can forward messages from the webview

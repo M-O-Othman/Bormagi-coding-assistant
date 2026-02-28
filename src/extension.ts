@@ -7,6 +7,7 @@ import { AgentManager } from './agents/AgentManager';
 import { ChatViewProvider } from './chat/ChatViewProvider';
 import { ChatController } from './chat/ChatController';
 import { AgentSettingsPanel } from './ui/AgentSettingsPanel';
+import { MainPanel } from './ui/MainPanel';
 import { StatusBar } from './ui/StatusBar';
 import { AuditLogger } from './audit/AuditLogger';
 import { MCPHost } from './mcp/MCPHost';
@@ -51,6 +52,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   statusBar = new StatusBar();
   chatController = new ChatController(agentManager, mcpHost, configManager, auditLogger, statusBar, workspaceRoot);
 
+  // ─── Main Dashboard panel (configure singleton before any command fires) ──
+  MainPanel.configure({
+    extensionUri: context.extensionUri,
+    extensionPath: context.extensionPath,
+    chatController,
+    agentManager,
+    configManager,
+    secretsManager,
+  });
+
   // ─── Sidebar chat WebView ─────────────────────────────────────────────────
   const chatViewProvider = new ChatViewProvider(context.extensionUri, chatController);
   context.subscriptions.push(
@@ -85,6 +96,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     vscode.commands.registerCommand('bormagi.selectAgent', async () => {
       await selectAgentCommand(agentManager!, chatController!);
+    }),
+
+    vscode.commands.registerCommand('bormagi.openDashboard', () => {
+      MainPanel.createOrShow();
     }),
 
     vscode.commands.registerCommand('bormagi.showAuditLog', async () => {
