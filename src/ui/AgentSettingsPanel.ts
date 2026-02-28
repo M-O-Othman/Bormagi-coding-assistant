@@ -177,6 +177,17 @@ export class AgentSettingsPanel {
         await this.sendAgentList();
         break;
       }
+
+      case 'apply_default_to_all': {
+        // Set useDefaultProvider: true for every agent so they all use the workspace default
+        const allAgents = this.agentManager.listAgents();
+        for (const a of allAgents) {
+          await this.agentManager.updateAgent({ ...a, useDefaultProvider: true });
+        }
+        this.panel.webview.postMessage({ type: 'apply_default_done', count: allAgents.length });
+        await this.sendAgentList();
+        break;
+      }
     }
   }
 
@@ -271,6 +282,8 @@ export class AgentSettingsPanel {
     .checkbox-row input[type=checkbox] { width: auto; margin-bottom: 0; }
     .checkbox-row label { margin-bottom: 0; opacity: 1; }
     #default-status { font-size: 12px; margin-top: 8px; min-height: 16px; }
+    .btn-secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+    .btn-secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
   </style>
 </head>
 <body>
@@ -278,9 +291,10 @@ export class AgentSettingsPanel {
 
   <!-- Default Provider Card -->
   <div class="default-card">
-    <h3>Workspace Default Provider <span class="badge">Fallback</span></h3>
+    <h3>Workspace Default Provider</h3>
     <p style="font-size:11px;opacity:0.6;margin-bottom:10px">
-      Agents with "Use workspace default" checked, or agents without a configured provider, will use this.
+      Set one provider + API key here, then click <strong>Apply to all agents</strong> to switch every agent to this provider instantly.
+      Individual agents can still override this in their own settings.
     </p>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div>
@@ -299,7 +313,10 @@ export class AgentSettingsPanel {
       <option value="api_key">API Key</option>
       <option value="gcp_adc">GCP Application Default Credentials</option>
     </select>
-    <button class="btn" onclick="saveDefaultProvider()">Save Default Provider</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" onclick="saveDefaultProvider()">Save Default Provider</button>
+      <button class="btn btn-secondary" onclick="applyDefaultToAll()" title="Set all agents to use the workspace default provider">Apply to all agents</button>
+    </div>
     <div id="default-status"></div>
   </div>
 
@@ -390,6 +407,17 @@ export class AgentSettingsPanel {
         provider: { type, model, base_url: null, proxy_url: null, auth_method: authMethod },
         apiKey: apiKey || undefined
       });
+    }
+
+    function applyDefaultToAll() {
+      const type = document.getElementById('dp-provider').value;
+      const model = document.getElementById('dp-model').value;
+      if (!type || !model) {
+        document.getElementById('default-status').textContent = '⚠ Save the default provider first.';
+        return;
+      }
+      document.getElementById('default-status').textContent = 'Applying…';
+      vscode.postMessage({ type: 'apply_default_to_all' });
     }
 
     // ── Per-agent provider fields toggle ──────────────────────────────────
@@ -546,6 +574,9 @@ export class AgentSettingsPanel {
         document.getElementById('default-status').textContent = '✓ Default provider saved';
         document.getElementById('default-status').style.color = 'var(--vscode-terminal-ansiGreen)';
         document.getElementById('dp-apikey').value = '';
+      } else if (msg.type === 'apply_default_done') {
+        document.getElementById('default-status').textContent = '✓ Applied to ' + msg.count + ' agent(s). Refresh the chat sidebar to see changes.';
+        document.getElementById('default-status').style.color = 'var(--vscode-terminal-ansiGreen)';
       } else if (msg.type === 'error') {
         showStatus(msg.message, false);
       }
