@@ -439,6 +439,18 @@
       <path d="M10.12 1H5.88L5 2H2v1h12V2h-3l-.88-1zM4 5v9a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V5H4zm2 2h1v6H6V7zm3 0h1v6H9V7z"/>
     </svg>
   </button>
+
+  <button class="tb-btn" onclick="openAgentSettings()" title="Setup agents — add API keys, edit prompts">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M8 1a2 2 0 1 1 0 4A2 2 0 0 1 8 1zm0 1a1 1 0 1 0 0 2A1 1 0 0 0 8 2zM3 7h10a1 1 0 0 1 1 1v1H2V8a1 1 0 0 1 1-1zm-1 3h12v4H2v-4z"/>
+    </svg>
+  </button>
+
+  <button class="tb-btn" onclick="openDashboard()" title="Open Bormagi Dashboard">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M1 1h6v6H1V1zm1 1v4h4V2H2zm7-1h6v6H9V1zm1 1v4h4V2h-4zM1 9h6v6H1V9zm1 1v4h4v-4H2zm7-1h6v6H9V9zm1 1v4h4v-4h-4z"/>
+    </svg>
+  </button>
 </div>
 
 <!-- ── TOKEN STATS ──────────────────────────────────────────────────────────── -->
@@ -592,17 +604,37 @@
   function populateDropdown(list, activeId) {
     agentList = list;
     agentSel.innerHTML = '<option value="">— Select agent —</option>';
-    list.forEach(a => {
-      const opt = document.createElement('option');
-      opt.value = a.id;
-      // Show: "Advanced Coder  ·  anthropic / claude-sonnet-4-6"
-      opt.textContent = a.name + '  ·  ' + a.providerType + ' / ' + a.model;
-      agentSel.appendChild(opt);
-    });
+
+    const configured   = list.filter(a => a.configured !== false);
+    const unconfigured = list.filter(a => a.configured === false);
+
+    if (configured.length && unconfigured.length) {
+      const grpReady = document.createElement('optgroup');
+      grpReady.label = 'Ready';
+      configured.forEach(a => grpReady.appendChild(makeOption(a)));
+      agentSel.appendChild(grpReady);
+
+      const grpSetup = document.createElement('optgroup');
+      grpSetup.label = '⚠ Needs API key';
+      unconfigured.forEach(a => grpSetup.appendChild(makeOption(a)));
+      agentSel.appendChild(grpSetup);
+    } else {
+      list.forEach(a => agentSel.appendChild(makeOption(a)));
+    }
+
     if (activeId) {
       agentSel.value = activeId;
       setProviderPill(activeId);
     }
+  }
+
+  function makeOption(a) {
+    const opt = document.createElement('option');
+    opt.value = a.id;
+    const ready = a.configured !== false;
+    opt.textContent = (ready ? '' : '⚠ ') + a.name + '  ·  ' + a.providerType + ' / ' + a.model + (ready ? '' : ' — no API key');
+    if (!ready) opt.disabled = false; // selectable so user can see the message
+    return opt;
   }
 
   function setProviderPill(agentId, usingDefault) {
@@ -836,8 +868,10 @@
     });
   }
 
-  function refreshAgents() { vscode.postMessage({ type: 'refresh_agents' }); }
-  function scrollEnd()     { messagesEl.scrollTop = messagesEl.scrollHeight; }
+  function refreshAgents()    { vscode.postMessage({ type: 'refresh_agents' }); }
+  function openDashboard()    { vscode.postMessage({ type: 'open_dashboard' }); }
+  function openAgentSettings(){ vscode.postMessage({ type: 'open_agent_settings' }); }
+  function scrollEnd()        { messagesEl.scrollTop = messagesEl.scrollHeight; }
 
   // ── Extension → WebView messages ──────────────────────────────────────────
 
@@ -893,6 +927,11 @@
           pillEl.title = 'Click to switch model (' + m.model + ')';
         }
         appendSystemMsg('Model switched to ' + m.model, false);
+        break;
+
+      case 'wf_command_result':
+        endStream();
+        appendSystemMsg(m.message, false);
         break;
     }
   });

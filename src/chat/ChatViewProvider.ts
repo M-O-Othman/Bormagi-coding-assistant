@@ -41,6 +41,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.controller.setActiveAgent(message.agentId as string);
       } else if (type === 'switch_model') {
         await this.controller.handleWebviewMessage(message);
+      } else if (type === 'open_dashboard') {
+        await vscode.commands.executeCommand('bormagi.openDashboard');
+      } else if (type === 'open_agent_settings') {
+        await vscode.commands.executeCommand('bormagi.openSettings');
       }
     });
   }

@@ -31,7 +31,7 @@ export type MessageToWebview =
   | { type: 'thought'; agentId: string; event: ThoughtEvent }
   | { type: 'error'; message: string }
   | { type: 'agent_changed'; agentId: string; agentName: string; providerType: string; model: string; usingDefault: boolean }
-  | { type: 'agent_list'; agents: { id: string; name: string; category: string; providerType: string; model: string }[]; activeAgentId?: string }
+  | { type: 'agent_list'; agents: { id: string; name: string; category: string; providerType: string; model: string; configured: boolean }[]; activeAgentId?: string }
   | { type: 'undo_result'; message: string }
   | { type: 'token_usage'; lastInputTokens: number; lastOutputTokens: number; sessionInputTokens: number; sessionOutputTokens: number; model: string }
   | { type: 'model_switched'; model: string }
@@ -231,12 +231,17 @@ export class ChatController {
 
   async refreshAgentList(): Promise<void> {
     await this.agentManager.loadAgents();
-    const agents = this.agentManager.listAgents().map(a => ({
-      id: a.id,
-      name: a.name,
-      category: a.category,
-      providerType: a.provider.type,
-      model: a.provider.model
+    const agents = await Promise.all(this.agentManager.listAgents().map(async a => {
+      const needsKey = (a.provider?.auth_method ?? 'api_key') !== 'gcp_adc';
+      const key = needsKey ? await this.agentManager.getApiKey(a.id) : 'gcp_adc';
+      return {
+        id: a.id,
+        name: a.name,
+        category: a.category,
+        providerType: a.provider.type,
+        model: a.provider.model,
+        configured: !needsKey || !!key,
+      };
     }));
     this.post({ type: 'agent_list', agents, activeAgentId: this._activeAgentId });
   }
