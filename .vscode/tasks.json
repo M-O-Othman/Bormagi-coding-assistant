@@ -3,9 +3,9 @@
   "tasks": [
     {
       "label": "compile",
-      "type": "shell",
+      "type": "process",
       "command": "node",
-      "args": ["./node_modules/webpack/bin/webpack.js"],
+      "args": ["${workspaceFolder}/node_modules/webpack/bin/webpack.js"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
