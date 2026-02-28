@@ -21,7 +21,8 @@ export type MessageToWebview =
   | { type: 'error'; message: string }
   | { type: 'agent_changed'; agentId: string; agentName: string; providerType: string; model: string }
   | { type: 'agent_list'; agents: { id: string; name: string; category: string; providerType: string; model: string }[]; activeAgentId?: string }
-  | { type: 'undo_result'; message: string };
+  | { type: 'undo_result'; message: string }
+  | { type: 'token_usage'; lastInputTokens: number; lastOutputTokens: number; sessionInputTokens: number; sessionOutputTokens: number };
 
 export class ChatController {
   private _activeAgentId: string | undefined;
@@ -32,6 +33,8 @@ export class ChatController {
   private diffManager = new DiffManager();
   private approvalDialog = new ApprovalDialog();
   private webviewPostMessage?: (msg: MessageToWebview) => void;
+  private sessionInputTokens = 0;
+  private sessionOutputTokens = 0;
 
   constructor(
     private readonly agentManager: AgentManager,
@@ -120,7 +123,18 @@ export class ChatController {
         (event) => this.post({ type: 'thought', agentId, event }),
         async (prompt) => this.approvalDialog.request(prompt),
         async (filePath, original, proposed) =>
-          this.diffManager.showAndApprove(filePath, original, proposed)
+          this.diffManager.showAndApprove(filePath, original, proposed),
+        (usage) => {
+          this.sessionInputTokens += usage.inputTokens;
+          this.sessionOutputTokens += usage.outputTokens;
+          this.post({
+            type: 'token_usage',
+            lastInputTokens: usage.inputTokens,
+            lastOutputTokens: usage.outputTokens,
+            sessionInputTokens: this.sessionInputTokens,
+            sessionOutputTokens: this.sessionOutputTokens
+          });
+        }
       );
     } catch (err) {
       this.post({ type: 'error', message: String(err) });

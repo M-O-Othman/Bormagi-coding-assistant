@@ -39,6 +39,10 @@ export type AgentCategory =
   | 'Software QA / Testing Agent'
   | 'Front-End Designer Agent'
   | 'Advanced Coder Agent'
+  | 'Security Engineer Agent'
+  | 'DevOps Engineer Agent'
+  | 'Technical Writer Agent'
+  | 'AI / LLM Engineer Agent'
   | 'Custom Agent';
 
 export interface AgentConfig {
@@ -109,7 +113,13 @@ export interface LLMStreamOptions {
   maxTokens?: number;
 }
 
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export type StreamEvent =
   | { type: 'text'; delta: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
+  | { type: 'token_usage'; usage: TokenUsage }
   | { type: 'done' };

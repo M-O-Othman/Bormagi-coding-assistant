@@ -53,7 +53,9 @@ export class OpenAIProvider implements ILLMProvider {
       model: this.model,
       messages: openaiMessages,
       max_tokens: maxTokens,
-      stream: true
+      stream: true,
+      // Request usage data in the final streaming chunk
+      stream_options: { include_usage: true }
     };
 
     if (tools && tools.length > 0) {
@@ -74,6 +76,14 @@ export class OpenAIProvider implements ILLMProvider {
     const toolCallAcc = new Map<number, { id: string; name: string; args: string }>();
 
     for await (const chunk of stream) {
+      // The final chunk (with empty choices[]) carries usage when stream_options.include_usage = true
+      if (chunk.usage) {
+        yield {
+          type: 'token_usage',
+          usage: { inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens }
+        };
+      }
+
       const choice = chunk.choices[0];
       if (!choice) {
         continue;

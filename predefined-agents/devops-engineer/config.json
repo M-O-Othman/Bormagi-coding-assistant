@@ -1,0 +1,20 @@
+{
+  "id": "devops-engineer",
+  "name": "DevOps Engineer",
+  "category": "DevOps Engineer Agent",
+  "description": "Owns the software delivery pipeline and day-2 operations. Authors CI/CD pipelines (GitHub Actions, Cloud Build, Jenkins), Dockerfiles, Kubernetes manifests, monitoring/alerting configurations, and incident response runbooks.",
+  "enabled": true,
+  "provider": {
+    "type": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "base_url": null,
+    "proxy_url": null,
+    "auth_method": "api_key"
+  },
+  "system_prompt_files": ["system-prompt.md"],
+  "mcp_servers": [],
+  "context_filter": {
+    "include_extensions": [".ts",".tsx",".js",".jsx",".py",".java",".cs",".go",".rs",".md",".txt",".json",".yaml",".yml",".sh",".dockerfile",".tf",".toml"],
+    "exclude_patterns": ["node_modules","dist",".git","build","__pycache__",".bormagi"]
+  }
+}

@@ -15,13 +15,15 @@ import {
   MCPToolDefinition,
   MCPToolCall,
   StreamEvent,
-  ThoughtEvent
+  ThoughtEvent,
+  TokenUsage
 } from '../types';
 
 export type ThoughtCallback = (event: ThoughtEvent) => void;
 export type TextCallback = (delta: string) => void;
 export type ApprovalCallback = (prompt: string) => Promise<boolean>;
 export type DiffCallback = (filePath: string, originalContent: string, newContent: string) => Promise<boolean>;
+export type TokenUsageCallback = (usage: TokenUsage) => void;
 
 export class AgentRunner {
   constructor(
@@ -42,7 +44,8 @@ export class AgentRunner {
     onText: TextCallback,
     onThought: ThoughtCallback,
     onApproval: ApprovalCallback,
-    onDiff: DiffCallback
+    onDiff: DiffCallback,
+    onTokenUsage?: TokenUsageCallback
   ): Promise<void> {
     const agentConfig = this.agentManager.getAgent(agentId);
     if (!agentConfig) {
@@ -122,7 +125,8 @@ export class AgentRunner {
           toolsUsed,
           (text) => { fullResponse += text; },
           (tc) => { pendingToolCall = tc; },
-          () => { continueLoop = pendingToolCall !== null; }
+          () => { continueLoop = pendingToolCall !== null; },
+          onTokenUsage
         );
       }
     }
@@ -140,7 +144,7 @@ export class AgentRunner {
     agentId: string,
     _agentConfigId: string,
     messages: ChatMessage[],
-    tools: MCPToolDefinition[],
+    _tools: MCPToolDefinition[],
     onText: TextCallback,
     onThought: ThoughtCallback,
     onApproval: ApprovalCallback,
@@ -148,9 +152,12 @@ export class AgentRunner {
     toolsUsed: string[],
     accumulateText: (t: string) => void,
     setPendingTool: (tc: { id: string; name: string; input: Record<string, unknown> }) => void,
-    signalContinue: () => void
+    signalContinue: () => void,
+    onTokenUsage?: TokenUsageCallback
   ): Promise<void> {
-    if (event.type === 'text') {
+    if (event.type === 'token_usage') {
+      onTokenUsage?.(event.usage);
+    } else if (event.type === 'text') {
       onText(event.delta);
       accumulateText(event.delta);
     } else if (event.type === 'tool_use') {

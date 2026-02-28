@@ -65,9 +65,14 @@ export class AnthropicProvider implements ILLMProvider {
     let pendingToolUseId: string | undefined;
     let pendingToolName: string | undefined;
     let pendingToolInput = '';
+    let inputTokens = 0;
+    let outputTokens = 0;
 
     for await (const event of stream) {
-      if (event.type === 'content_block_start') {
+      if (event.type === 'message_start') {
+        // Anthropic reports prompt token count at the start of the stream
+        inputTokens = event.message.usage.input_tokens;
+      } else if (event.type === 'content_block_start') {
         if (event.content_block.type === 'tool_use') {
           pendingToolUseId = event.content_block.id;
           pendingToolName = event.content_block.name;
@@ -97,7 +102,13 @@ export class AnthropicProvider implements ILLMProvider {
           pendingToolName = undefined;
           pendingToolInput = '';
         }
+      } else if (event.type === 'message_delta') {
+        // Anthropic reports output token count in the message_delta event
+        outputTokens = event.usage.output_tokens;
       } else if (event.type === 'message_stop') {
+        if (inputTokens > 0 || outputTokens > 0) {
+          yield { type: 'token_usage', usage: { inputTokens, outputTokens } };
+        }
         yield { type: 'done' };
         return;
       }

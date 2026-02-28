@@ -102,7 +102,16 @@ export class GeminiProvider implements ILLMProvider {
 
     const result = await chat.sendMessageStream(lastUserMessage);
 
+    let lastInputTokens = 0;
+    let lastOutputTokens = 0;
+
     for await (const chunk of result.stream) {
+      // Capture token usage from the metadata sent on each chunk (last value wins)
+      if (chunk.usageMetadata) {
+        lastInputTokens = chunk.usageMetadata.promptTokenCount ?? 0;
+        lastOutputTokens = chunk.usageMetadata.candidatesTokenCount ?? 0;
+      }
+
       const candidates = chunk.candidates;
       if (!candidates || candidates.length === 0) {
         continue;
@@ -123,6 +132,10 @@ export class GeminiProvider implements ILLMProvider {
           }
         }
       }
+    }
+
+    if (lastInputTokens > 0 || lastOutputTokens > 0) {
+      yield { type: 'token_usage', usage: { inputTokens: lastInputTokens, outputTokens: lastOutputTokens } };
     }
 
     yield { type: 'done' };
