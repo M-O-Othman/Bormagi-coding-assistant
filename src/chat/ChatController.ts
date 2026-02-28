@@ -31,7 +31,7 @@ export type MessageToWebview =
   | { type: 'thought'; agentId: string; event: ThoughtEvent }
   | { type: 'error'; message: string }
   | { type: 'agent_changed'; agentId: string; agentName: string; providerType: string; model: string; usingDefault: boolean }
-  | { type: 'agent_list'; agents: { id: string; name: string; category: string; providerType: string; model: string; configured: boolean }[]; activeAgentId?: string }
+  | { type: 'agent_list'; agents: { id: string; name: string; category: string; providerType: string; model: string; configured: boolean; usesDefault: boolean }[]; activeAgentId?: string }
   | { type: 'undo_result'; message: string }
   | { type: 'token_usage'; lastInputTokens: number; lastOutputTokens: number; sessionInputTokens: number; sessionOutputTokens: number; model: string }
   | { type: 'model_switched'; model: string }
@@ -212,37 +212,62 @@ export class ChatController {
       return;
     }
     this._activeAgentId = agentId;
-    this.currentModel = agent.provider.model;
-    // Reset session token counters when switching agents
     this.sessionInputTokens = 0;
     this.sessionOutputTokens = 0;
     this.statusBar.update(agent.name);
     await this.auditLogger.logAgentSwitch(agentId);
+
+    // Resolve effective provider — honour useDefaultProvider flag
     const usingDefault = !!(agent.useDefaultProvider || !agent.provider?.type);
+    let effectiveType  = agent.provider.type;
+    let effectiveModel = agent.provider.model;
+    if (usingDefault) {
+      const def = await this.configManager.readDefaultProvider();
+      if (def) {
+        effectiveType  = def.type;
+        effectiveModel = def.model;
+      }
+    }
+    this.currentModel = effectiveModel;
+
     this.post({
       type: 'agent_changed',
       agentId,
       agentName: agent.name,
-      providerType: agent.provider.type,
-      model: agent.provider.model,
+      providerType: effectiveType,
+      model: effectiveModel,
       usingDefault
     });
   }
 
   async refreshAgentList(): Promise<void> {
     await this.agentManager.loadAgents();
+    const defaultProvider = await this.configManager.readDefaultProvider();
+    const defaultKeySet = !!(await this.agentManager.getApiKey('__default__'));
+
     const agents = await Promise.all(this.agentManager.listAgents().map(async a => {
-      const needsKey = (a.provider?.auth_method ?? 'api_key') !== 'gcp_adc';
-      const key = needsKey ? await this.agentManager.getApiKey(a.id) : 'gcp_adc';
-      return {
-        id: a.id,
-        name: a.name,
-        category: a.category,
-        providerType: a.provider.type,
-        model: a.provider.model,
-        configured: !needsKey || !!key,
-      };
+      const usesDefault = !!(a.useDefaultProvider || !a.provider?.type);
+
+      let effectiveType: string;
+      let effectiveModel: string;
+      let configured: boolean;
+
+      if (usesDefault) {
+        effectiveType  = defaultProvider?.type  ?? a.provider.type;
+        effectiveModel = defaultProvider?.model ?? a.provider.model;
+        const needsKey = (defaultProvider?.auth_method ?? 'api_key') !== 'gcp_adc';
+        configured = !needsKey || (!!defaultProvider && defaultKeySet);
+      } else {
+        effectiveType  = a.provider.type;
+        effectiveModel = a.provider.model;
+        const needsKey = (a.provider?.auth_method ?? 'api_key') !== 'gcp_adc';
+        const key = needsKey ? await this.agentManager.getApiKey(a.id) : 'ok';
+        configured = !needsKey || !!key;
+      }
+
+      return { id: a.id, name: a.name, category: a.category, providerType: effectiveType, model: effectiveModel, configured, usesDefault };
     }));
+
     this.post({ type: 'agent_list', agents, activeAgentId: this._activeAgentId });
   }
 

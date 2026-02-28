@@ -632,7 +632,8 @@
     const opt = document.createElement('option');
     opt.value = a.id;
     const ready = a.configured !== false;
-    opt.textContent = (ready ? '' : '⚠ ') + a.name + '  ·  ' + a.providerType + ' / ' + a.model + (ready ? '' : ' — no API key');
+    const defLabel = a.usesDefault ? ' (workspace default)' : '';
+    opt.textContent = (ready ? '' : '⚠ ') + a.name + '  ·  ' + a.providerType + ' / ' + a.model + defLabel + (ready ? '' : ' — no API key');
     if (!ready) opt.disabled = false; // selectable so user can see the message
     return opt;
   }
