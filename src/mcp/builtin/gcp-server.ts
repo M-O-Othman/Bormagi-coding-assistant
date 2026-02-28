@@ -16,9 +16,13 @@ function respond(id: number, result: unknown): void {
   send({ jsonrpc: '2.0', id, result });
 }
 
-function gcloud(args: string, cwd?: string): string {
+/**
+ * Run gcloud with a structured argument array — no shell string interpolation.
+ * This prevents injection via project IDs, service names, or other user-supplied values.
+ */
+function gcloud(args: string[], cwd?: string): string {
   try {
-    return childProcess.execSync(`gcloud ${args}`, {
+    return childProcess.execFileSync('gcloud', args, {
       cwd: cwd ?? workspaceRoot,
       encoding: 'utf8',
       timeout: 120000
@@ -77,13 +81,18 @@ rl.on('line', (line) => {
       let text = '';
 
       if (toolName === 'gcp_auth_status') {
-        const authList = gcloud('auth list');
-        const config = gcloud('config list project');
+        const authList = gcloud(['auth', 'list']);
+        const config = gcloud(['config', 'list', 'project']);
         text = `=== Auth Accounts ===\n${authList}\n=== Active Project ===\n${config}`;
       } else if (toolName === 'gcp_deploy') {
         const deployArgs = args as { command: string; project?: string };
-        const projectFlag = deployArgs.project ? `--project="${deployArgs.project}"` : '';
-        text = gcloud(`${deployArgs.command} ${projectFlag}`.trim());
+        // Split the command string into tokens for safe arg-array execution.
+        // The agent supplies a sub-command string (e.g. "run deploy svc --image ...").
+        // We split on whitespace; quoted arguments are not supported here, but gcloud
+        // flags are always space-separated in practice.
+        const tokens = deployArgs.command.trim().split(/\s+/);
+        if (deployArgs.project) { tokens.push('--project'); tokens.push(deployArgs.project); }
+        text = gcloud(tokens);
       } else {
         throw new Error(`Unknown tool: ${toolName}`);
       }

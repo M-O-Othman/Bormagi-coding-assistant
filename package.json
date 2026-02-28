@@ -28,7 +28,7 @@
     "theme": "dark"
   },
   "activationEvents": [
-    "onStartupFinished"
+    "onView:bormagi.chatView"
   ],
   "main": "./dist/extension.js",
   "contributes": {

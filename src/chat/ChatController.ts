@@ -49,22 +49,15 @@ export class ChatController {
 
   constructor(
     private readonly agentManager: AgentManager,
+    private readonly mcpHost: MCPHost,
     private readonly configManager: ConfigManager,
     private readonly auditLogger: AuditLogger,
-    private readonly statusBar: StatusBar
+    private readonly statusBar: StatusBar,
+    workspaceRoot: string
   ) {
     this.memoryManager = new MemoryManager(configManager);
     this.undoManager = new UndoManager();
     this.skillManager = new SkillManager(configManager);
-
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    const workspaceRoot = workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-
-    const mcpHost: MCPHost = (agentManager as unknown as { mcpHost?: MCPHost }).mcpHost
-      ?? new (require('../mcp/MCPHost').MCPHost)(
-        vscode.extensions.getExtension('bormagi.bormagi')?.extensionPath ?? '',
-        auditLogger
-      ) as MCPHost;
 
     const promptComposer = new PromptComposer(configManager);
 

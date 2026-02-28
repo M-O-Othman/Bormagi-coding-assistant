@@ -10,6 +10,27 @@ export class AuditLogger {
     );
   }
 
+  /**
+   * Sanitise a tool-call input object before writing it to the audit log.
+   * - write_file: replaces `content` with a character count to avoid persisting
+   *   full file contents (which may include secrets, PII, or proprietary code).
+   * - run_command / git_commit / gcp_deploy: kept as-is (commands are short strings).
+   * - All other string values are truncated to 500 chars.
+   */
+  private sanitiseInput(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
+    const safe: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(input)) {
+      if (toolName === 'write_file' && key === 'content' && typeof value === 'string') {
+        safe[key] = `[${value.length} chars redacted]`;
+      } else if (typeof value === 'string' && value.length > 500) {
+        safe[key] = value.slice(0, 500) + '…[truncated]';
+      } else {
+        safe[key] = value;
+      }
+    }
+    return safe;
+  }
+
   async logToolCall(
     serverName: string,
     toolName: string,
@@ -21,7 +42,7 @@ export class AuditLogger {
       server: serverName,
       tool: toolName,
       status: result.isError ? 'ERROR' : 'OK',
-      input
+      input: this.sanitiseInput(toolName, input)
     });
   }
 

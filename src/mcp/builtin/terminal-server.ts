@@ -6,6 +6,7 @@
  * for obtaining user consent before invoking run_command.
  */
 import * as childProcess from 'child_process';
+import * as path from 'path';
 import * as readline from 'readline';
 
 const workspaceRoot = process.argv[2] ?? process.cwd();
@@ -18,8 +19,25 @@ function respond(id: number, result: unknown): void {
   send({ jsonrpc: '2.0', id, result });
 }
 
+/**
+ * Resolve and validate a working-directory argument against the workspace root.
+ * Uses path.relative() to detect traversal — same strategy as the filesystem server.
+ * Falls back to workspaceRoot when no cwd is specified.
+ */
+function resolveCwd(requestedCwd?: string): string {
+  if (!requestedCwd) {
+    return workspaceRoot;
+  }
+  const resolved = path.resolve(workspaceRoot, requestedCwd);
+  const rel = path.relative(workspaceRoot, resolved);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`Access denied: working directory "${requestedCwd}" is outside the workspace.`);
+  }
+  return resolved;
+}
+
 function runCommand(args: { command: string; cwd?: string }): string {
-  const cwd = args.cwd ?? workspaceRoot;
+  const cwd = resolveCwd(args.cwd);
   try {
     const output = childProcess.execSync(args.command, {
       cwd,

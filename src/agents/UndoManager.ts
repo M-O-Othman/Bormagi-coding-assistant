@@ -4,11 +4,12 @@ import { UndoAction } from '../types';
 export class UndoManager {
   private stacks = new Map<string, UndoAction[]>();
 
-  recordFileWrite(agentId: string, filePath: string, previousContent: string): void {
+  recordFileWrite(agentId: string, filePath: string, previousContent: string, fileExisted: boolean): void {
     this.push(agentId, {
       type: 'write_file',
       filePath,
       previousContent,
+      fileExisted,
       description: `Wrote file: ${filePath}`,
       timestamp: new Date()
     });
@@ -32,11 +33,12 @@ export class UndoManager {
 
     if (action.type === 'write_file' && action.filePath !== undefined) {
       const uri = vscode.Uri.file(action.filePath);
-      if (action.previousContent !== undefined) {
-        await vscode.workspace.fs.writeFile(uri, Buffer.from(action.previousContent, 'utf8'));
+      if (action.fileExisted) {
+        // File existed before the write — restore its previous content (may be empty string)
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(action.previousContent ?? '', 'utf8'));
         return `Undone: restored ${action.filePath} to its previous state.`;
       } else {
-        // File was newly created — delete it
+        // File was newly created by the agent — delete it
         try {
           await vscode.workspace.fs.delete(uri);
         } catch {

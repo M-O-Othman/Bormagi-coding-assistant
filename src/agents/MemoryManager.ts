@@ -2,16 +2,47 @@ import { ConfigManager } from '../config/ConfigManager';
 import { ChatMessage } from '../types';
 
 const MAX_HISTORY_MESSAGES = 20;
+// Number of past Memory.md turns to inject as context on session start
+const PERSISTENT_MEMORY_TURNS = 5;
 
 /**
  * Manages per-agent conversation memory.
- * Persists to Memory.md (append-only) and keeps an in-memory session buffer.
+ * - In-memory session buffer: active chat messages for the current session.
+ * - Persistent memory: last N turns loaded from Memory.md at session start, injected
+ *   as a read-only context block so the agent retains long-term decisions.
+ * - Disk: turns are appended to Memory.md via ConfigManager (append-only).
  */
 export class MemoryManager {
   private sessionMessages = new Map<string, ChatMessage[]>();
+  /** Track which agents have already had their persistent memory loaded this session. */
+  private memoryLoaded = new Set<string>();
 
   constructor(private readonly config: ConfigManager) {}
 
+  /**
+   * Returns session history for agentId, loading persisted memory on first call.
+   * Persistent memory is prepended as a single system message so the agent has
+   * access to long-term decisions without it counting as live conversation turns.
+   */
+  async getSessionHistoryWithMemory(agentId: string): Promise<ChatMessage[]> {
+    if (!this.memoryLoaded.has(agentId)) {
+      this.memoryLoaded.add(agentId);
+      const persisted = await this.config.readLastMemoryTurns(agentId, PERSISTENT_MEMORY_TURNS);
+      if (persisted) {
+        if (!this.sessionMessages.has(agentId)) {
+          this.sessionMessages.set(agentId, []);
+        }
+        // Inject as a system context message at the start of the session
+        this.sessionMessages.get(agentId)!.unshift({
+          role: 'system',
+          content: `[Long-term memory — last ${PERSISTENT_MEMORY_TURNS} conversation summaries]\n${persisted}`
+        });
+      }
+    }
+    return this.sessionMessages.get(agentId) ?? [];
+  }
+
+  /** Synchronous accessor used for cases where async is not available. */
   getSessionHistory(agentId: string): ChatMessage[] {
     return this.sessionMessages.get(agentId) ?? [];
   }
@@ -31,6 +62,7 @@ export class MemoryManager {
 
   clearSession(agentId: string): void {
     this.sessionMessages.delete(agentId);
+    this.memoryLoaded.delete(agentId);
   }
 
   async persistTurn(

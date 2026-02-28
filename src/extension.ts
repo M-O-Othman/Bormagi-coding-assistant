@@ -25,7 +25,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return;
   }
 
-  const workspaceRoot = workspaceFolders[0].uri.fsPath;
+  // For multi-root workspaces, prompt the user to choose a folder.
+  // Single-root workspaces skip the picker automatically.
+  let workspaceRoot: string;
+  if (workspaceFolders.length === 1) {
+    workspaceRoot = workspaceFolders[0].uri.fsPath;
+  } else {
+    const pick = await vscode.window.showQuickPick(
+      workspaceFolders.map(f => ({ label: f.name, description: f.uri.fsPath, folder: f })),
+      { title: 'Bormagi — Select workspace folder', placeHolder: 'Choose the root folder for this Bormagi session' }
+    );
+    if (!pick) {
+      return; // User dismissed the picker; activate silently
+    }
+    workspaceRoot = pick.folder.uri.fsPath;
+  }
 
   // ─── Core services ────────────────────────────────────────────────────────
   configManager = new ConfigManager(workspaceRoot);
@@ -35,7 +49,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   mcpHost = new MCPHost(context.extensionPath, auditLogger);
   agentManager = new AgentManager(configManager, secretsManager, mcpHost);
   statusBar = new StatusBar();
-  chatController = new ChatController(agentManager, configManager, auditLogger, statusBar);
+  chatController = new ChatController(agentManager, mcpHost, configManager, auditLogger, statusBar, workspaceRoot);
 
   // ─── Sidebar chat WebView ─────────────────────────────────────────────────
   const chatViewProvider = new ChatViewProvider(context.extensionUri, chatController);

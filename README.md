@@ -237,7 +237,7 @@ All subsequent messages go to the last `@mentioned` agent until you mention anot
 
 **Terminal commands** require explicit confirmation before execution.
 
-**Thought trace** (tool calls and reasoning) is visible under each response — click to expand.
+**Thought trace** (tool calls, tool results, and approval events) is visible under each response — click to expand. This shows every action the agent took, not internal model reasoning text.
 
 ---
 
@@ -332,7 +332,7 @@ Custom MCP servers can be added per-agent in `config.json` under `mcp_servers`.
 - **API keys** are stored in VS Code's `SecretStorage` (OS-level encrypted storage). They are never written to any file on disk.
 - **File writes** are restricted to the workspace root. Agents cannot write outside the project folder.
 - **Terminal commands** and **git commits** require your explicit approval before execution.
-- **Audit log** at `.bormagi/audit.log` records every tool call, file write, and command executed by agents.
+- **Audit log** at `.bormagi/audit.log` records every tool call, file write, and command executed by agents in structured JSON Lines (JSONL) format. File contents in `write_file` calls are redacted to a character count.
 - `.bormagi/` is excluded from source control via `.gitignore`.
 
 ---

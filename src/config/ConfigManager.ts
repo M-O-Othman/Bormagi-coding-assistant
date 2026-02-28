@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import * as path from 'path';
 import { AgentConfig, ProjectConfig } from '../types';
 
@@ -190,18 +191,13 @@ export class ConfigManager {
 
   async appendMemory(agentId: string, entry: string): Promise<void> {
     const filePath = this.agentMemoryPath(agentId);
-    let existing = '';
-    try {
-      const raw = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
-      existing = Buffer.from(raw).toString('utf8');
-    } catch {
-      existing = '# Conversation Memory\n\n';
+    // Seed the file with a header on first write; subsequent writes append only.
+    const exists = fs.existsSync(filePath);
+    if (!exists) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, '# Conversation Memory\n\n', 'utf8');
     }
-    const updated = existing + entry + '\n';
-    await vscode.workspace.fs.writeFile(
-      vscode.Uri.file(filePath),
-      Buffer.from(updated, 'utf8')
-    );
+    fs.appendFileSync(filePath, entry + '\n', 'utf8');
   }
 
   async readMemory(agentId: string): Promise<string> {
@@ -212,6 +208,19 @@ export class ConfigManager {
     } catch {
       return '';
     }
+  }
+
+  /**
+   * Return the last `maxTurns` conversation blocks from Memory.md.
+   * Blocks are separated by the "---" divider written by MemoryManager.persistTurn().
+   * Returns an empty string when no memory file exists yet.
+   */
+  async readLastMemoryTurns(agentId: string, maxTurns = 5): Promise<string> {
+    const raw = await this.readMemory(agentId);
+    if (!raw) { return ''; }
+    const blocks = raw.split(/\n---\n/).filter(b => b.trim().length > 0);
+    const recent = blocks.slice(-maxTurns);
+    return recent.join('\n---\n');
   }
 
   async readDefaultProvider(): Promise<import('../types').ProviderConfig | null> {
@@ -230,17 +239,7 @@ export class ConfigManager {
 
   async appendAuditLog(entry: string): Promise<void> {
     const filePath = this.auditLogPath;
-    let existing = '';
-    try {
-      const raw = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
-      existing = Buffer.from(raw).toString('utf8');
-    } catch {
-      existing = '';
-    }
-    const updated = existing + entry + '\n';
-    await vscode.workspace.fs.writeFile(
-      vscode.Uri.file(filePath),
-      Buffer.from(updated, 'utf8')
-    );
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.appendFileSync(filePath, entry + '\n', 'utf8');
   }
 }

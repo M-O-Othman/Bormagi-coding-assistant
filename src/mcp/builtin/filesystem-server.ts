@@ -25,9 +25,17 @@ function respondError(id: number, message: string): void {
 
 // ─── Guard: only allow paths inside workspace ──────────────────────────────────
 
+/**
+ * Resolves a (possibly relative) path and verifies it stays inside workspaceRoot.
+ * Uses path.relative() rather than startsWith() to prevent sibling-prefix bypass:
+ * e.g. /workspace/../workspace-secret would pass a naive startsWith check but
+ * path.relative() exposes the traversal as a leading "..".
+ */
 function resolveSafe(filePath: string): string {
   const resolved = path.resolve(workspaceRoot, filePath);
-  if (!resolved.startsWith(workspaceRoot)) {
+  const rel = path.relative(workspaceRoot, resolved);
+  // rel starts with '..' if the resolved path escapes the workspace root
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new Error('Access denied: path is outside the workspace.');
   }
   return resolved;

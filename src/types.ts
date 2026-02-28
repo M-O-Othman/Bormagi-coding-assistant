@@ -102,7 +102,18 @@ export type UndoActionType = 'write_file' | 'run_command';
 export interface UndoAction {
   type: UndoActionType;
   filePath?: string;
+  /**
+   * The content the file had before the write.
+   * `undefined` means this action is not a file-write (e.g. run_command).
+   * Use `fileExisted` to distinguish "new file" from "existing empty file".
+   */
   previousContent?: string;
+  /**
+   * True when the file already existed before the agent wrote it.
+   * False when the agent created the file from scratch.
+   * This disambiguates an empty previousContent ('') from a new file (undefined-ish).
+   */
+  fileExisted?: boolean;
   description: string;
   timestamp: Date;
 }

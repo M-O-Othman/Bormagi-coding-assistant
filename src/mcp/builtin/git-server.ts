@@ -1,6 +1,10 @@
 /**
  * Built-in MCP git server (stdio transport).
- * Provides: git_status, git_diff, git_commit, git_log.
+ * Provides: git_status, git_diff, git_commit, git_log, git_create_branch,
+ *           git_push, git_create_pr.
+ *
+ * All git/gh invocations use execFileSync with argument arrays (not shell strings)
+ * to prevent command-injection via file paths, branch names, or commit messages.
  */
 import * as childProcess from 'child_process';
 import * as readline from 'readline';
@@ -15,12 +19,27 @@ function respond(id: number, result: unknown): void {
   send({ jsonrpc: '2.0', id, result });
 }
 
-function git(args: string): string {
+/** Run git with a structured argument array — no shell string interpolation. */
+function git(args: string[]): string {
   try {
-    return childProcess.execSync(`git ${args}`, {
+    return childProcess.execFileSync('git', args, {
       cwd: workspaceRoot,
       encoding: 'utf8',
       timeout: 15000
+    });
+  } catch (err) {
+    const execErr = err as childProcess.SpawnSyncReturns<string>;
+    return (execErr.stdout ?? '') + '\n' + (execErr.stderr ?? '');
+  }
+}
+
+/** Run gh CLI with a structured argument array — no shell string interpolation. */
+function gh(args: string[]): string {
+  try {
+    return childProcess.execFileSync('gh', args, {
+      cwd: workspaceRoot,
+      encoding: 'utf8',
+      timeout: 30000
     });
   } catch (err) {
     const execErr = err as childProcess.SpawnSyncReturns<string>;
@@ -129,45 +148,53 @@ rl.on('line', (line) => {
       let text = '';
 
       if (toolName === 'git_status') {
-        text = git('status');
+        text = git(['status']);
+
       } else if (toolName === 'git_diff') {
         const diffArgs = args as { staged?: boolean; path?: string };
-        const staged = diffArgs.staged ? '--staged' : '';
-        const filePath = diffArgs.path ? `-- "${diffArgs.path}"` : '';
-        text = git(`diff ${staged} ${filePath}`.trim());
+        const gitArgs = ['diff'];
+        if (diffArgs.staged) gitArgs.push('--staged');
+        if (diffArgs.path) { gitArgs.push('--'); gitArgs.push(diffArgs.path); }
+        text = git(gitArgs);
+
       } else if (toolName === 'git_commit') {
         const commitArgs = args as { message: string; files?: string[] };
         if (commitArgs.files && commitArgs.files.length > 0) {
-          const fileList = commitArgs.files.map(f => `"${f}"`).join(' ');
-          git(`add ${fileList}`);
+          git(['add', '--', ...commitArgs.files]);
         } else {
-          git('add -A');
+          git(['add', '-A']);
         }
-        text = git(`commit -m "${commitArgs.message.replace(/"/g, '\\"')}"`);
+        text = git(['commit', '-m', commitArgs.message]);
+
       } else if (toolName === 'git_log') {
         const logArgs = args as { count?: number };
-        const count = logArgs.count ?? 10;
-        text = git(`log --oneline -n ${count}`);
+        const count = String(logArgs.count ?? 10);
+        text = git(['log', '--oneline', `-n${count}`]);
+
       } else if (toolName === 'git_create_branch') {
         const branchArgs = args as { name: string; checkout?: boolean };
         const shouldCheckout = branchArgs.checkout !== false;
         text = shouldCheckout
-          ? git(`checkout -b ${branchArgs.name}`)
-          : git(`branch ${branchArgs.name}`);
+          ? git(['checkout', '-b', branchArgs.name])
+          : git(['branch', branchArgs.name]);
+
       } else if (toolName === 'git_push') {
         const pushArgs = args as { remote?: string; branch?: string; set_upstream?: boolean };
         const remote = pushArgs.remote ?? 'origin';
-        const branch = pushArgs.branch ?? '';
-        const upstream = pushArgs.set_upstream ? '--set-upstream ' : '';
-        text = git(`push ${upstream}${remote}${branch ? ' ' + branch : ''}`.trim());
+        const gitArgs = ['push'];
+        if (pushArgs.set_upstream) gitArgs.push('--set-upstream');
+        gitArgs.push(remote);
+        if (pushArgs.branch) gitArgs.push(pushArgs.branch);
+        text = git(gitArgs);
+
       } else if (toolName === 'git_create_pr') {
         const prArgs = args as { title: string; body?: string; base?: string; draft?: boolean };
-        const title = prArgs.title.replace(/"/g, '\\"');
-        const body = (prArgs.body ?? '').replace(/"/g, '\\"');
-        const base = prArgs.base ? `--base "${prArgs.base}"` : '';
-        const draft = prArgs.draft ? '--draft' : '';
-        const cmd = `pr create --title "${title}"${body ? ` --body "${body}"` : ''} ${base} ${draft}`.trim();
-        text = childProcess.execSync(`gh ${cmd}`, { cwd: workspaceRoot, encoding: 'utf8', timeout: 30000 });
+        const ghArgs = ['pr', 'create', '--title', prArgs.title];
+        if (prArgs.body) { ghArgs.push('--body'); ghArgs.push(prArgs.body); }
+        if (prArgs.base) { ghArgs.push('--base'); ghArgs.push(prArgs.base); }
+        if (prArgs.draft) ghArgs.push('--draft');
+        text = gh(ghArgs);
+
       } else {
         throw new Error(`Unknown tool: ${toolName}`);
       }

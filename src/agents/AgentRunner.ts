@@ -96,10 +96,11 @@ export class AgentRunner {
     // Build workspace context summary
     const contextSummary = await this.buildContextSummary(agentConfig);
 
-    // Assemble message history
+    // Assemble message history (loads persisted Memory.md on first call for this agent)
+    const sessionHistory = await this.memoryManager.getSessionHistoryWithMemory(agentId);
     const messages: ChatMessage[] = [
       { role: 'system', content: fullSystem },
-      ...this.memoryManager.getSessionHistory(agentId)
+      ...sessionHistory
     ];
 
     // Include context as a system message after history
@@ -275,13 +276,16 @@ export class AgentRunner {
   ): Promise<string> {
     const filePath = path.join(this.workspaceRoot, args.path);
 
-    // Read existing content for undo
+    // Read existing content for undo — track whether the file existed to distinguish
+    // an empty file ('') from a brand-new file (so undo restores correctly in both cases)
     let originalContent = '';
+    let fileExisted = false;
     try {
       const raw = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
       originalContent = Buffer.from(raw).toString('utf8');
+      fileExisted = true;
     } catch {
-      originalContent = ''; // New file
+      fileExisted = false; // File does not yet exist
     }
 
     // Show diff and request approval
@@ -292,7 +296,7 @@ export class AgentRunner {
     }
 
     // Record undo state before writing
-    this.undoManager.recordFileWrite(agentId, filePath, originalContent || undefined!);
+    this.undoManager.recordFileWrite(agentId, filePath, originalContent, fileExisted);
 
     // Apply the write via the filesystem MCP server
     const serverName = 'filesystem';

@@ -1,17 +1,36 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 
+// Only plain-text / source formats are included.
+// Binary formats (.doc, .docx, .pdf) are excluded — they produce garbled UTF-8 and
+// add noise to agent context without providing useful information.
 const DEFAULT_INCLUDE_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.cs', '.cpp', '.c', '.h',
   '.go', '.rs', '.rb', '.php', '.swift', '.kt', '.scala', '.r', '.m',
   '.html', '.htm', '.css', '.scss', '.sass', '.less',
   '.md', '.txt', '.json', '.yaml', '.yml', '.toml', '.xml', '.sql',
-  '.csv', '.tsv', '.doc', '.docx', '.pdf'
+  '.csv', '.tsv', '.sh', '.bash', '.zsh', '.ps1', '.tf', '.hcl'
 ]);
 
+// Directory-level exclusions (applied by name, not glob).
 const DEFAULT_EXCLUDE_PATTERNS = [
   'node_modules', '.git', 'dist', 'build', '__pycache__', '.bormagi',
   'out', 'target', 'bin', 'obj', '.venv', 'venv', 'env'
+];
+
+// File-name patterns that likely contain secrets or PII.
+// Files matching any of these are silently skipped even if their extension is allowed.
+const SENSITIVE_FILENAME_PATTERNS: RegExp[] = [
+  /^\.env(\..+)?$/i,           // .env, .env.local, .env.production …
+  /credentials?/i,             // credentials.json, aws_credentials …
+  /secret/i,                   // secrets.yml, secret.key …
+  /private[\._-]?key/i,        // private_key.pem, privatekey.json …
+  /\.pem$/i,                   // PEM certificates / private keys
+  /\.p12$/i,                   // PKCS#12 keystores
+  /\.pfx$/i,                   // PFX keystores
+  /service[\._-]?account/i,    // GCP service account JSON files
+  /api[\._-]?key/i,            // api_key.txt …
+  /auth[\._-]?token/i          // auth_token files
 ];
 
 export interface ScannedFile {
@@ -81,6 +100,10 @@ export class FileScanner {
       } else if (type === vscode.FileType.File) {
         const ext = path.extname(name).toLowerCase();
         if (!includeExt.has(ext)) {
+          continue;
+        }
+        // Skip files whose name matches a known sensitive-data pattern
+        if (SENSITIVE_FILENAME_PATTERNS.some(p => p.test(name))) {
           continue;
         }
 
