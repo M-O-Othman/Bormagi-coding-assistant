@@ -7,6 +7,9 @@
       "command": "npm run compile",
       "options": {
         "cwd": "${workspaceFolder}",
+        "env": {
+          "PATH": "${workspaceFolder}/node_modules/.bin;${env:PATH}"
+        },
         "shell": {
           "executable": "cmd.exe",
           "args": ["/d", "/c"]
