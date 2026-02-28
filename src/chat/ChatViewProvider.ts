@@ -31,11 +31,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     // Handle messages from the webview
-    webviewView.webview.onDidReceiveMessage(async (message: { type: string; text?: string }) => {
+    webviewView.webview.onDidReceiveMessage(async (message: { type: string; text?: string; agentId?: string }) => {
       if (message.type === 'user_message' && message.text) {
         await this.controller.handleUserMessage(message.text);
       } else if (message.type === 'refresh_agents') {
         await this.controller.refreshAgentList();
+      } else if (message.type === 'select_agent' && message.agentId) {
+        await this.controller.setActiveAgent(message.agentId);
       }
     });
   }

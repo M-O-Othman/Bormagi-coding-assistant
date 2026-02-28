@@ -19,8 +19,8 @@ export type MessageToWebview =
   | { type: 'text_done'; agentId: string }
   | { type: 'thought'; agentId: string; event: ThoughtEvent }
   | { type: 'error'; message: string }
-  | { type: 'agent_changed'; agentId: string; agentName: string }
-  | { type: 'agent_list'; agents: { id: string; name: string; category: string }[] }
+  | { type: 'agent_changed'; agentId: string; agentName: string; providerType: string; model: string }
+  | { type: 'agent_list'; agents: { id: string; name: string; category: string; providerType: string; model: string }[]; activeAgentId?: string }
   | { type: 'undo_result'; message: string };
 
 export class ChatController {
@@ -137,7 +137,13 @@ export class ChatController {
     this._activeAgentId = agentId;
     this.statusBar.update(agent.name);
     await this.auditLogger.logAgentSwitch(agentId);
-    this.post({ type: 'agent_changed', agentId, agentName: agent.name });
+    this.post({
+      type: 'agent_changed',
+      agentId,
+      agentName: agent.name,
+      providerType: agent.provider.type,
+      model: agent.provider.model
+    });
   }
 
   async refreshAgentList(): Promise<void> {
@@ -145,9 +151,11 @@ export class ChatController {
     const agents = this.agentManager.listAgents().map(a => ({
       id: a.id,
       name: a.name,
-      category: a.category
+      category: a.category,
+      providerType: a.provider.type,
+      model: a.provider.model
     }));
-    this.post({ type: 'agent_list', agents });
+    this.post({ type: 'agent_list', agents, activeAgentId: this._activeAgentId });
   }
 
   private post(msg: MessageToWebview): void {

@@ -4,465 +4,739 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
-  <title>Bormagi Chat</title>
+  <title>Bormagi</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --radius-sm: 4px;
+      --radius-md: 8px;
+      --transition: 140ms ease;
+    }
 
     body {
       font-family: var(--vscode-font-family);
-      font-size: var(--vscode-font-size);
+      font-size: 13px;
       color: var(--vscode-foreground);
       background: var(--vscode-sideBar-background, var(--vscode-editor-background));
       display: flex;
       flex-direction: column;
       height: 100vh;
       overflow: hidden;
+      line-height: 1.5;
     }
 
-    /* ── Header ── */
-    #header {
+    /* ── TOOLBAR ──────────────────────────────────────────────────────────── */
+
+    #toolbar {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      padding: 8px 12px;
-      border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, #333);
-      background: var(--vscode-sideBarSectionHeader-background);
+      gap: 6px;
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.2));
+      background: var(--vscode-sideBarSectionHeader-background, var(--vscode-editor-background));
       flex-shrink: 0;
     }
 
-    #agent-badge {
-      font-weight: 600;
-      font-size: 12px;
-      color: var(--vscode-badge-foreground);
-      background: var(--vscode-badge-background);
-      padding: 2px 8px;
-      border-radius: 10px;
+    #brand {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+      opacity: 0.4;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
 
-    #header-actions button {
+    #agent-selector-wrap {
+      flex: 1;
+      min-width: 0;
+      position: relative;
+    }
+
+    #agent-selector {
+      width: 100%;
+      background: var(--vscode-dropdown-background, var(--vscode-input-background));
+      color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+      border: 1px solid var(--vscode-dropdown-border, rgba(128,128,128,0.35));
+      border-radius: var(--radius-sm);
+      padding: 4px 22px 4px 8px;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: border-color var(--transition);
+    }
+    #agent-selector:focus {
+      outline: 1px solid var(--vscode-focusBorder);
+      border-color: var(--vscode-focusBorder);
+    }
+    #agent-selector-wrap::after {
+      content: '';
+      position: absolute;
+      right: 7px; top: 50%;
+      transform: translateY(-50%);
+      border: 4px solid transparent;
+      border-top-color: currentColor;
+      opacity: 0.45;
+      pointer-events: none;
+    }
+
+    #provider-pill {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 10px;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      white-space: nowrap;
+      flex-shrink: 0;
+      opacity: 0;
+      transition: opacity var(--transition);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    #provider-pill.visible { opacity: 1; }
+
+    .tb-btn {
       background: none;
       border: none;
       color: var(--vscode-foreground);
       cursor: pointer;
-      font-size: 12px;
-      padding: 2px 6px;
-      opacity: 0.7;
+      padding: 3px;
+      border-radius: var(--radius-sm);
+      opacity: 0.4;
+      transition: opacity var(--transition), background var(--transition);
+      flex-shrink: 0;
+      display: flex; align-items: center;
     }
-    #header-actions button:hover { opacity: 1; }
+    .tb-btn:hover { opacity: 0.9; background: var(--vscode-toolbar-hoverBackground); }
+    .tb-btn svg { display: block; }
 
-    /* ── Messages area ── */
+    /* ── MESSAGES ─────────────────────────────────────────────────────────── */
+
     #messages {
       flex: 1;
       overflow-y: auto;
-      padding: 12px;
+      padding: 14px 10px;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 14px;
     }
+
+    #empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      opacity: 0.3;
+      padding: 32px 20px;
+      text-align: center;
+    }
+    .empty-icon { font-size: 28px; }
+    .empty-title { font-size: 13px; font-weight: 600; }
+    .empty-sub { font-size: 11px; }
 
     .msg {
       display: flex;
       flex-direction: column;
-      gap: 4px;
-      max-width: 100%;
+      gap: 3px;
+      animation: fadeUp 170ms ease;
+    }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(5px); }
+      to   { opacity: 1; transform: none; }
     }
 
-    .msg-role {
-      font-size: 11px;
-      font-weight: 600;
-      opacity: 0.6;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+    .msg-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 3px;
+    }
+
+    .msg-avatar {
+      width: 17px; height: 17px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 9px; font-weight: 700;
+      flex-shrink: 0;
+    }
+    .msg.user      .msg-avatar { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+    .msg.assistant .msg-avatar { background: var(--vscode-badge-background);  color: var(--vscode-badge-foreground); }
+    .msg.system    .msg-avatar { background: var(--vscode-descriptionForeground); color: var(--vscode-editor-background); }
+    .msg.error     .msg-avatar { background: var(--vscode-inputValidation-errorBorder); color: #fff; }
+
+    .msg-sender { font-size: 11px; font-weight: 600; opacity: 0.6; }
+    .msg-time   { font-size: 10px; opacity: 0.3; margin-left: auto; }
+
+    .msg-bubble {
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      border: 1px solid transparent;
+    }
+
+    .msg.user .msg-bubble {
+      background: var(--vscode-input-background);
+      border-color: var(--vscode-input-border, rgba(128,128,128,0.25));
+      margin-left: 23px;
+    }
+    .msg.assistant .msg-bubble {
+      background: var(--vscode-editorWidget-background, rgba(128,128,128,0.06));
+      border-color: var(--vscode-widget-border, rgba(128,128,128,0.14));
+    }
+    .msg.system .msg-bubble {
+      background: var(--vscode-editorWidget-background, rgba(128,128,128,0.06));
+      border-color: var(--vscode-widget-border, rgba(128,128,128,0.14));
+    }
+    .msg.error .msg-bubble {
+      background: var(--vscode-inputValidation-errorBackground);
+      border-color: var(--vscode-inputValidation-errorBorder);
     }
 
     .msg-content {
-      padding: 8px 10px;
-      border-radius: 6px;
+      padding: 9px 12px;
       white-space: pre-wrap;
       word-break: break-word;
-      line-height: 1.5;
       font-size: 13px;
+      line-height: 1.6;
+    }
+    .msg.error .msg-content { color: var(--vscode-errorForeground); }
+
+    /* ── THOUGHT TRACE ────────────────────────────────────────────────────────
+       Positioned ABOVE the response text inside the assistant bubble.
+       Collapsed by default; user clicks to expand.                          */
+
+    .thought-strip {
+      border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.14));
+      background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.1));
     }
 
-    .msg.user .msg-content {
-      background: var(--vscode-input-background);
-      border: 1px solid var(--vscode-input-border, #555);
-      align-self: flex-end;
-      max-width: 88%;
-    }
-
-    .msg.assistant .msg-content {
-      background: var(--vscode-editorWidget-background, rgba(255,255,255,0.04));
-      border: 1px solid var(--vscode-panel-border, #444);
-      align-self: flex-start;
-    }
-
-    .msg.error .msg-content {
-      background: var(--vscode-inputValidation-errorBackground);
-      border: 1px solid var(--vscode-inputValidation-errorBorder);
-      color: var(--vscode-errorForeground);
-    }
-
-    /* ── Thought trace ── */
-    .thought-container {
-      margin-top: 4px;
-    }
-
-    .thought-toggle {
-      background: none;
-      border: 1px solid var(--vscode-panel-border, #555);
-      color: var(--vscode-descriptionForeground);
-      font-size: 11px;
-      padding: 2px 8px;
-      border-radius: 4px;
+    .thought-hd {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 10px;
       cursor: pointer;
-      opacity: 0.7;
+      user-select: none;
+      transition: background var(--transition);
     }
-    .thought-toggle:hover { opacity: 1; }
+    .thought-hd:hover { background: var(--vscode-toolbar-hoverBackground); }
 
-    .thought-list {
-      display: none;
-      margin-top: 6px;
-      border-left: 2px solid var(--vscode-panel-border, #555);
-      padding-left: 10px;
-      font-size: 11px;
-      opacity: 0.75;
+    .thought-hd-icon  { font-size: 11px; opacity: 0.5; flex-shrink: 0; }
+    .thought-hd-label { font-size: 11px; font-weight: 600; opacity: 0.6; flex: 1; }
+    .thought-chevron  {
+      font-size: 9px; opacity: 0.35;
+      transition: transform var(--transition);
+      flex-shrink: 0;
     }
-    .thought-list.open { display: flex; flex-direction: column; gap: 4px; }
+    .thought-strip.open .thought-chevron { transform: rotate(180deg); }
+
+    .thought-body {
+      display: none;
+      flex-direction: column;
+      border-top: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.1));
+    }
+    .thought-strip.open .thought-body { display: flex; }
 
     .thought-item {
       display: flex;
       flex-direction: column;
-      gap: 1px;
+      gap: 4px;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.07));
     }
-    .thought-label { font-weight: 600; }
+    .thought-item:last-child { border-bottom: none; }
+
+    .thought-item-row {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+    }
+    .t-icon  { font-size: 10px; opacity: 0.55; }
+    .t-label { font-weight: 600; opacity: 0.75; }
+
     .thought-detail {
-      font-family: var(--vscode-editor-font-family, monospace);
+      font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
       font-size: 10px;
+      opacity: 0.6;
       white-space: pre-wrap;
-      opacity: 0.8;
-      background: var(--vscode-textCodeBlock-background);
-      padding: 2px 4px;
-      border-radius: 3px;
+      background: var(--vscode-editor-background);
+      padding: 4px 8px;
+      border-radius: var(--radius-sm);
+      border-left: 2px solid var(--vscode-badge-background);
+      max-height: 100px;
+      overflow-y: auto;
     }
 
-    /* ── Typing indicator ── */
-    #typing {
+    /* ── CURSOR ──────────────────────────────────────────────────────────────*/
+
+    .cursor {
+      display: inline-block;
+      width: 2px; height: 13px;
+      background: var(--vscode-foreground);
+      margin-left: 1px;
+      vertical-align: text-bottom;
+      animation: blink 750ms step-end infinite;
+      opacity: 0.6;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* ── TYPING INDICATOR ────────────────────────────────────────────────────*/
+
+    #typing-row {
       display: none;
-      padding: 0 12px 6px;
-      font-size: 12px;
-      opacity: 0.5;
-      font-style: italic;
+      align-items: center;
+      gap: 8px;
+      padding: 2px 14px 4px;
     }
+    .typing-dots { display: flex; gap: 3px; align-items: center; }
+    .typing-dots span {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: var(--vscode-badge-background);
+      opacity: 0.55;
+      animation: tdot 1.1s ease-in-out infinite;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: .18s; }
+    .typing-dots span:nth-child(3) { animation-delay: .36s; }
+    @keyframes tdot { 0%,60%,100% { transform: none; } 30% { transform: translateY(-4px); } }
+    .typing-label { font-size: 11px; opacity: 0.4; font-style: italic; }
 
-    /* ── Input area ── */
+    /* ── INPUT ───────────────────────────────────────────────────────────────*/
+
     #input-area {
-      padding: 10px 12px;
-      border-top: 1px solid var(--vscode-sideBarSectionHeader-border, #333);
+      padding: 8px 10px 7px;
+      border-top: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.2));
       background: var(--vscode-sideBar-background, var(--vscode-editor-background));
       flex-shrink: 0;
     }
 
-    #input-row {
+    #input-box {
       display: flex;
-      gap: 6px;
       align-items: flex-end;
+      gap: 5px;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.35));
+      border-radius: var(--radius-md);
+      padding: 5px 5px 5px 10px;
+      transition: border-color var(--transition);
     }
+    #input-box:focus-within { border-color: var(--vscode-focusBorder); }
 
     #user-input {
       flex: 1;
-      min-height: 36px;
-      max-height: 120px;
+      min-height: 22px; max-height: 120px;
       resize: none;
-      background: var(--vscode-input-background);
+      background: transparent;
       color: var(--vscode-input-foreground);
-      border: 1px solid var(--vscode-input-border, #555);
-      border-radius: 4px;
-      padding: 7px 10px;
+      border: none;
+      padding: 0;
       font-family: inherit;
       font-size: 13px;
       overflow-y: auto;
+      line-height: 1.5;
     }
-    #user-input:focus { outline: 1px solid var(--vscode-focusBorder); }
-    #user-input::placeholder { opacity: 0.5; }
+    #user-input:focus { outline: none; }
+    #user-input::placeholder { color: var(--vscode-input-placeholderForeground); opacity: 0.55; }
 
     #send-btn {
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
       border: none;
-      border-radius: 4px;
-      padding: 7px 14px;
-      font-size: 13px;
+      border-radius: var(--radius-sm);
+      width: 26px; height: 26px;
       cursor: pointer;
-      white-space: nowrap;
-      align-self: flex-end;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      transition: background var(--transition), opacity var(--transition);
     }
-    #send-btn:hover { background: var(--vscode-button-hoverBackground); }
-    #send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    #send-btn:hover   { background: var(--vscode-button-hoverBackground); }
+    #send-btn:disabled { opacity: 0.38; cursor: not-allowed; }
 
-    #hint {
-      font-size: 11px;
-      opacity: 0.45;
-      margin-top: 5px;
+    #input-hint {
+      font-size: 10px;
+      opacity: 0.28;
+      margin-top: 4px;
+      padding: 0 2px;
     }
 
-    /* ── Scrollbar ── */
-    ::-webkit-scrollbar { width: 5px; }
+    /* ── SCROLLBAR ───────────────────────────────────────────────────────────*/
+
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); border-radius: 2px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
   </style>
 </head>
 <body>
 
-<div id="header">
-  <span id="agent-badge">No agent selected</span>
-  <div id="header-actions">
-    <button onclick="refreshAgents()" title="Refresh agent list">&#8635;</button>
-    <button onclick="clearChat()" title="Clear chat">&#10005;</button>
+<!-- ── TOOLBAR ─────────────────────────────────────────────────────────────── -->
+<div id="toolbar">
+  <span id="brand">Bormagi</span>
+
+  <div id="agent-selector-wrap">
+    <select id="agent-selector" onchange="onDropdownChange()">
+      <option value="">— Select agent —</option>
+    </select>
+  </div>
+
+  <span id="provider-pill"></span>
+
+  <button class="tb-btn" onclick="refreshAgents()" title="Refresh agents">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.1-3.3l-1.2.9A4 4 0 1 0 12 8h-2l2.5-2.5L15 8h-1.5z"/>
+    </svg>
+  </button>
+
+  <button class="tb-btn" onclick="clearChat()" title="Clear conversation">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M10.12 1H5.88L5 2H2v1h12V2h-3l-.88-1zM4 5v9a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V5H4zm2 2h1v6H6V7zm3 0h1v6H9V7z"/>
+    </svg>
+  </button>
+</div>
+
+<!-- ── MESSAGES ────────────────────────────────────────────────────────────── -->
+<div id="messages">
+  <div id="empty-state">
+    <div class="empty-icon">◈</div>
+    <div class="empty-title">No conversation yet</div>
+    <div class="empty-sub">Select an agent above, then type a message.</div>
   </div>
 </div>
 
-<div id="messages"></div>
+<!-- ── TYPING ──────────────────────────────────────────────────────────────── -->
+<div id="typing-row">
+  <div class="typing-dots"><span></span><span></span><span></span></div>
+  <span class="typing-label" id="typing-label">Agent is thinking…</span>
+</div>
 
-<div id="typing">Agent is thinking…</div>
-
+<!-- ── INPUT ───────────────────────────────────────────────────────────────── -->
 <div id="input-area">
-  <div id="input-row">
-    <textarea id="user-input" rows="1" placeholder="Type a message… use @agent-name to switch agents, /undo to undo last change"></textarea>
-    <button id="send-btn" onclick="sendMessage()">Send</button>
+  <div id="input-box">
+    <textarea id="user-input" rows="1"
+      placeholder="Message… @agent-name to switch · /undo to revert"></textarea>
+    <button id="send-btn" onclick="sendMessage()" title="Send (Enter)">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M1.5 1.5l13 6.5-13 6.5V9.75l9.5-1.75-9.5-1.75V1.5z"/>
+      </svg>
+    </button>
   </div>
-  <div id="hint">Enter to send · Shift+Enter for new line</div>
+  <div id="input-hint">Enter — send &nbsp;·&nbsp; Shift+Enter — new line</div>
 </div>
 
 <script>
   const vscode = acquireVsCodeApi();
 
-  const messagesEl = document.getElementById('messages');
-  const inputEl = document.getElementById('user-input');
-  const sendBtn = document.getElementById('send-btn');
-  const typingEl = document.getElementById('typing');
-  const agentBadgeEl = document.getElementById('agent-badge');
+  const messagesEl  = document.getElementById('messages');
+  const inputEl     = document.getElementById('user-input');
+  const sendBtn     = document.getElementById('send-btn');
+  const typingRow   = document.getElementById('typing-row');
+  const typingLabel = document.getElementById('typing-label');
+  const agentSel    = document.getElementById('agent-selector');
+  const pillEl      = document.getElementById('provider-pill');
 
-  let currentAssistantMsg = null;
-  let currentThoughtList = null;
-  let isStreaming = false;
-  let thoughtCount = 0;
+  let currentContentEl    = null;   // .msg-content being streamed
+  let currentThoughtStrip = null;   // .thought-strip of current row
+  let currentCursor       = null;   // blinking cursor node
+  let isStreaming         = false;
+  let activeAgentId       = null;
+  let agentList           = [];
 
-  // ── Input handling ──────────────────────────────────────────────────────────
+  // ── Input auto-resize ──────────────────────────────────────────────────────
 
-  inputEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
-    // Auto-resize
-    setTimeout(() => {
-      inputEl.style.height = 'auto';
-      inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
-    }, 0);
+  inputEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    setTimeout(resize, 0);
   });
-
-  inputEl.addEventListener('input', () => {
+  inputEl.addEventListener('input', resize);
+  function resize() {
     inputEl.style.height = 'auto';
     inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
-  });
+  }
+
+  // ── Send ───────────────────────────────────────────────────────────────────
 
   function sendMessage() {
     const text = inputEl.value.trim();
     if (!text || isStreaming) return;
-
-    appendUserMessage(text);
+    hideEmpty();
+    appendUserMsg(text);
     inputEl.value = '';
     inputEl.style.height = 'auto';
-    setStreaming(true);
-
+    beginStream();
     vscode.postMessage({ type: 'user_message', text });
   }
 
-  // ── Message rendering ───────────────────────────────────────────────────────
+  // ── Agent dropdown ─────────────────────────────────────────────────────────
 
-  function appendUserMessage(text) {
-    const div = document.createElement('div');
-    div.className = 'msg user';
-    div.innerHTML =
-      '<div class="msg-role">You</div>' +
-      '<div class="msg-content">' + escapeHtml(text) + '</div>';
-    messagesEl.appendChild(div);
-    scrollToBottom();
+  function onDropdownChange() {
+    const id = agentSel.value;
+    if (!id) return;
+    vscode.postMessage({ type: 'select_agent', agentId: id });
   }
 
-  function startAssistantMessage(agentId) {
-    thoughtCount = 0;
-    const div = document.createElement('div');
-    div.className = 'msg assistant';
-    div.id = 'streaming-msg';
-    div.innerHTML =
-      '<div class="msg-role">' + escapeHtml(agentId) + '</div>' +
-      '<div class="msg-content" id="streaming-content"></div>' +
-      '<div class="thought-container" id="thought-container"></div>';
-    messagesEl.appendChild(div);
-    currentAssistantMsg = document.getElementById('streaming-content');
-    currentThoughtList = null;
-    scrollToBottom();
-  }
-
-  function appendTextDelta(delta) {
-    if (!currentAssistantMsg) return;
-    currentAssistantMsg.textContent += delta;
-    scrollToBottom();
-  }
-
-  function finaliseAssistantMessage() {
-    const el = document.getElementById('streaming-msg');
-    if (el) el.removeAttribute('id');
-    currentAssistantMsg = null;
-    currentThoughtList = null;
-  }
-
-  function appendThought(agentId, event) {
-    const container = document.getElementById('thought-container');
-    if (!container) return;
-
-    if (!currentThoughtList) {
-      thoughtCount++;
-      const toggleBtn = document.createElement('button');
-      toggleBtn.className = 'thought-toggle';
-      const listId = 'thoughts-' + Date.now();
-      toggleBtn.textContent = 'Show thought trace (' + thoughtCount + ')';
-      toggleBtn.onclick = () => {
-        const list = document.getElementById(listId);
-        if (list) {
-          const open = list.classList.toggle('open');
-          toggleBtn.textContent = (open ? 'Hide' : 'Show') + ' thought trace (' + currentThoughtCount(listId) + ')';
-        }
-      };
-      const list = document.createElement('div');
-      list.className = 'thought-list';
-      list.id = listId;
-      container.appendChild(toggleBtn);
-      container.appendChild(list);
-      currentThoughtList = list;
+  function populateDropdown(list, activeId) {
+    agentList = list;
+    agentSel.innerHTML = '<option value="">— Select agent —</option>';
+    list.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      // Show: "Advanced Coder  ·  anthropic / claude-sonnet-4-6"
+      opt.textContent = a.name + '  ·  ' + a.providerType + ' / ' + a.model;
+      agentSel.appendChild(opt);
+    });
+    if (activeId) {
+      agentSel.value = activeId;
+      setProviderPill(activeId);
     }
+  }
+
+  function setProviderPill(agentId) {
+    const a = agentList.find(x => x.id === agentId);
+    if (a) {
+      pillEl.textContent = a.providerType;
+      pillEl.classList.add('visible');
+    } else {
+      pillEl.classList.remove('visible');
+    }
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  function hideEmpty() {
+    const e = document.getElementById('empty-state');
+    if (e) e.remove();
+  }
+
+  function ts() {
+    const d = new Date();
+    return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+  }
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── Append user message ────────────────────────────────────────────────────
+
+  function appendUserMsg(text) {
+    const row = document.createElement('div');
+    row.className = 'msg user';
+    row.innerHTML =
+      '<div class="msg-header">' +
+        '<div class="msg-avatar">U</div>' +
+        '<span class="msg-sender">You</span>' +
+        '<span class="msg-time">' + ts() + '</span>' +
+      '</div>' +
+      '<div class="msg-bubble"><div class="msg-content">' + esc(text) + '</div></div>';
+    messagesEl.appendChild(row);
+    scrollEnd();
+  }
+
+  // ── Start assistant row ────────────────────────────────────────────────────
+
+  function beginStream() {
+    isStreaming = true;
+    sendBtn.disabled = true;
+    typingRow.style.display = 'flex';
+    typingLabel.textContent = (activeAgentId || 'Agent') + ' is thinking…';
+
+    const label    = activeAgentId || 'Agent';
+    const initials = label.slice(0, 2).toUpperCase();
+
+    const row = document.createElement('div');
+    row.className = 'msg assistant';
+    row.id = 'stream-row';
+
+    // ── Thought strip (ABOVE the text) ──
+    const strip = document.createElement('div');
+    strip.className = 'thought-strip';
+    strip.innerHTML =
+      '<div class="thought-hd" onclick="toggleStrip(this)">' +
+        '<span class="thought-hd-icon">⚙</span>' +
+        '<span class="thought-hd-label">0 tool actions</span>' +
+        '<span class="thought-chevron">▼</span>' +
+      '</div>' +
+      '<div class="thought-body"></div>';
+
+    // ── Text bubble ──
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    const content = document.createElement('div');
+    content.className = 'msg-content';
+    content.id = 'stream-content';
+    bubble.appendChild(content);
+
+    row.innerHTML =
+      '<div class="msg-header">' +
+        '<div class="msg-avatar">' + esc(initials) + '</div>' +
+        '<span class="msg-sender">' + esc(label) + '</span>' +
+        '<span class="msg-time">' + ts() + '</span>' +
+      '</div>';
+    row.appendChild(strip);
+    row.appendChild(bubble);
+    messagesEl.appendChild(row);
+
+    currentContentEl    = content;
+    currentThoughtStrip = strip;
+
+    // blinking cursor
+    currentCursor = document.createElement('span');
+    currentCursor.className = 'cursor';
+    content.appendChild(currentCursor);
+
+    scrollEnd();
+  }
+
+  window.toggleStrip = function(hd) {
+    hd.closest('.thought-strip').classList.toggle('open');
+  };
+
+  // ── Stream text delta ──────────────────────────────────────────────────────
+
+  function appendDelta(delta) {
+    if (!currentContentEl || !currentCursor) return;
+    currentCursor.insertAdjacentText('beforebegin', delta);
+    scrollEnd();
+  }
+
+  // ── Append thought event ───────────────────────────────────────────────────
+
+  function appendThought(event) {
+    if (!currentThoughtStrip) return;
+
+    const body    = currentThoughtStrip.querySelector('.thought-body');
+    const counter = currentThoughtStrip.querySelector('.thought-hd-label');
+
+    const icon = event.type === 'tool_call'   ? '→' :
+                 event.type === 'tool_result'  ? '←' :
+                 event.type === 'thinking'     ? '◎' : '⚠';
 
     const item = document.createElement('div');
     item.className = 'thought-item';
     item.innerHTML =
-      '<span class="thought-label">' + escapeHtml(event.label) + '</span>' +
-      (event.detail ? '<span class="thought-detail">' + escapeHtml(event.detail) + '</span>' : '');
-    currentThoughtList.appendChild(item);
+      '<div class="thought-item-row">' +
+        '<span class="t-icon">' + icon + '</span>' +
+        '<span class="t-label">' + esc(event.label) + '</span>' +
+      '</div>' +
+      (event.detail
+        ? '<div class="thought-detail">' + esc(String(event.detail).slice(0, 600)) + '</div>'
+        : '');
 
-    // Update toggle button count
-    const toggle = currentThoughtList.previousElementSibling;
-    if (toggle) {
-      const open = currentThoughtList.classList.contains('open');
-      const count = currentThoughtList.children.length;
-      toggle.textContent = (open ? 'Hide' : 'Show') + ' thought trace (' + count + ')';
+    body.appendChild(item);
+
+    const n = body.querySelectorAll('.thought-item').length;
+    counter.textContent = n + ' tool action' + (n === 1 ? '' : 's');
+    scrollEnd();
+  }
+
+  // ── End stream ─────────────────────────────────────────────────────────────
+
+  function endStream() {
+    isStreaming = false;
+    sendBtn.disabled = false;
+    typingRow.style.display = 'none';
+
+    const row = document.getElementById('stream-row');
+    if (row) row.removeAttribute('id');
+    const sc = document.getElementById('stream-content');
+    if (sc) sc.removeAttribute('id');
+    if (currentCursor) { currentCursor.remove(); currentCursor = null; }
+
+    // Hide strip if no tool calls were made
+    if (currentThoughtStrip) {
+      const n = currentThoughtStrip.querySelectorAll('.thought-item').length;
+      if (n === 0) currentThoughtStrip.style.display = 'none';
     }
+
+    currentContentEl    = null;
+    currentThoughtStrip = null;
   }
 
-  function currentThoughtCount(listId) {
-    const el = document.getElementById(listId);
-    return el ? el.children.length : 0;
+  // ── System / error messages ────────────────────────────────────────────────
+
+  function appendSystemMsg(text, isError) {
+    hideEmpty();
+    const cls = isError ? 'error' : 'system';
+    const row = document.createElement('div');
+    row.className = 'msg ' + cls;
+    row.innerHTML =
+      '<div class="msg-header">' +
+        '<div class="msg-avatar">' + (isError ? '!' : 'B') + '</div>' +
+        '<span class="msg-sender">' + (isError ? 'Error' : 'Bormagi') + '</span>' +
+        '<span class="msg-time">' + ts() + '</span>' +
+      '</div>' +
+      '<div class="msg-bubble"><div class="msg-content">' + esc(text) + '</div></div>';
+    messagesEl.appendChild(row);
+    scrollEnd();
   }
 
-  function appendErrorMessage(message) {
-    const div = document.createElement('div');
-    div.className = 'msg error';
-    div.innerHTML =
-      '<div class="msg-role">Error</div>' +
-      '<div class="msg-content">' + escapeHtml(message) + '</div>';
-    messagesEl.appendChild(div);
-    scrollToBottom();
-  }
-
-  function appendUndoResult(message) {
-    const div = document.createElement('div');
-    div.className = 'msg assistant';
-    div.innerHTML =
-      '<div class="msg-role">Bormagi</div>' +
-      '<div class="msg-content">' + escapeHtml(message) + '</div>';
-    messagesEl.appendChild(div);
-    scrollToBottom();
-  }
-
-  // ── State helpers ───────────────────────────────────────────────────────────
-
-  function setStreaming(on) {
-    isStreaming = on;
-    sendBtn.disabled = on;
-    typingEl.style.display = on ? 'block' : 'none';
-    if (on) startAssistantMessage('Agent');
-  }
+  // ── Misc ───────────────────────────────────────────────────────────────────
 
   function clearChat() {
-    messagesEl.innerHTML = '';
-    currentAssistantMsg = null;
-    currentThoughtList = null;
+    messagesEl.innerHTML =
+      '<div id="empty-state">' +
+        '<div class="empty-icon">◈</div>' +
+        '<div class="empty-title">No conversation yet</div>' +
+        '<div class="empty-sub">Select an agent above, then type a message.</div>' +
+      '</div>';
+    currentContentEl = currentThoughtStrip = currentCursor = null;
   }
 
-  function refreshAgents() {
-    vscode.postMessage({ type: 'refresh_agents' });
-  }
+  function refreshAgents() { vscode.postMessage({ type: 'refresh_agents' }); }
+  function scrollEnd()     { messagesEl.scrollTop = messagesEl.scrollHeight; }
 
-  function scrollToBottom() {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  }
+  // ── Extension → WebView messages ──────────────────────────────────────────
 
-  function escapeHtml(str) {
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
+  window.addEventListener('message', e => {
+    const m = e.data;
+    switch (m.type) {
 
-  // ── Messages from extension ─────────────────────────────────────────────────
-
-  window.addEventListener('message', (e) => {
-    const msg = e.data;
-    switch (msg.type) {
       case 'text_delta':
-        appendTextDelta(msg.delta);
+        appendDelta(m.delta);
         break;
 
       case 'text_done':
-        finaliseAssistantMessage();
-        setStreaming(false);
-        typingEl.style.display = 'none';
+        endStream();
         break;
 
       case 'thought':
-        appendThought(msg.agentId, msg.event);
+        appendThought(m.event);
         break;
 
       case 'error':
-        finaliseAssistantMessage();
-        setStreaming(false);
-        appendErrorMessage(msg.message);
-        typingEl.style.display = 'none';
+        endStream();
+        appendSystemMsg(m.message, true);
         break;
 
       case 'agent_changed':
-        agentBadgeEl.textContent = '@' + msg.agentId + ' — ' + msg.agentName;
-        if (currentAssistantMsg) {
-          const roleEl = currentAssistantMsg.parentElement?.querySelector('.msg-role');
-          if (roleEl) roleEl.textContent = msg.agentId;
-        }
+        activeAgentId = m.agentId;
+        agentSel.value = m.agentId;
+        setProviderPill(m.agentId);
+        typingLabel.textContent = m.agentId + ' is thinking…';
         break;
 
       case 'agent_list':
-        // Nothing to render in the chat; agent list is used by settings panel
+        populateDropdown(m.agents, m.activeAgentId);
+        if (m.activeAgentId) activeAgentId = m.activeAgentId;
         break;
 
       case 'undo_result':
-        finaliseAssistantMessage();
-        setStreaming(false);
-        appendUndoResult(msg.message);
+        endStream();
+        appendSystemMsg(m.message, false);
         break;
     }
   });
 
-  // Request agent list on load
+  // Boot
   vscode.postMessage({ type: 'refresh_agents' });
 </script>
 </body>
