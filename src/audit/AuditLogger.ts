@@ -4,35 +4,52 @@ import { MCPToolResult } from '../types';
 export class AuditLogger {
   constructor(private readonly config: ConfigManager) {}
 
+  private async log(record: Record<string, unknown>): Promise<void> {
+    await this.config.appendAuditLog(
+      JSON.stringify({ ts: new Date().toISOString(), ...record })
+    );
+  }
+
   async logToolCall(
     serverName: string,
     toolName: string,
     input: Record<string, unknown>,
     result: MCPToolResult
   ): Promise<void> {
-    const ts = new Date().toISOString();
-    const status = result.isError ? 'ERROR' : 'OK';
-    const inputStr = JSON.stringify(input);
-    const entry = `[${ts}] TOOL_CALL | server=${serverName} | tool=${toolName} | status=${status} | input=${inputStr}`;
-    await this.config.appendAuditLog(entry);
+    await this.log({
+      event: 'TOOL_CALL',
+      server: serverName,
+      tool: toolName,
+      status: result.isError ? 'ERROR' : 'OK',
+      input
+    });
   }
 
   async logFileWrite(filePath: string, agentId: string): Promise<void> {
-    const ts = new Date().toISOString();
-    const entry = `[${ts}] FILE_WRITE | agent=${agentId} | path=${filePath}`;
-    await this.config.appendAuditLog(entry);
+    await this.log({ event: 'FILE_WRITE', agent: agentId, path: filePath });
   }
 
   async logCommand(command: string, agentId: string, approved: boolean): Promise<void> {
-    const ts = new Date().toISOString();
-    const action = approved ? 'APPROVED' : 'REJECTED';
-    const entry = `[${ts}] TERMINAL_CMD | agent=${agentId} | status=${action} | command=${command}`;
-    await this.config.appendAuditLog(entry);
+    await this.log({
+      event: 'TERMINAL_CMD',
+      agent: agentId,
+      status: approved ? 'APPROVED' : 'REJECTED',
+      command
+    });
   }
 
   async logAgentSwitch(agentId: string): Promise<void> {
-    const ts = new Date().toISOString();
-    const entry = `[${ts}] AGENT_SWITCH | agent=${agentId}`;
-    await this.config.appendAuditLog(entry);
+    await this.log({ event: 'AGENT_SWITCH', agent: agentId });
+  }
+
+  async logTokenUsage(
+    agentId: string,
+    provider: string,
+    model: string,
+    inputTokens: number,
+    outputTokens: number,
+    costUsd: number
+  ): Promise<void> {
+    await this.log({ event: 'TOKEN_USAGE', agent: agentId, provider, model, inputTokens, outputTokens, costUsd });
   }
 }

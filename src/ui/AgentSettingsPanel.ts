@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { AgentManager } from '../agents/AgentManager';
 import { SecretsManager } from '../config/SecretsManager';
-import { AgentConfig, AgentCategory, ProviderType } from '../types';
+import { ConfigManager } from '../config/ConfigManager';
+import { AgentConfig, AgentCategory, ProviderConfig, ProviderType } from '../types';
 
 type PanelMode = 'list' | 'new' | 'edit';
 
@@ -13,15 +14,19 @@ const AGENT_CATEGORIES: AgentCategory[] = [
   'Software QA / Testing Agent',
   'Front-End Designer Agent',
   'Advanced Coder Agent',
+  'Security Engineer Agent',
+  'DevOps Engineer Agent',
+  'Technical Writer Agent',
+  'AI / LLM Engineer Agent',
   'Custom Agent'
 ];
 
 const PROVIDER_MODELS: Record<ProviderType, string[]> = {
-  openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1-preview', 'o1-mini'],
+  openai:    ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4.5-preview', 'o1-preview', 'o1-mini', 'o3-mini'],
   anthropic: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'],
-  gemini: ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-2.0-flash'],
-  deepseek: ['deepseek-chat', 'deepseek-coder', 'deepseek-reasoner'],
-  qwen: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-coder-turbo']
+  gemini:    ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'],
+  deepseek:  ['deepseek-chat', 'deepseek-coder', 'deepseek-reasoner'],
+  qwen:      ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-coder-turbo']
 };
 
 export class AgentSettingsPanel {
@@ -33,6 +38,7 @@ export class AgentSettingsPanel {
     panel: vscode.WebviewPanel,
     private readonly agentManager: AgentManager,
     private readonly secrets: SecretsManager,
+    private readonly configManager: ConfigManager,
     private initialMode: PanelMode
   ) {
     this.panel = panel;
@@ -54,6 +60,7 @@ export class AgentSettingsPanel {
     extensionUri: vscode.Uri,
     agentManager: AgentManager,
     secrets: SecretsManager,
+    configManager: ConfigManager,
     mode: PanelMode = 'list'
   ): void {
     if (AgentSettingsPanel.current) {
@@ -70,7 +77,7 @@ export class AgentSettingsPanel {
       { enableScripts: true, retainContextWhenHidden: true }
     );
 
-    AgentSettingsPanel.current = new AgentSettingsPanel(panel, agentManager, secrets, mode);
+    AgentSettingsPanel.current = new AgentSettingsPanel(panel, agentManager, secrets, configManager, mode);
   }
 
   private async sendAgentList(): Promise<void> {
@@ -81,10 +88,14 @@ export class AgentSettingsPanel {
         hasApiKey: await this.secrets.hasApiKey(a.id)
       }))
     );
+    const defaultProvider = await this.configManager.readDefaultProvider();
+    const hasDefaultKey = await this.secrets.hasApiKey('__default__');
     this.panel.webview.postMessage({
       type: 'agent_list',
       agents: agentsWithKeyStatus,
-      mode: this.initialMode
+      mode: this.initialMode,
+      defaultProvider: defaultProvider ?? null,
+      hasDefaultKey
     });
   }
 
@@ -98,12 +109,12 @@ export class AgentSettingsPanel {
         const config = msg.config as AgentConfig;
         const apiKey = msg.apiKey as string | undefined;
 
-        // Validate required fields
-        if (!config.id || !config.name || !config.provider?.type || !config.provider?.model) {
-          this.panel.webview.postMessage({
-            type: 'error',
-            message: 'Agent ID, Name, Provider, and Model are required.'
-          });
+        if (!config.id || !config.name) {
+          this.panel.webview.postMessage({ type: 'error', message: 'Agent ID and Name are required.' });
+          return;
+        }
+        if (!config.useDefaultProvider && (!config.provider?.type || !config.provider?.model)) {
+          this.panel.webview.postMessage({ type: 'error', message: 'Provider and Model are required unless "Use workspace default" is checked.' });
           return;
         }
 
@@ -150,6 +161,22 @@ export class AgentSettingsPanel {
       case 'get_categories':
         this.panel.webview.postMessage({ type: 'categories', categories: AGENT_CATEGORIES });
         break;
+
+      case 'save_default_provider': {
+        const provider = msg.provider as ProviderConfig;
+        const apiKey = msg.apiKey as string | undefined;
+        if (!provider?.type || !provider?.model) {
+          this.panel.webview.postMessage({ type: 'error', message: 'Provider type and model are required for the default provider.' });
+          return;
+        }
+        await this.configManager.writeDefaultProvider(provider);
+        if (apiKey && apiKey.trim()) {
+          await this.secrets.setApiKey('__default__', apiKey.trim());
+        }
+        this.panel.webview.postMessage({ type: 'default_saved' });
+        await this.sendAgentList();
+        break;
+      }
     }
   }
 
@@ -193,9 +220,7 @@ export class AgentSettingsPanel {
       font-size: 13px;
       margin-bottom: 12px;
     }
-    input:focus, select:focus, textarea:focus {
-      outline: 1px solid var(--vscode-focusBorder);
-    }
+    input:focus, select:focus, textarea:focus { outline: 1px solid var(--vscode-focusBorder); }
     textarea { resize: vertical; min-height: 60px; }
     .btn {
       background: var(--vscode-button-background);
@@ -204,14 +229,10 @@ export class AgentSettingsPanel {
       padding: 6px 16px; font-size: 13px; cursor: pointer;
     }
     .btn:hover { background: var(--vscode-button-hoverBackground); }
-    .btn-secondary {
-      background: var(--vscode-button-secondaryBackground);
-      color: var(--vscode-button-secondaryForeground);
-    }
+    .btn-secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
     .btn-secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
     .btn-danger { background: var(--vscode-inputValidation-errorBackground); color: var(--vscode-errorForeground); border: 1px solid var(--vscode-inputValidation-errorBorder); }
     .row { display: flex; gap: 10px; flex-wrap: wrap; }
-    .row .btn { flex-shrink: 0; }
     #agent-list { display: flex; flex-direction: column; gap: 8px; }
     .agent-item {
       display: flex; align-items: center; justify-content: space-between;
@@ -230,10 +251,57 @@ export class AgentSettingsPanel {
     .success-msg { color: var(--vscode-terminal-ansiGreen); font-size: 12px; margin-bottom: 10px; }
     .hint { font-size: 11px; opacity: 0.5; margin-top: -8px; margin-bottom: 12px; }
     hr { border: none; border-top: 1px solid var(--vscode-panel-border, #444); margin: 18px 0; }
+    .default-card {
+      padding: 12px 14px;
+      border: 1px solid var(--vscode-panel-border, #444);
+      border-radius: 6px;
+      background: var(--vscode-editorWidget-background);
+      margin-bottom: 20px;
+    }
+    .default-card h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+    .default-card .badge {
+      display: inline-block; font-size: 10px; font-weight: 700;
+      padding: 1px 6px; border-radius: 8px;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      text-transform: uppercase; letter-spacing: 0.5px;
+      margin-left: 6px; vertical-align: middle;
+    }
+    .checkbox-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+    .checkbox-row input[type=checkbox] { width: auto; margin-bottom: 0; }
+    .checkbox-row label { margin-bottom: 0; opacity: 1; }
+    #default-status { font-size: 12px; margin-top: 8px; min-height: 16px; }
   </style>
 </head>
 <body>
   <h1>Bormagi — Agent Settings</h1>
+
+  <!-- Default Provider Card -->
+  <div class="default-card">
+    <h3>Workspace Default Provider <span class="badge">Fallback</span></h3>
+    <p style="font-size:11px;opacity:0.6;margin-bottom:10px">
+      Agents with "Use workspace default" checked, or agents without a configured provider, will use this.
+    </p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div>
+        <label for="dp-provider">Provider</label>
+        <select id="dp-provider" onchange="onDefaultProviderChange()">${providerOptions}</select>
+      </div>
+      <div>
+        <label for="dp-model">Model</label>
+        <select id="dp-model"></select>
+      </div>
+    </div>
+    <label for="dp-apikey">API Key</label>
+    <input id="dp-apikey" type="password" placeholder="Leave blank to keep existing key"/>
+    <label for="dp-auth">Auth Method (Gemini only)</label>
+    <select id="dp-auth">
+      <option value="api_key">API Key</option>
+      <option value="gcp_adc">GCP Application Default Credentials</option>
+    </select>
+    <button class="btn" onclick="saveDefaultProvider()">Save Default Provider</button>
+    <div id="default-status"></div>
+  </div>
 
   <div class="section" id="list-section">
     <h2>Configured Agents</h2>
@@ -263,27 +331,34 @@ export class AgentSettingsPanel {
     <hr/>
     <h2>LLM Provider</h2>
 
-    <label for="f-provider">Provider</label>
-    <select id="f-provider" onchange="onProviderChange()">${providerOptions}</select>
+    <div class="checkbox-row">
+      <input type="checkbox" id="f-use-default" onchange="onUseDefaultChange()"/>
+      <label for="f-use-default">Use workspace default provider</label>
+    </div>
 
-    <label for="f-model">Model</label>
-    <select id="f-model"></select>
+    <div id="f-provider-fields">
+      <label for="f-provider">Provider</label>
+      <select id="f-provider" onchange="onProviderChange()">${providerOptions}</select>
 
-    <label for="f-apikey">API Key</label>
-    <input id="f-apikey" type="password" placeholder="sk-… (stored in encrypted VS Code secret storage)"/>
-    <p class="hint">Leave blank to keep existing key. For Gemini with GCP SSO, set auth method to gcp_adc below.</p>
+      <label for="f-model">Model</label>
+      <select id="f-model"></select>
 
-    <label for="f-auth-method">Auth Method (Gemini only)</label>
-    <select id="f-auth-method">
-      <option value="api_key">API Key</option>
-      <option value="gcp_adc">GCP Application Default Credentials (SSO)</option>
-    </select>
+      <label for="f-apikey">API Key</label>
+      <input id="f-apikey" type="password" placeholder="sk-… (stored in encrypted VS Code secret storage)"/>
+      <p class="hint">Leave blank to keep existing key. For Gemini with GCP SSO, set auth method to gcp_adc below.</p>
 
-    <label for="f-base-url">Custom Base URL (optional)</label>
-    <input id="f-base-url" type="text" placeholder="https://api.example.com/v1"/>
+      <label for="f-auth-method">Auth Method (Gemini only)</label>
+      <select id="f-auth-method">
+        <option value="api_key">API Key</option>
+        <option value="gcp_adc">GCP Application Default Credentials (SSO)</option>
+      </select>
 
-    <label for="f-proxy-url">Proxy URL (optional)</label>
-    <input id="f-proxy-url" type="text" placeholder="https://proxy.example.com"/>
+      <label for="f-base-url">Custom Base URL (optional)</label>
+      <input id="f-base-url" type="text" placeholder="https://api.example.com/v1"/>
+
+      <label for="f-proxy-url">Proxy URL (optional)</label>
+      <input id="f-proxy-url" type="text" placeholder="https://proxy.example.com"/>
+    </div>
 
     <div class="row" style="margin-top:8px">
       <button class="btn" onclick="saveAgent()">Save Agent</button>
@@ -296,8 +371,33 @@ export class AgentSettingsPanel {
     let agents = [];
     let editingId = null;
 
-    // ── Provider model map ──────────────────────────────────────────────────
     const MODELS = ${JSON.stringify(PROVIDER_MODELS)};
+
+    // ── Default provider section ───────────────────────────────────────────
+    function onDefaultProviderChange() {
+      const p = document.getElementById('dp-provider').value;
+      const sel = document.getElementById('dp-model');
+      sel.innerHTML = (MODELS[p] || []).map(m => '<option value="' + m + '">' + m + '</option>').join('');
+    }
+
+    function saveDefaultProvider() {
+      const type = document.getElementById('dp-provider').value;
+      const model = document.getElementById('dp-model').value;
+      const authMethod = document.getElementById('dp-auth').value;
+      const apiKey = document.getElementById('dp-apikey').value.trim();
+      vscode.postMessage({
+        type: 'save_default_provider',
+        provider: { type, model, base_url: null, proxy_url: null, auth_method: authMethod },
+        apiKey: apiKey || undefined
+      });
+    }
+
+    // ── Per-agent provider fields toggle ──────────────────────────────────
+    function onUseDefaultChange() {
+      const useDefault = document.getElementById('f-use-default').checked;
+      document.getElementById('f-provider-fields').style.opacity = useDefault ? '0.35' : '1';
+      document.getElementById('f-provider-fields').style.pointerEvents = useDefault ? 'none' : '';
+    }
 
     function onProviderChange() {
       const provider = document.getElementById('f-provider').value;
@@ -305,28 +405,32 @@ export class AgentSettingsPanel {
       modelSel.innerHTML = (MODELS[provider] || []).map(m => '<option value="' + m + '">' + m + '</option>').join('');
     }
 
-    // ── Agent list ──────────────────────────────────────────────────────────
+    // ── Agent list ─────────────────────────────────────────────────────────
     function renderAgentList() {
       const el = document.getElementById('agent-list');
       if (agents.length === 0) {
         el.innerHTML = '<p style="opacity:0.5">No agents configured yet.</p>';
         return;
       }
-      el.innerHTML = agents.map(a => \`
+      el.innerHTML = agents.map(a => {
+        const providerLabel = a.useDefaultProvider
+          ? '<em>workspace default</em>'
+          : ((a.provider?.type ?? '?') + '/' + (a.provider?.model ?? '?'));
+        return \`
         <div class="agent-item">
           <div class="agent-info">
             <div class="agent-name">@\${a.id} — \${a.name}</div>
-            <div class="agent-meta">\${a.category} · \${a.provider?.type ?? '?'}/\${a.provider?.model ?? '?'} · API key: \${a.hasApiKey ? 'set' : 'NOT SET'}</div>
+            <div class="agent-meta">\${a.category} · \${providerLabel} · API key: \${a.hasApiKey ? 'set' : 'NOT SET'}</div>
           </div>
           <div class="agent-actions">
             <button class="btn btn-secondary" onclick="showForm('\${a.id}')">Edit</button>
             <button class="btn btn-danger" onclick="deleteAgent('\${a.id}')">Delete</button>
           </div>
-        </div>
-      \`).join('');
+        </div>\`;
+      }).join('');
     }
 
-    // ── Form ────────────────────────────────────────────────────────────────
+    // ── Agent form ─────────────────────────────────────────────────────────
     function showForm(agentId) {
       editingId = agentId;
       const panel = document.getElementById('form-panel');
@@ -342,6 +446,7 @@ export class AgentSettingsPanel {
           document.getElementById('f-name').value = a.name;
           document.getElementById('f-category').value = a.category;
           document.getElementById('f-description').value = a.description;
+          document.getElementById('f-use-default').checked = !!a.useDefaultProvider;
           document.getElementById('f-provider').value = a.provider.type;
           onProviderChange();
           document.getElementById('f-model').value = a.provider.model;
@@ -349,6 +454,7 @@ export class AgentSettingsPanel {
           document.getElementById('f-base-url').value = a.provider.base_url || '';
           document.getElementById('f-proxy-url').value = a.provider.proxy_url || '';
           document.getElementById('f-apikey').value = '';
+          onUseDefaultChange();
         }
       } else {
         document.getElementById('f-id').value = '';
@@ -356,14 +462,15 @@ export class AgentSettingsPanel {
         document.getElementById('f-name').value = '';
         document.getElementById('f-category').value = 'Custom Agent';
         document.getElementById('f-description').value = '';
-        document.getElementById('f-provider').value = 'openai';
+        document.getElementById('f-use-default').checked = false;
+        document.getElementById('f-provider').value = 'anthropic';
         onProviderChange();
         document.getElementById('f-auth-method').value = 'api_key';
         document.getElementById('f-base-url').value = '';
         document.getElementById('f-proxy-url').value = '';
         document.getElementById('f-apikey').value = '';
+        onUseDefaultChange();
       }
-
       panel.scrollIntoView({ behavior: 'smooth' });
     }
 
@@ -377,6 +484,7 @@ export class AgentSettingsPanel {
       const name = document.getElementById('f-name').value.trim();
       const category = document.getElementById('f-category').value;
       const description = document.getElementById('f-description').value.trim();
+      const useDefaultProvider = document.getElementById('f-use-default').checked;
       const providerType = document.getElementById('f-provider').value;
       const model = document.getElementById('f-model').value;
       const authMethod = document.getElementById('f-auth-method').value;
@@ -384,13 +492,14 @@ export class AgentSettingsPanel {
       const proxyUrl = document.getElementById('f-proxy-url').value.trim() || null;
       const apiKey = document.getElementById('f-apikey').value;
 
-      if (!id || !name || !providerType || !model) {
-        showStatus('Agent ID, Name, Provider and Model are required.', false);
+      if (!id || !name) {
+        showStatus('Agent ID and Name are required.', false);
         return;
       }
 
       const config = {
         id, name, category, description, enabled: true,
+        useDefaultProvider,
         provider: { type: providerType, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod },
         system_prompt_files: ['system-prompt.md'],
         mcp_servers: [],
@@ -413,22 +522,37 @@ export class AgentSettingsPanel {
       el.textContent = msg;
     }
 
-    // ── Messages from extension ─────────────────────────────────────────────
+    // ── Messages from extension ────────────────────────────────────────────
     window.addEventListener('message', (e) => {
       const msg = e.data;
       if (msg.type === 'agent_list') {
         agents = msg.agents;
         renderAgentList();
         if (msg.mode === 'new') showForm(null);
+        // Populate default provider fields
+        if (msg.defaultProvider) {
+          document.getElementById('dp-provider').value = msg.defaultProvider.type;
+          onDefaultProviderChange();
+          document.getElementById('dp-model').value = msg.defaultProvider.model;
+          document.getElementById('dp-auth').value = msg.defaultProvider.auth_method;
+        }
+        document.getElementById('default-status').textContent =
+          msg.hasDefaultKey ? '✓ Default API key is set' : 'No default API key set';
+        document.getElementById('default-status').style.opacity = '0.6';
       } else if (msg.type === 'save_success') {
         showStatus('Agent saved successfully.', true);
         hideForm();
+      } else if (msg.type === 'default_saved') {
+        document.getElementById('default-status').textContent = '✓ Default provider saved';
+        document.getElementById('default-status').style.color = 'var(--vscode-terminal-ansiGreen)';
+        document.getElementById('dp-apikey').value = '';
       } else if (msg.type === 'error') {
         showStatus(msg.message, false);
       }
     });
 
     // Initial load
+    onDefaultProviderChange();
     onProviderChange();
     vscode.postMessage({ type: 'get_agents' });
   </script>

@@ -130,6 +130,23 @@
           "type": "boolean",
           "default": true,
           "description": "Show agent thought trace (tool calls and reasoning) in the chat view."
+        },
+        "bormagi.defaultProvider.type": {
+          "type": "string",
+          "enum": ["openai", "anthropic", "gemini", "deepseek", "qwen"],
+          "default": "anthropic",
+          "description": "Default LLM provider used when an agent has no provider configured."
+        },
+        "bormagi.defaultProvider.model": {
+          "type": "string",
+          "default": "claude-sonnet-4-6",
+          "description": "Default model for the default provider."
+        },
+        "bormagi.defaultProvider.authMethod": {
+          "type": "string",
+          "enum": ["api_key", "gcp_adc"],
+          "default": "api_key",
+          "description": "Default auth method for the default provider."
         }
       }
     },

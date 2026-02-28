@@ -38,6 +38,15 @@ export class AgentRunner {
     private readonly workspaceRoot: string
   ) {}
 
+  // ─── Secret patterns scanned before each LLM call ─────────────────────────
+  private static readonly SECRET_PATTERNS = [
+    /sk-[A-Za-z0-9]{32,}/,
+    /AIza[A-Za-z0-9\-_]{35}/,
+    /ghp_[A-Za-z0-9]{36}/,
+    /xox[baprs]-[0-9A-Za-z\-]+/,
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----/
+  ];
+
   async run(
     agentId: string,
     userMessage: string,
@@ -53,8 +62,21 @@ export class AgentRunner {
       return;
     }
 
-    const apiKey = await this.agentManager.getApiKey(agentId);
-    if (!apiKey && agentConfig.provider.auth_method === 'api_key') {
+    // Resolve effective provider — fall back to workspace default if not configured
+    let effectiveProvider = agentConfig.provider;
+    let apiKeyId = agentId;
+    if (agentConfig.useDefaultProvider || !agentConfig.provider?.type) {
+      const def = await this.configManager.readDefaultProvider();
+      if (!def?.type) {
+        onText('No provider configured for this agent and no workspace default set.\nOpen Agent Settings → Default Provider to configure one.');
+        return;
+      }
+      effectiveProvider = def;
+      apiKeyId = '__default__';
+    }
+
+    const apiKey = await this.agentManager.getApiKey(apiKeyId);
+    if (!apiKey && effectiveProvider.auth_method === 'api_key') {
       onText('API key not configured. Open Agent Settings to add your API key.');
       return;
     }
@@ -97,11 +119,34 @@ export class AgentRunner {
     messages.push(userMsg);
     this.memoryManager.addMessage(agentId, userMsg);
 
-    // Gather available tools
-    const tools = this.mcpHost.getAllTools();
+    // Gather available tools — inject virtual tools not backed by MCP servers
+    const virtualTools: MCPToolDefinition[] = [{
+      name: 'get_diagnostics',
+      description: 'Read VS Code diagnostics (Problems panel) for a file or the entire workspace.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Optional relative file path to filter diagnostics.' }
+        }
+      }
+    }];
+    const tools = [...this.mcpHost.getAllTools(), ...virtualTools];
 
-    // Create LLM provider and run the agentic loop
-    const provider = ProviderFactory.create(agentConfig, apiKey);
+    // Scan for secrets before sending context to the LLM
+    const blob = messages.map(m => m.content).join('\n');
+    const secretHits = AgentRunner.SECRET_PATTERNS.filter(p => p.test(blob));
+    if (secretHits.length > 0) {
+      onThought({
+        type: 'error',
+        label: `⚠ ${secretHits.length} potential secret(s) detected in context`,
+        detail: 'Sensitive patterns (API keys, tokens, private keys) found in the context being sent to the LLM. Review and remove them if unintended.',
+        timestamp: new Date()
+      });
+    }
+
+    // Create LLM provider using the resolved (possibly default) provider config
+    const providerConfig = { ...agentConfig, provider: effectiveProvider };
+    const provider = ProviderFactory.create(providerConfig, apiKey);
 
     let fullResponse = '';
     const toolsUsed: string[] = [];
@@ -172,10 +217,12 @@ export class AgentRunner {
       });
 
       // Approval gate for sensitive tools
+      const APPROVAL_TOOLS = ['run_command', 'git_commit', 'git_push', 'git_create_pr', 'gcp_deploy'];
       let approved = true;
-      if (event.name === 'run_command' || event.name === 'git_commit' || event.name === 'gcp_deploy') {
-        const detail = (event.input as { command?: string; message?: string }).command
-          ?? (event.input as { command?: string; message?: string }).message
+      if (APPROVAL_TOOLS.includes(event.name)) {
+        const detail = (event.input as { command?: string; message?: string; title?: string }).command
+          ?? (event.input as { command?: string; message?: string; title?: string }).message
+          ?? (event.input as { command?: string; message?: string; title?: string }).title
           ?? JSON.stringify(event.input);
         approved = await onApproval(`Agent wants to run:\n\n${detail}\n\nAllow?`);
         await this.auditLogger.logCommand(detail, agentId, approved);
@@ -191,6 +238,8 @@ export class AgentRunner {
           event.input as { path: string; content: string },
           onDiff
         );
+      } else if (event.name === 'get_diagnostics') {
+        toolResultText = this.handleGetDiagnostics(event.input as { path?: string });
       } else {
         // Determine which server owns this tool
         const serverName = this.findServerForTool(event.name);
@@ -256,6 +305,28 @@ export class AgentRunner {
     return result.content.map(c => c.text).join('\n');
   }
 
+  private handleGetDiagnostics(args: { path?: string }): string {
+    const SEVERITY = ['Error', 'Warning', 'Info', 'Hint'];
+    const lines: string[] = [];
+
+    if (args.path) {
+      const uri = vscode.Uri.file(path.join(this.workspaceRoot, args.path));
+      const diags = vscode.languages.getDiagnostics(uri);
+      for (const d of diags) {
+        lines.push(`${args.path} [${SEVERITY[d.severity] ?? d.severity}] ${d.message} (L${d.range.start.line + 1})`);
+      }
+    } else {
+      for (const [uri, diags] of vscode.languages.getDiagnostics()) {
+        const rel = path.relative(this.workspaceRoot, uri.fsPath);
+        for (const d of diags) {
+          lines.push(`${rel} [${SEVERITY[d.severity] ?? d.severity}] ${d.message} (L${d.range.start.line + 1})`);
+        }
+      }
+    }
+
+    return lines.length > 0 ? lines.join('\n') : 'No diagnostics found.';
+  }
+
   private findServerForTool(toolName: string): string | undefined {
     const serverMap: Record<string, string> = {
       read_file: 'filesystem',
@@ -267,6 +338,9 @@ export class AgentRunner {
       git_diff: 'git',
       git_commit: 'git',
       git_log: 'git',
+      git_create_branch: 'git',
+      git_push: 'git',
+      git_create_pr: 'git',
       gcp_auth_status: 'gcp',
       gcp_deploy: 'gcp'
     };

@@ -214,6 +214,20 @@ export class ConfigManager {
     }
   }
 
+  async readDefaultProvider(): Promise<import('../types').ProviderConfig | null> {
+    const proj = await this.readProjectConfig();
+    return proj?.defaultProvider ?? null;
+  }
+
+  async writeDefaultProvider(provider: import('../types').ProviderConfig): Promise<void> {
+    const proj = await this.readProjectConfig() ?? {
+      project: { name: '', created_at: new Date().toISOString() },
+      agents: []
+    };
+    proj.defaultProvider = provider;
+    await this.writeProjectConfig(proj);
+  }
+
   async appendAuditLog(entry: string): Promise<void> {
     const filePath = this.auditLogPath;
     let existing = '';

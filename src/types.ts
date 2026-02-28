@@ -6,6 +6,7 @@ export interface ProjectConfig {
     created_at: string;
   };
   agents: string[];
+  defaultProvider?: ProviderConfig;
 }
 
 export type ProviderType = 'openai' | 'anthropic' | 'gemini' | 'deepseek' | 'qwen';
@@ -52,6 +53,7 @@ export interface AgentConfig {
   description: string;
   enabled: boolean;
   provider: ProviderConfig;
+  useDefaultProvider?: boolean;
   system_prompt_files: string[];
   mcp_servers: MCPServerConfig[];
   context_filter: ContextFilter;

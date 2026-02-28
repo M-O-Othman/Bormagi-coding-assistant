@@ -54,11 +54,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
 
     vscode.commands.registerCommand('bormagi.openSettings', () => {
-      AgentSettingsPanel.createOrShow(context.extensionUri, agentManager!, secretsManager!);
+      AgentSettingsPanel.createOrShow(context.extensionUri, agentManager!, secretsManager!, configManager!);
     }),
 
     vscode.commands.registerCommand('bormagi.newAgent', () => {
-      AgentSettingsPanel.createOrShow(context.extensionUri, agentManager!, secretsManager!, 'new');
+      AgentSettingsPanel.createOrShow(context.extensionUri, agentManager!, secretsManager!, configManager!, 'new');
     }),
 
     vscode.commands.registerCommand('bormagi.installPredefinedAgents', async () => {
@@ -139,7 +139,11 @@ async function installPredefinedAgents(
     'cloud-architect',
     'software-qa',
     'frontend-designer',
-    'advanced-coder'
+    'advanced-coder',
+    'security-engineer',
+    'devops-engineer',
+    'technical-writer',
+    'ai-engineer'
   ];
 
   const picked = await vscode.window.showQuickPick(

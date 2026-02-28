@@ -66,6 +66,44 @@ const TOOLS = [
         count: { type: 'number', description: 'Number of commits to show (default: 10).' }
       }
     }
+  },
+  {
+    name: 'git_create_branch',
+    description: 'Create a new git branch. Optionally switch to it immediately.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Branch name.' },
+        checkout: { type: 'boolean', description: 'Switch to the new branch after creating it (default: true).' }
+      },
+      required: ['name']
+    }
+  },
+  {
+    name: 'git_push',
+    description: 'Push the current branch to a remote. Requires user approval (enforced by the extension).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        remote: { type: 'string', description: 'Remote name (default: origin).' },
+        branch: { type: 'string', description: 'Branch to push (default: current branch).' },
+        set_upstream: { type: 'boolean', description: 'Set upstream tracking (-u flag, default: false).' }
+      }
+    }
+  },
+  {
+    name: 'git_create_pr',
+    description: 'Create a GitHub pull request using the gh CLI. Requires user approval (enforced by the extension).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'PR title.' },
+        body: { type: 'string', description: 'PR description body.' },
+        base: { type: 'string', description: 'Base branch (default: main).' },
+        draft: { type: 'boolean', description: 'Open as a draft PR (default: false).' }
+      },
+      required: ['title']
+    }
   }
 ];
 
@@ -110,6 +148,26 @@ rl.on('line', (line) => {
         const logArgs = args as { count?: number };
         const count = logArgs.count ?? 10;
         text = git(`log --oneline -n ${count}`);
+      } else if (toolName === 'git_create_branch') {
+        const branchArgs = args as { name: string; checkout?: boolean };
+        const shouldCheckout = branchArgs.checkout !== false;
+        text = shouldCheckout
+          ? git(`checkout -b ${branchArgs.name}`)
+          : git(`branch ${branchArgs.name}`);
+      } else if (toolName === 'git_push') {
+        const pushArgs = args as { remote?: string; branch?: string; set_upstream?: boolean };
+        const remote = pushArgs.remote ?? 'origin';
+        const branch = pushArgs.branch ?? '';
+        const upstream = pushArgs.set_upstream ? '--set-upstream ' : '';
+        text = git(`push ${upstream}${remote}${branch ? ' ' + branch : ''}`.trim());
+      } else if (toolName === 'git_create_pr') {
+        const prArgs = args as { title: string; body?: string; base?: string; draft?: boolean };
+        const title = prArgs.title.replace(/"/g, '\\"');
+        const body = (prArgs.body ?? '').replace(/"/g, '\\"');
+        const base = prArgs.base ? `--base "${prArgs.base}"` : '';
+        const draft = prArgs.draft ? '--draft' : '';
+        const cmd = `pr create --title "${title}"${body ? ` --body "${body}"` : ''} ${base} ${draft}`.trim();
+        text = childProcess.execSync(`gh ${cmd}`, { cwd: workspaceRoot, encoding: 'utf8', timeout: 30000 });
       } else {
         throw new Error(`Unknown tool: ${toolName}`);
       }

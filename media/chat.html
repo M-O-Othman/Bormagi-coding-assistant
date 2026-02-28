@@ -98,8 +98,11 @@
       transition: opacity var(--transition);
       text-transform: uppercase;
       letter-spacing: 0.4px;
+      cursor: pointer;
+      user-select: none;
     }
     #provider-pill.visible { opacity: 1; }
+    #provider-pill.visible:hover { opacity: 0.75; }
 
     .tb-btn {
       background: none;
@@ -425,6 +428,12 @@
     </svg>
   </button>
 
+  <button class="tb-btn" onclick="exportConversation()" title="Export conversation as Markdown">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M13 1H3a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm-1 12H4V3h8v10zM6 6h4v1H6zm0 2h4v1H6zm0 2h3v1H6z"/>
+    </svg>
+  </button>
+
   <button class="tb-btn" onclick="clearChat()" title="Clear conversation">
     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
       <path d="M10.12 1H5.88L5 2H2v1h12V2h-3l-.88-1zM4 5v9a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V5H4zm2 2h1v6H6V7zm3 0h1v6H9V7z"/>
@@ -439,6 +448,8 @@
   <span class="tok-seg"><span class="tok-label">in </span><b id="tok-in-val">—</b></span>
   <span class="tok-sep">|</span>
   <span class="tok-seg"><span class="tok-label">out </span><b id="tok-out-val">—</b></span>
+  <span class="tok-sep">|</span>
+  <span class="tok-seg"><span class="tok-label">cost </span><b id="tok-cost-val">—</b></span>
 </div>
 
 <!-- ── MESSAGES ────────────────────────────────────────────────────────────── -->
@@ -486,12 +497,64 @@
   let currentCursor       = null;   // blinking cursor node
   let isStreaming         = false;
   let activeAgentId       = null;
+  let activeAgentName     = null;
   let agentList           = [];
+  let currentModel        = '';
 
-  // ── Input auto-resize ──────────────────────────────────────────────────────
+  // ── Input history (↑/↓ arrow key navigation) ──────────────────────────────
+  const inputHistory = [];
+  let historyIndex = -1;
+  let historyDraft = '';
+
+  // ── Model pricing table (USD per 1M tokens) ───────────────────────────────
+  const MODEL_PRICING = {
+    'gpt-4o':                    { in: 5.00,  out: 15.00  },
+    'gpt-4o-mini':               { in: 0.15,  out: 0.60   },
+    'gpt-4-turbo':               { in: 10.00, out: 30.00  },
+    'gpt-4.5-preview':           { in: 75.00, out: 150.00 },
+    'o1-preview':                { in: 15.00, out: 60.00  },
+    'o1-mini':                   { in: 1.10,  out: 4.40   },
+    'o3-mini':                   { in: 1.10,  out: 4.40   },
+    'claude-opus-4-6':           { in: 15.00, out: 75.00  },
+    'claude-sonnet-4-6':         { in: 3.00,  out: 15.00  },
+    'claude-haiku-4-5-20251001': { in: 0.80,  out: 4.00   },
+    'gemini-2.0-flash':          { in: 0.10,  out: 0.40   },
+    'gemini-1.5-pro':            { in: 3.50,  out: 10.50  },
+    'gemini-1.5-flash':          { in: 0.075, out: 0.30   },
+    'deepseek-chat':             { in: 0.27,  out: 1.10   },
+    'deepseek-coder':            { in: 0.27,  out: 1.10   },
+    'deepseek-reasoner':         { in: 0.55,  out: 2.19   },
+    'qwen-max':                  { in: 0.80,  out: 2.40   },
+    'qwen-plus':                 { in: 0.30,  out: 0.90   },
+    'qwen-turbo':                { in: 0.05,  out: 0.20   },
+    'qwen-coder-turbo':          { in: 0.30,  out: 0.90   }
+  };
+
+  // ── Input auto-resize + history navigation ────────────────────────────────
 
   inputEl.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); return; }
+
+    // Arrow-key input history
+    if (e.key === 'ArrowUp' && inputEl.selectionStart === 0 && inputHistory.length > 0) {
+      e.preventDefault();
+      if (historyIndex === -1) historyDraft = inputEl.value;
+      historyIndex = Math.min(historyIndex + 1, inputHistory.length - 1);
+      inputEl.value = inputHistory[historyIndex];
+      inputEl.setSelectionRange(0, 0);
+      setTimeout(resize, 0);
+      return;
+    }
+    if (e.key === 'ArrowDown' && historyIndex >= 0) {
+      e.preventDefault();
+      historyIndex--;
+      inputEl.value = historyIndex === -1 ? historyDraft : inputHistory[historyIndex];
+      const len = inputEl.value.length;
+      inputEl.setSelectionRange(len, len);
+      setTimeout(resize, 0);
+      return;
+    }
+
     setTimeout(resize, 0);
   });
   inputEl.addEventListener('input', resize);
@@ -505,6 +568,11 @@
   function sendMessage() {
     const text = inputEl.value.trim();
     if (!text || isStreaming) return;
+    // Save to input history
+    if (inputHistory[0] !== text) inputHistory.unshift(text);
+    if (inputHistory.length > 50) inputHistory.length = 50;
+    historyIndex = -1;
+    historyDraft = '';
     hideEmpty();
     appendUserMsg(text);
     inputEl.value = '';
@@ -537,15 +605,23 @@
     }
   }
 
-  function setProviderPill(agentId) {
+  function setProviderPill(agentId, usingDefault) {
     const a = agentList.find(x => x.id === agentId);
     if (a) {
-      pillEl.textContent = a.providerType;
+      const label = usingDefault ? a.providerType + ' [default]' : a.providerType;
+      pillEl.textContent = label;
+      pillEl.title = 'Click to switch model (' + (currentModel || a.model) + ')';
       pillEl.classList.add('visible');
     } else {
       pillEl.classList.remove('visible');
     }
   }
+
+  pillEl.addEventListener('click', () => {
+    if (pillEl.classList.contains('visible')) {
+      vscode.postMessage({ type: 'switch_model' });
+    }
+  });
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -731,6 +807,35 @@
     currentContentEl = currentThoughtStrip = currentCursor = null;
   }
 
+  function exportConversation() {
+    const agentName = activeAgentName || activeAgentId || 'Agent';
+    const date = new Date().toISOString().slice(0, 10);
+    const lines = ['# Conversation — ' + agentName + ' · ' + date, ''];
+    const msgs = messagesEl.querySelectorAll('.msg');
+    msgs.forEach(msg => {
+      const isUser      = msg.classList.contains('user');
+      const isAssistant = msg.classList.contains('assistant');
+      if (!isUser && !isAssistant) return;
+      const sender  = msg.querySelector('.msg-sender');
+      const content = msg.querySelector('.msg-content');
+      if (!sender || !content) return;
+      lines.push('## ' + sender.textContent.trim());
+      lines.push('');
+      lines.push(content.textContent.trim());
+      lines.push('');
+    });
+    const md = lines.join('\n');
+    navigator.clipboard.writeText(md).then(() => {
+      const orig = pillEl.textContent;
+      pillEl.textContent = 'copied!';
+      setTimeout(() => { pillEl.textContent = orig; }, 1500);
+    }).catch(() => {
+      // Fallback: open in new window
+      const w = window.open('', '_blank');
+      if (w) { w.document.write('<pre>' + md.replace(/</g,'&lt;') + '</pre>'); }
+    });
+  }
+
   function refreshAgents() { vscode.postMessage({ type: 'refresh_agents' }); }
   function scrollEnd()     { messagesEl.scrollTop = messagesEl.scrollHeight; }
 
@@ -758,10 +863,12 @@
         break;
 
       case 'agent_changed':
-        activeAgentId = m.agentId;
-        agentSel.value = m.agentId;
-        setProviderPill(m.agentId);
-        typingLabel.textContent = m.agentId + ' is thinking…';
+        activeAgentId   = m.agentId;
+        activeAgentName = m.agentName;
+        currentModel    = m.model;
+        agentSel.value  = m.agentId;
+        setProviderPill(m.agentId, m.usingDefault);
+        typingLabel.textContent = (m.agentName || m.agentId) + ' is thinking…';
         break;
 
       case 'agent_list':
@@ -775,7 +882,17 @@
         break;
 
       case 'token_usage':
+        currentModel = m.model || currentModel;
         updateTokenStats(m.lastInputTokens, m.sessionInputTokens, m.sessionOutputTokens);
+        break;
+
+      case 'model_switched':
+        currentModel = m.model;
+        // Update pill with new model name without changing usingDefault state
+        if (pillEl.classList.contains('visible')) {
+          pillEl.title = 'Click to switch model (' + m.model + ')';
+        }
+        appendSystemMsg('Model switched to ' + m.model, false);
         break;
     }
   });
@@ -785,6 +902,13 @@
     document.getElementById('tok-ctx-val').textContent = fmt(lastIn);
     document.getElementById('tok-in-val').textContent  = fmt(sessIn);
     document.getElementById('tok-out-val').textContent = fmt(sessOut);
+    // Cost estimate
+    const p = MODEL_PRICING[currentModel];
+    if (p) {
+      const costUsd = (sessIn / 1e6) * p.in + (sessOut / 1e6) * p.out;
+      const costStr = costUsd < 0.0001 ? '<$0.0001' : '$' + costUsd.toFixed(4);
+      document.getElementById('tok-cost-val').textContent = costStr;
+    }
     document.getElementById('token-stats').classList.add('visible');
   }
 
