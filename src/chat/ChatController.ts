@@ -217,15 +217,29 @@ export class ChatController {
     this.statusBar.update(agent.name);
     await this.auditLogger.logAgentSwitch(agentId);
 
-    // Resolve effective provider — honour useDefaultProvider flag
-    const usingDefault = !!(agent.useDefaultProvider || !agent.provider?.type);
+    // Resolve effective provider (mirrors AgentRunner fallback logic)
+    const explicitDefault = !!(agent.useDefaultProvider || !agent.provider?.type);
     let effectiveType  = agent.provider.type;
     let effectiveModel = agent.provider.model;
-    if (usingDefault) {
+    let usingDefault   = false;
+
+    if (explicitDefault) {
       const def = await this.configManager.readDefaultProvider();
-      if (def) {
-        effectiveType  = def.type;
-        effectiveModel = def.model;
+      if (def) { effectiveType = def.type; effectiveModel = def.model; }
+      usingDefault = true;
+    } else {
+      // Auto-fallback: no own key + workspace default available
+      const needsOwnKey = (agent.provider?.auth_method ?? 'api_key') !== 'gcp_adc';
+      if (needsOwnKey) {
+        const ownKey = await this.agentManager.getApiKey(agent.id);
+        if (!ownKey) {
+          const def = await this.configManager.readDefaultProvider();
+          if (def?.type) {
+            const defNeedsKey = (def.auth_method ?? 'api_key') !== 'gcp_adc';
+            const defKey = defNeedsKey ? await this.agentManager.getApiKey('__default__') : 'ok';
+            if (defKey) { effectiveType = def.type; effectiveModel = def.model; usingDefault = true; }
+          }
+        }
       }
     }
     this.currentModel = effectiveModel;
@@ -246,23 +260,35 @@ export class ChatController {
     const defaultKeySet = !!(await this.agentManager.getApiKey('__default__'));
 
     const agents = await Promise.all(this.agentManager.listAgents().map(async a => {
-      const usesDefault = !!(a.useDefaultProvider || !a.provider?.type);
+      const explicitDefault = !!(a.useDefaultProvider || !a.provider?.type);
 
       let effectiveType: string;
       let effectiveModel: string;
       let configured: boolean;
+      let usesDefault: boolean;
 
-      if (usesDefault) {
+      if (explicitDefault) {
         effectiveType  = defaultProvider?.type  ?? a.provider.type;
         effectiveModel = defaultProvider?.model ?? a.provider.model;
         const needsKey = (defaultProvider?.auth_method ?? 'api_key') !== 'gcp_adc';
         configured = !needsKey || (!!defaultProvider && defaultKeySet);
+        usesDefault = true;
       } else {
-        effectiveType  = a.provider.type;
-        effectiveModel = a.provider.model;
-        const needsKey = (a.provider?.auth_method ?? 'api_key') !== 'gcp_adc';
-        const key = needsKey ? await this.agentManager.getApiKey(a.id) : 'ok';
-        configured = !needsKey || !!key;
+        const needsOwnKey = (a.provider?.auth_method ?? 'api_key') !== 'gcp_adc';
+        const ownKey = needsOwnKey ? await this.agentManager.getApiKey(a.id) : 'ok';
+
+        if (!ownKey && needsOwnKey && defaultProvider?.type && defaultKeySet) {
+          // Auto-fallback: no own key but workspace default is available
+          effectiveType  = defaultProvider.type;
+          effectiveModel = defaultProvider.model;
+          configured = true;
+          usesDefault = true;
+        } else {
+          effectiveType  = a.provider.type;
+          effectiveModel = a.provider.model;
+          configured = !needsOwnKey || !!ownKey;
+          usesDefault = false;
+        }
       }
 
       return { id: a.id, name: a.name, category: a.category, providerType: effectiveType, model: effectiveModel, configured, usesDefault };

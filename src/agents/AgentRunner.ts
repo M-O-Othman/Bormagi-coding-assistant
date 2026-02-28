@@ -64,22 +64,45 @@ export class AgentRunner {
       return;
     }
 
-    // Resolve effective provider — fall back to workspace default if not configured
+    // Resolve effective provider:
+    //   1. Explicit opt-in (useDefaultProvider flag or no provider type) → workspace default
+    //   2. Has own API key → use own config
+    //   3. No own key but workspace default is available → auto-fallback to workspace default
+    //   4. No key anywhere → error
     let effectiveProvider = agentConfig.provider;
     let apiKeyId = agentId;
-    if (agentConfig.useDefaultProvider || !agentConfig.provider?.type) {
+    const explicitDefault = agentConfig.useDefaultProvider || !agentConfig.provider?.type;
+
+    if (explicitDefault) {
       const def = await this.configManager.readDefaultProvider();
       if (!def?.type) {
-        onText('No provider configured for this agent and no workspace default set.\nOpen Agent Settings → Default Provider to configure one.');
+        onText('No workspace default provider configured.\nOpen Agent Settings → Default Provider to configure one.');
         return;
       }
       effectiveProvider = def;
       apiKeyId = '__default__';
+    } else {
+      // Check own key; if absent, auto-fallback to workspace default when available
+      const needsOwnKey = (agentConfig.provider?.auth_method ?? 'api_key') !== 'gcp_adc';
+      if (needsOwnKey) {
+        const ownKey = await this.agentManager.getApiKey(agentId);
+        if (!ownKey) {
+          const def = await this.configManager.readDefaultProvider();
+          if (def?.type) {
+            const defNeedsKey = (def.auth_method ?? 'api_key') !== 'gcp_adc';
+            const defKey = defNeedsKey ? await this.agentManager.getApiKey('__default__') : 'ok';
+            if (defKey) {
+              effectiveProvider = def;
+              apiKeyId = '__default__';
+            }
+          }
+        }
+      }
     }
 
     const apiKey = await this.agentManager.getApiKey(apiKeyId);
     if (!apiKey && effectiveProvider.auth_method === 'api_key') {
-      onText('API key not configured. Open Agent Settings to add your API key.');
+      onText('API key not configured. Add a per-agent key in Agent Settings, or set a workspace default provider.');
       return;
     }
 
