@@ -1,0 +1,20 @@
+{
+  "id": "business-analyst",
+  "name": "Business Analyst",
+  "category": "Business Analyst Agent",
+  "description": "Produces professional documentation, including business requirements, functional specifications, and feature definitions, ensuring clarity and alignment between stakeholders and technical teams.",
+  "enabled": true,
+  "provider": {
+    "type": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "base_url": null,
+    "proxy_url": null,
+    "auth_method": "api_key"
+  },
+  "system_prompt_files": ["system-prompt.md"],
+  "mcp_servers": [],
+  "context_filter": {
+    "include_extensions": [".ts",".tsx",".js",".jsx",".py",".java",".cs",".go",".rs",".html",".css",".md",".txt",".json",".yaml",".yml",".sql",".csv",".tsv"],
+    "exclude_patterns": ["node_modules","dist",".git","build","__pycache__",".bormagi"]
+  }
+}

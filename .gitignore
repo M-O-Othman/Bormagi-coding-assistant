@@ -1,0 +1,21 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Build output
+dist/
+out/
+
+# VS Code test output
+.vscode-test/
+
+# Environment / secrets
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Bormagi workspace data (never commit agent configs or API keys)
+.bormagi/

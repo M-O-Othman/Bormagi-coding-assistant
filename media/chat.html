@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+  <title>Bormagi Chat</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      color: var(--vscode-foreground);
+      background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    #header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, #333);
+      background: var(--vscode-sideBarSectionHeader-background);
+      flex-shrink: 0;
+    }
+
+    #agent-badge {
+      font-weight: 600;
+      font-size: 12px;
+      color: var(--vscode-badge-foreground);
+      background: var(--vscode-badge-background);
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+
+    #header-actions button {
+      background: none;
+      border: none;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      font-size: 12px;
+      padding: 2px 6px;
+      opacity: 0.7;
+    }
+    #header-actions button:hover { opacity: 1; }
+
+    /* ── Messages area ── */
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .msg {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-width: 100%;
+    }
+
+    .msg-role {
+      font-size: 11px;
+      font-weight: 600;
+      opacity: 0.6;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .msg-content {
+      padding: 8px 10px;
+      border-radius: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.5;
+      font-size: 13px;
+    }
+
+    .msg.user .msg-content {
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border, #555);
+      align-self: flex-end;
+      max-width: 88%;
+    }
+
+    .msg.assistant .msg-content {
+      background: var(--vscode-editorWidget-background, rgba(255,255,255,0.04));
+      border: 1px solid var(--vscode-panel-border, #444);
+      align-self: flex-start;
+    }
+
+    .msg.error .msg-content {
+      background: var(--vscode-inputValidation-errorBackground);
+      border: 1px solid var(--vscode-inputValidation-errorBorder);
+      color: var(--vscode-errorForeground);
+    }
+
+    /* ── Thought trace ── */
+    .thought-container {
+      margin-top: 4px;
+    }
+
+    .thought-toggle {
+      background: none;
+      border: 1px solid var(--vscode-panel-border, #555);
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      opacity: 0.7;
+    }
+    .thought-toggle:hover { opacity: 1; }
+
+    .thought-list {
+      display: none;
+      margin-top: 6px;
+      border-left: 2px solid var(--vscode-panel-border, #555);
+      padding-left: 10px;
+      font-size: 11px;
+      opacity: 0.75;
+    }
+    .thought-list.open { display: flex; flex-direction: column; gap: 4px; }
+
+    .thought-item {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .thought-label { font-weight: 600; }
+    .thought-detail {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 10px;
+      white-space: pre-wrap;
+      opacity: 0.8;
+      background: var(--vscode-textCodeBlock-background);
+      padding: 2px 4px;
+      border-radius: 3px;
+    }
+
+    /* ── Typing indicator ── */
+    #typing {
+      display: none;
+      padding: 0 12px 6px;
+      font-size: 12px;
+      opacity: 0.5;
+      font-style: italic;
+    }
+
+    /* ── Input area ── */
+    #input-area {
+      padding: 10px 12px;
+      border-top: 1px solid var(--vscode-sideBarSectionHeader-border, #333);
+      background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+      flex-shrink: 0;
+    }
+
+    #input-row {
+      display: flex;
+      gap: 6px;
+      align-items: flex-end;
+    }
+
+    #user-input {
+      flex: 1;
+      min-height: 36px;
+      max-height: 120px;
+      resize: none;
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border, #555);
+      border-radius: 4px;
+      padding: 7px 10px;
+      font-family: inherit;
+      font-size: 13px;
+      overflow-y: auto;
+    }
+    #user-input:focus { outline: 1px solid var(--vscode-focusBorder); }
+    #user-input::placeholder { opacity: 0.5; }
+
+    #send-btn {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      border-radius: 4px;
+      padding: 7px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+      align-self: flex-end;
+    }
+    #send-btn:hover { background: var(--vscode-button-hoverBackground); }
+    #send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    #hint {
+      font-size: 11px;
+      opacity: 0.45;
+      margin-top: 5px;
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <span id="agent-badge">No agent selected</span>
+  <div id="header-actions">
+    <button onclick="refreshAgents()" title="Refresh agent list">&#8635;</button>
+    <button onclick="clearChat()" title="Clear chat">&#10005;</button>
+  </div>
+</div>
+
+<div id="messages"></div>
+
+<div id="typing">Agent is thinking…</div>
+
+<div id="input-area">
+  <div id="input-row">
+    <textarea id="user-input" rows="1" placeholder="Type a message… use @agent-name to switch agents, /undo to undo last change"></textarea>
+    <button id="send-btn" onclick="sendMessage()">Send</button>
+  </div>
+  <div id="hint">Enter to send · Shift+Enter for new line</div>
+</div>
+
+<script>
+  const vscode = acquireVsCodeApi();
+
+  const messagesEl = document.getElementById('messages');
+  const inputEl = document.getElementById('user-input');
+  const sendBtn = document.getElementById('send-btn');
+  const typingEl = document.getElementById('typing');
+  const agentBadgeEl = document.getElementById('agent-badge');
+
+  let currentAssistantMsg = null;
+  let currentThoughtList = null;
+  let isStreaming = false;
+  let thoughtCount = 0;
+
+  // ── Input handling ──────────────────────────────────────────────────────────
+
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+    // Auto-resize
+    setTimeout(() => {
+      inputEl.style.height = 'auto';
+      inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+    }, 0);
+  });
+
+  inputEl.addEventListener('input', () => {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+  });
+
+  function sendMessage() {
+    const text = inputEl.value.trim();
+    if (!text || isStreaming) return;
+
+    appendUserMessage(text);
+    inputEl.value = '';
+    inputEl.style.height = 'auto';
+    setStreaming(true);
+
+    vscode.postMessage({ type: 'user_message', text });
+  }
+
+  // ── Message rendering ───────────────────────────────────────────────────────
+
+  function appendUserMessage(text) {
+    const div = document.createElement('div');
+    div.className = 'msg user';
+    div.innerHTML =
+      '<div class="msg-role">You</div>' +
+      '<div class="msg-content">' + escapeHtml(text) + '</div>';
+    messagesEl.appendChild(div);
+    scrollToBottom();
+  }
+
+  function startAssistantMessage(agentId) {
+    thoughtCount = 0;
+    const div = document.createElement('div');
+    div.className = 'msg assistant';
+    div.id = 'streaming-msg';
+    div.innerHTML =
+      '<div class="msg-role">' + escapeHtml(agentId) + '</div>' +
+      '<div class="msg-content" id="streaming-content"></div>' +
+      '<div class="thought-container" id="thought-container"></div>';
+    messagesEl.appendChild(div);
+    currentAssistantMsg = document.getElementById('streaming-content');
+    currentThoughtList = null;
+    scrollToBottom();
+  }
+
+  function appendTextDelta(delta) {
+    if (!currentAssistantMsg) return;
+    currentAssistantMsg.textContent += delta;
+    scrollToBottom();
+  }
+
+  function finaliseAssistantMessage() {
+    const el = document.getElementById('streaming-msg');
+    if (el) el.removeAttribute('id');
+    currentAssistantMsg = null;
+    currentThoughtList = null;
+  }
+
+  function appendThought(agentId, event) {
+    const container = document.getElementById('thought-container');
+    if (!container) return;
+
+    if (!currentThoughtList) {
+      thoughtCount++;
+      const toggleBtn = document.createElement('button');
+      toggleBtn.className = 'thought-toggle';
+      const listId = 'thoughts-' + Date.now();
+      toggleBtn.textContent = 'Show thought trace (' + thoughtCount + ')';
+      toggleBtn.onclick = () => {
+        const list = document.getElementById(listId);
+        if (list) {
+          const open = list.classList.toggle('open');
+          toggleBtn.textContent = (open ? 'Hide' : 'Show') + ' thought trace (' + currentThoughtCount(listId) + ')';
+        }
+      };
+      const list = document.createElement('div');
+      list.className = 'thought-list';
+      list.id = listId;
+      container.appendChild(toggleBtn);
+      container.appendChild(list);
+      currentThoughtList = list;
+    }
+
+    const item = document.createElement('div');
+    item.className = 'thought-item';
+    item.innerHTML =
+      '<span class="thought-label">' + escapeHtml(event.label) + '</span>' +
+      (event.detail ? '<span class="thought-detail">' + escapeHtml(event.detail) + '</span>' : '');
+    currentThoughtList.appendChild(item);
+
+    // Update toggle button count
+    const toggle = currentThoughtList.previousElementSibling;
+    if (toggle) {
+      const open = currentThoughtList.classList.contains('open');
+      const count = currentThoughtList.children.length;
+      toggle.textContent = (open ? 'Hide' : 'Show') + ' thought trace (' + count + ')';
+    }
+  }
+
+  function currentThoughtCount(listId) {
+    const el = document.getElementById(listId);
+    return el ? el.children.length : 0;
+  }
+
+  function appendErrorMessage(message) {
+    const div = document.createElement('div');
+    div.className = 'msg error';
+    div.innerHTML =
+      '<div class="msg-role">Error</div>' +
+      '<div class="msg-content">' + escapeHtml(message) + '</div>';
+    messagesEl.appendChild(div);
+    scrollToBottom();
+  }
+
+  function appendUndoResult(message) {
+    const div = document.createElement('div');
+    div.className = 'msg assistant';
+    div.innerHTML =
+      '<div class="msg-role">Bormagi</div>' +
+      '<div class="msg-content">' + escapeHtml(message) + '</div>';
+    messagesEl.appendChild(div);
+    scrollToBottom();
+  }
+
+  // ── State helpers ───────────────────────────────────────────────────────────
+
+  function setStreaming(on) {
+    isStreaming = on;
+    sendBtn.disabled = on;
+    typingEl.style.display = on ? 'block' : 'none';
+    if (on) startAssistantMessage('Agent');
+  }
+
+  function clearChat() {
+    messagesEl.innerHTML = '';
+    currentAssistantMsg = null;
+    currentThoughtList = null;
+  }
+
+  function refreshAgents() {
+    vscode.postMessage({ type: 'refresh_agents' });
+  }
+
+  function scrollToBottom() {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ── Messages from extension ─────────────────────────────────────────────────
+
+  window.addEventListener('message', (e) => {
+    const msg = e.data;
+    switch (msg.type) {
+      case 'text_delta':
+        appendTextDelta(msg.delta);
+        break;
+
+      case 'text_done':
+        finaliseAssistantMessage();
+        setStreaming(false);
+        typingEl.style.display = 'none';
+        break;
+
+      case 'thought':
+        appendThought(msg.agentId, msg.event);
+        break;
+
+      case 'error':
+        finaliseAssistantMessage();
+        setStreaming(false);
+        appendErrorMessage(msg.message);
+        typingEl.style.display = 'none';
+        break;
+
+      case 'agent_changed':
+        agentBadgeEl.textContent = '@' + msg.agentId + ' — ' + msg.agentName;
+        if (currentAssistantMsg) {
+          const roleEl = currentAssistantMsg.parentElement?.querySelector('.msg-role');
+          if (roleEl) roleEl.textContent = msg.agentId;
+        }
+        break;
+
+      case 'agent_list':
+        // Nothing to render in the chat; agent list is used by settings panel
+        break;
+
+      case 'undo_result':
+        finaliseAssistantMessage();
+        setStreaming(false);
+        appendUndoResult(msg.message);
+        break;
+    }
+  });
+
+  // Request agent list on load
+  vscode.postMessage({ type: 'refresh_agents' });
+</script>
+</body>
+</html>
