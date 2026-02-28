@@ -4,16 +4,10 @@
     {
       "label": "compile",
       "type": "shell",
-      "command": "npm run compile",
+      "command": "node",
+      "args": ["./node_modules/webpack/bin/webpack.js"],
       "options": {
-        "cwd": "${workspaceFolder}",
-        "env": {
-          "PATH": "${workspaceFolder}/node_modules/.bin;${env:PATH}"
-        },
-        "shell": {
-          "executable": "cmd.exe",
-          "args": ["/d", "/c"]
-        }
+        "cwd": "${workspaceFolder}"
       },
       "group": {
         "kind": "build",
