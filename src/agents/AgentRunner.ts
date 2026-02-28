@@ -18,6 +18,8 @@ import {
   ThoughtEvent,
   TokenUsage
 } from '../types';
+import type { AgentExecutionResult } from '../workflow/types';
+import { ExecutionOutcome } from '../workflow/enums';
 
 export type ThoughtCallback = (event: ThoughtEvent) => void;
 export type TextCallback = (delta: string) => void;
@@ -349,6 +351,168 @@ export class AgentRunner {
       gcp_deploy: 'gcp'
     };
     return serverMap[toolName];
+  }
+
+  // ─── WF-202: Structured completion payload parsing ───────────────────────────
+
+  /**
+   * Run the agent and return a typed AgentExecutionResult for workflow orchestration.
+   *
+   * The agent may signal a structured outcome by including a JSON fence in its
+   * response that begins with `"__bormagi_outcome__": true`. Example:
+   *
+   * ```json
+   * {
+   *   "__bormagi_outcome__": true,
+   *   "outcome": "delegate",
+   *   "summary": "Completed requirements; handing off to architect.",
+   *   "toAgentId": "solution-architect",
+   *   "objective": "Design the system based on the approved requirements.",
+   *   "reasonForHandoff": "Requirements are complete and approved.",
+   *   "constraints": [],
+   *   "expectedOutputs": ["Architecture diagram", "ADR"],
+   *   "doneCriteria": ["All components defined", "ADRs written"]
+   * }
+   * ```
+   *
+   * Agents that do not produce a structured payload are treated as `completed`.
+   */
+  async runWithWorkflow(
+    agentId: string,
+    taskId: string,
+    workflowId: string,
+    userMessage: string,
+    onText: TextCallback,
+    onThought: ThoughtCallback,
+    onApproval: ApprovalCallback,
+    onDiff: DiffCallback,
+    onTokenUsage?: TokenUsageCallback
+  ): Promise<AgentExecutionResult> {
+    let fullResponse = '';
+
+    // Capture the full response via the onText callback
+    const capturingOnText: TextCallback = (delta) => {
+      fullResponse += delta;
+      onText(delta);
+    };
+
+    await this.run(agentId, userMessage, capturingOnText, onThought, onApproval, onDiff, onTokenUsage);
+
+    const completedAt = new Date().toISOString();
+    const parsed = this.parseStructuredCompletion(fullResponse);
+
+    if (parsed) {
+      onThought({
+        type: 'thinking',
+        label: `Structured outcome: ${parsed.outcome}`,
+        detail: JSON.stringify({ outcome: parsed.outcome, summary: parsed.summary }, null, 2),
+        timestamp: new Date(),
+      });
+      return { ...parsed, taskId, workflowId, agentId, completedAt };
+    }
+
+    // No structured payload — treat as plain completion
+    return {
+      taskId,
+      workflowId,
+      agentId,
+      outcome: ExecutionOutcome.Completed,
+      summary: fullResponse.slice(0, 500),
+      producedArtifactIds: [],
+      delegateTo: null,
+      handoffRequest: null,
+      reviewRequest: null,
+      blocker: null,
+      completedAt,
+    };
+  }
+
+  /**
+   * Parse a structured completion payload from the agent's full text response.
+   * Scans for a JSON fence containing `"__bormagi_outcome__": true`.
+   * Returns null if no valid structured payload is found.
+   * Never throws — invalid JSON is silently ignored and treated as plain completion.
+   */
+  parseStructuredCompletion(
+    responseText: string
+  ): Omit<AgentExecutionResult, 'taskId' | 'workflowId' | 'agentId' | 'completedAt'> | null {
+    // Match any ```json ... ``` fence that contains __bormagi_outcome__
+    const fencePattern = /```(?:json)?\s*(\{[\s\S]*?"__bormagi_outcome__"\s*:\s*true[\s\S]*?\})\s*```/;
+    const match = responseText.match(fencePattern);
+    if (!match) {
+      return null;
+    }
+
+    let raw: Record<string, unknown>;
+    try {
+      raw = JSON.parse(match[1]) as Record<string, unknown>;
+    } catch {
+      return null;  // Malformed JSON — fall back to plain completion
+    }
+
+    const outcome = raw['outcome'] as string;
+    const validOutcomes: string[] = Object.values(ExecutionOutcome);
+    if (!validOutcomes.includes(outcome)) {
+      return null;  // Unknown outcome value — reject gracefully
+    }
+
+    const result: Omit<AgentExecutionResult, 'taskId' | 'workflowId' | 'agentId' | 'completedAt'> = {
+      outcome: outcome as AgentExecutionResult['outcome'],
+      summary: (raw['summary'] as string | undefined) ?? '',
+      producedArtifactIds: (raw['producedArtifactIds'] as string[] | undefined) ?? [],
+      delegateTo: (raw['toAgentId'] as string | undefined) ?? null,
+      handoffRequest: null,
+      reviewRequest: null,
+      blocker: null,
+    };
+
+    // Populate outcome-specific fields
+    if (outcome === ExecutionOutcome.Delegated && raw['toAgentId']) {
+      result.handoffRequest = {
+        workflowId: '',  // Filled in by the engine
+        taskId: '',
+        parentTaskId: null,
+        stageId: '',
+        fromAgentId: '',
+        toAgentId: raw['toAgentId'] as string,
+        returnToAgentId: null,
+        objective: (raw['objective'] as string | undefined) ?? result.summary,
+        reasonForHandoff: (raw['reasonForHandoff'] as string | undefined) ?? '',
+        inputArtifactIds: (raw['inputArtifactIds'] as string[] | undefined) ?? [],
+        relevantDecisionIds: (raw['relevantDecisionIds'] as string[] | undefined) ?? [],
+        constraints: (raw['constraints'] as string[] | undefined) ?? [],
+        expectedOutputs: (raw['expectedOutputs'] as string[] | undefined) ?? [],
+        doneCriteria: (raw['doneCriteria'] as string[] | undefined) ?? [],
+        isBlocking: (raw['isBlocking'] as boolean | undefined) ?? true,
+      };
+    }
+
+    if (outcome === ExecutionOutcome.ReviewRequested && raw['reviewerAgentId']) {
+      result.reviewRequest = {
+        workflowId: '',
+        taskId: '',
+        requestingAgentId: '',
+        reviewerAgentId: raw['reviewerAgentId'] as string,
+        itemUnderReview: (raw['itemUnderReview'] as string | undefined) ?? result.summary,
+        reviewScope: (raw['reviewScope'] as string | undefined) ?? '',
+        reviewCriteria: (raw['reviewCriteria'] as string[] | undefined) ?? [],
+        isBlocking: (raw['isBlocking'] as boolean | undefined) ?? true,
+      };
+    }
+
+    if (outcome === ExecutionOutcome.Blocked && raw['reason']) {
+      result.blocker = {
+        workflowId: '',
+        stageId: '',
+        taskId: '',
+        raisedByAgentId: '',
+        reason: raw['reason'] as string,
+        severity: (raw['severity'] as AgentExecutionResult['blocker'] extends null ? never : NonNullable<AgentExecutionResult['blocker']>['severity']) ?? 'medium',
+        suggestedRoute: (raw['suggestedRoute'] as string | undefined) ?? '',
+      };
+    }
+
+    return result;
   }
 
   private async buildContextSummary(agentConfig: { context_filter: { include_extensions: string[]; exclude_patterns: string[] } }): Promise<string> {

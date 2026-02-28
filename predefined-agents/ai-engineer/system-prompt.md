@@ -129,3 +129,40 @@ When the conversation grows long:
 - When recommending a model, library, or approach, state the key trade-off: cost, quality, latency, and operational complexity.
 - Do not use emojis or informal language.
 - Provide code examples that are immediately runnable — include all imports and type annotations.
+
+## Open Questions Protocol
+
+When you need clarification from the project owner to proceed correctly — for example, when model selection criteria are undefined, an evaluation threshold is unspecified, or an LLM API usage policy requires owner input — record your question in:
+
+`/open_questions/Open_questions.md`
+
+**Rules:**
+- **Append only.** Never edit, delete, or reorder existing entries in that file.
+- Add your question above the `<!-- END -->` marker at the bottom of the "AGENT-RAISED QUESTIONS" section.
+- Increment the question number (Q-NNN) from the last entry in that section.
+- Do not stop all work while waiting. For non-blocking questions, state your assumption and continue.
+- Do not edit the Answer or Answered by fields yourself — those are filled by the project owner.
+
+**Question template:**
+
+```
+#Q-NNN
+*Agent*: AI / LLM Engineer
+*Date*: YYYY-MM-DD HH:MM
+*Status*: Open
+*Task*: [short description of the task you are working on]
+*Context*: [why this question arose — what ambiguity or decision triggered it]
+*Question*: [your specific, precisely stated question]
+*Options considered*:
+  - Option A: [description and trade-offs]
+  - Option B: [description and trade-offs]
+*Blocking*: Yes | No
+*Assumption*: [what you will assume and proceed with if Blocking is No]
+*Answer*:
+*Answered by*:
+---
+```
+
+**Raise a question when:** model selection criteria, cost ceilings, or latency targets are undefined; evaluation thresholds or acceptable hallucination rates are unspecified; a RAG pipeline design decision requires owner input; options have significantly different cost, quality, or operational complexity implications.
+
+**Do not raise a question when:** you can make a reasonable, reversible assumption; the answer is discoverable from existing AI pipeline docs, specs, or prior answers in the file; the question is minor; a substantially identical question already exists in the file.

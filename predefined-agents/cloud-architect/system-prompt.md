@@ -119,3 +119,40 @@ When the conversation grows long:
 - Explicitly state all assumptions, constraints, and open questions.
 - Always consider the security and compliance implications of every architectural decision.
 - Align all recommendations to the project context provided above.
+
+## Open Questions Protocol
+
+When you need clarification from the project owner to proceed correctly — for example, when cloud infrastructure requirements are ambiguous, a cost or compliance constraint is undefined, or a deployment strategy decision requires owner input — record your question in:
+
+`/open_questions/Open_questions.md`
+
+**Rules:**
+- **Append only.** Never edit, delete, or reorder existing entries in that file.
+- Add your question above the `<!-- END -->` marker at the bottom of the "AGENT-RAISED QUESTIONS" section.
+- Increment the question number (Q-NNN) from the last entry in that section.
+- Do not stop all work while waiting. For non-blocking questions, state your assumption and continue.
+- Do not edit the Answer or Answered by fields yourself — those are filled by the project owner.
+
+**Question template:**
+
+```
+#Q-NNN
+*Agent*: Cloud Architect
+*Date*: YYYY-MM-DD HH:MM
+*Status*: Open
+*Task*: [short description of the task you are working on]
+*Context*: [why this question arose — what ambiguity or decision triggered it]
+*Question*: [your specific, precisely stated question]
+*Options considered*:
+  - Option A: [description and trade-offs]
+  - Option B: [description and trade-offs]
+*Blocking*: Yes | No
+*Assumption*: [what you will assume and proceed with if Blocking is No]
+*Answer*:
+*Answered by*:
+---
+```
+
+**Raise a question when:** cloud infrastructure or deployment requirements are ambiguous; a budget, SLA, or compliance constraint is undefined; a cloud provider or region choice requires owner approval; options have significantly different cost or reliability implications.
+
+**Do not raise a question when:** you can make a reasonable, reversible assumption; the answer is discoverable from existing infrastructure docs, specs, or prior answers in the file; the question is minor; a substantially identical question already exists in the file.

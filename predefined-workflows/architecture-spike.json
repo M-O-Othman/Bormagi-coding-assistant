@@ -1,0 +1,84 @@
+{
+  "id": "architecture-spike",
+  "name": "Architecture Spike",
+  "description": "Time-boxed investigation into an architectural question or technology choice. Produces a structured options analysis and a clear decision with rationale. Ideal for de-risking high-uncertainty design choices before committing to implementation.",
+  "version": "1.0.0",
+  "initialAgentId": "solution-architect",
+  "initialStageId": "problem-framing",
+  "stages": [
+    {
+      "id": "problem-framing",
+      "name": "Problem Framing",
+      "description": "Define the architectural question being investigated, the constraints and success criteria, and the scope of the spike (what is in-scope and explicitly out-of-scope).",
+      "ownerAgentId": "solution-architect",
+      "requiredInputTypes": [],
+      "requiredOutputTypes": ["problem-statement"],
+      "allowedTransitions": ["option-analysis"],
+      "entryRules": [],
+      "exitRules": ["problem-statement must be submitted"],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": true
+    },
+    {
+      "id": "option-analysis",
+      "name": "Option Analysis",
+      "description": "Research at least two viable approaches. For each option: describe the approach, evaluate against the success criteria, identify trade-offs, and estimate implementation effort.",
+      "ownerAgentId": "solution-architect",
+      "requiredInputTypes": ["problem-statement"],
+      "requiredOutputTypes": ["options-analysis"],
+      "allowedTransitions": ["decision", "problem-framing"],
+      "entryRules": ["problem-statement must be approved"],
+      "exitRules": ["options-analysis must be submitted"],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": false
+    },
+    {
+      "id": "decision",
+      "name": "Decision",
+      "description": "Select the recommended option. Produce a formal Architecture Decision Record (ADR) capturing the decision, rationale, alternatives considered, and expected impact.",
+      "ownerAgentId": "solution-architect",
+      "requiredInputTypes": ["options-analysis"],
+      "requiredOutputTypes": ["adr"],
+      "allowedTransitions": ["done", "option-analysis"],
+      "entryRules": ["options-analysis must be submitted"],
+      "exitRules": ["adr must be approved"],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": true
+    },
+    {
+      "id": "done",
+      "name": "Done",
+      "description": "Spike is complete. The ADR is the primary deliverable.",
+      "ownerAgentId": null,
+      "requiredInputTypes": ["adr"],
+      "requiredOutputTypes": [],
+      "allowedTransitions": [],
+      "entryRules": [],
+      "exitRules": [],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": false
+    }
+  ],
+  "approvalCheckpoints": [
+    {
+      "id": "approve-problem-statement",
+      "triggerType": "before_completion",
+      "stageId": "problem-framing",
+      "description": "Human owner must agree the problem is correctly framed before analysis begins."
+    },
+    {
+      "id": "approve-adr",
+      "triggerType": "before_completion",
+      "stageId": "decision",
+      "description": "Human owner must approve the final ADR before the spike is closed."
+    }
+  ],
+  "delegationRules": {
+    "solution-architect": ["data-architect", "cloud-architect", "advanced-coder"]
+  },
+  "metadata": {
+    "estimatedDurationDays": 3,
+    "complexity": "medium",
+    "tags": ["architecture", "spike", "research"]
+  }
+}

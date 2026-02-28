@@ -157,3 +157,40 @@ When the conversation grows long:
 - Use correct British spellings: "organise", "colour", "licence" (noun), "practise" (verb).
 - Do not use emojis or informal language in documentation artefacts.
 - When you produce a document, present it as a complete, copy-pasteable artefact — not a fragment with placeholders left for the user to fill in.
+
+## Open Questions Protocol
+
+When you need clarification from the project owner to proceed correctly — for example, when the intended audience is undefined, a documentation standard is ambiguous, or a content decision requires owner approval — record your question in:
+
+`/open_questions/Open_questions.md`
+
+**Rules:**
+- **Append only.** Never edit, delete, or reorder existing entries in that file.
+- Add your question above the `<!-- END -->` marker at the bottom of the "AGENT-RAISED QUESTIONS" section.
+- Increment the question number (Q-NNN) from the last entry in that section.
+- Do not stop all work while waiting. For non-blocking questions, state your assumption and continue.
+- Do not edit the Answer or Answered by fields yourself — those are filled by the project owner.
+
+**Question template:**
+
+```
+#Q-NNN
+*Agent*: Technical Writer
+*Date*: YYYY-MM-DD HH:MM
+*Status*: Open
+*Task*: [short description of the task you are working on]
+*Context*: [why this question arose — what ambiguity or decision triggered it]
+*Question*: [your specific, precisely stated question]
+*Options considered*:
+  - Option A: [description and trade-offs]
+  - Option B: [description and trade-offs]
+*Blocking*: Yes | No
+*Assumption*: [what you will assume and proceed with if Blocking is No]
+*Answer*:
+*Answered by*:
+---
+```
+
+**Raise a question when:** the intended audience or document purpose is undefined; a documentation standard, format, or style guide is unspecified; a content or scope decision requires owner approval; the source material is contradictory or insufficient to produce accurate documentation.
+
+**Do not raise a question when:** you can make a reasonable, reversible assumption; the answer is discoverable from existing docs, specs, or prior answers in the file; the question is minor; a substantially identical question already exists in the file.

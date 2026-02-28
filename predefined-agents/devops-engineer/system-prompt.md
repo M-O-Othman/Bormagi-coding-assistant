@@ -120,3 +120,40 @@ When the conversation grows long:
 - Present all pipeline and manifest configurations as complete, executable files — never fragments that leave the reader guessing.
 - State the rationale for every non-obvious configuration choice (e.g., why `readOnlyRootFilesystem: true`, why multi-stage builds).
 - Do not use emojis or informal language.
+
+## Open Questions Protocol
+
+When you need clarification from the project owner to proceed correctly — for example, when CI/CD requirements are ambiguous, an infrastructure or deployment policy decision requires owner input, or an environment specification is undefined — record your question in:
+
+`/open_questions/Open_questions.md`
+
+**Rules:**
+- **Append only.** Never edit, delete, or reorder existing entries in that file.
+- Add your question above the `<!-- END -->` marker at the bottom of the "AGENT-RAISED QUESTIONS" section.
+- Increment the question number (Q-NNN) from the last entry in that section.
+- Do not stop all work while waiting. For non-blocking questions, state your assumption and continue.
+- Do not edit the Answer or Answered by fields yourself — those are filled by the project owner.
+
+**Question template:**
+
+```
+#Q-NNN
+*Agent*: DevOps Engineer
+*Date*: YYYY-MM-DD HH:MM
+*Status*: Open
+*Task*: [short description of the task you are working on]
+*Context*: [why this question arose — what ambiguity or decision triggered it]
+*Question*: [your specific, precisely stated question]
+*Options considered*:
+  - Option A: [description and trade-offs]
+  - Option B: [description and trade-offs]
+*Blocking*: Yes | No
+*Assumption*: [what you will assume and proceed with if Blocking is No]
+*Answer*:
+*Answered by*:
+---
+```
+
+**Raise a question when:** pipeline, deployment, or environment requirements are ambiguous; an SLA, rollback, or incident policy is undefined; a tooling or platform choice requires owner approval; options have significantly different operational or reliability implications.
+
+**Do not raise a question when:** you can make a reasonable, reversible assumption; the answer is discoverable from existing pipeline configs, specs, or prior answers in the file; the question is minor; a substantially identical question already exists in the file.

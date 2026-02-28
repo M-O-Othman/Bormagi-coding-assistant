@@ -1,0 +1,897 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src __CSP_SOURCE__ 'unsafe-inline'; script-src __CSP_SOURCE__ 'unsafe-inline';">
+  <title>Workflow Board</title>
+  <style>
+    /* ── Reset & base ────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Tabs ─────────────────────────────────────────────── */
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      background: var(--vscode-tab-inactiveBackground);
+      flex-shrink: 0;
+    }
+    .tab-btn {
+      padding: 6px 14px;
+      border: none;
+      background: none;
+      color: var(--vscode-tab-inactiveForeground);
+      cursor: pointer;
+      font-size: 12px;
+      font-family: inherit;
+      border-bottom: 2px solid transparent;
+      white-space: nowrap;
+    }
+    .tab-btn.active {
+      color: var(--vscode-tab-activeForeground);
+      border-bottom-color: var(--vscode-focusBorder);
+      background: var(--vscode-tab-activeBackground);
+    }
+    .tab-btn:hover:not(.active) {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .tab-content { display: none; flex: 1; overflow: auto; padding: 12px; }
+    .tab-content.active { display: flex; flex-direction: column; gap: 10px; }
+
+    /* ── Toolbar ──────────────────────────────────────────── */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .toolbar select, .toolbar input {
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border);
+      padding: 3px 6px;
+      font-size: 11px;
+      font-family: inherit;
+      border-radius: 2px;
+    }
+    .toolbar select:focus, .toolbar input:focus {
+      outline: 1px solid var(--vscode-focusBorder);
+    }
+
+    /* ── Buttons ──────────────────────────────────────────── */
+    .btn {
+      padding: 4px 10px;
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: 2px;
+      cursor: pointer;
+      font-size: 11px;
+      font-family: inherit;
+    }
+    .btn-primary {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+    .btn-primary:hover { background: var(--vscode-button-hoverBackground); }
+    .btn-secondary {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+    }
+    .btn-secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    .btn-danger {
+      background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
+      color: var(--vscode-inputValidation-errorForeground, #f48771);
+      border-color: var(--vscode-inputValidation-errorBorder, #be1100);
+    }
+    .btn-icon {
+      background: none;
+      border: none;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      padding: 2px 6px;
+      font-size: 13px;
+    }
+    .btn-icon:hover { background: var(--vscode-list-hoverBackground); border-radius: 2px; }
+
+    /* ── Kanban board ─────────────────────────────────────── */
+    .board {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(140px, 1fr));
+      gap: 8px;
+      flex: 1;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .column {
+      display: flex;
+      flex-direction: column;
+      background: var(--vscode-list-inactiveSelectionBackground, rgba(255,255,255,0.05));
+      border-radius: 4px;
+      overflow: hidden;
+      min-width: 0;
+    }
+    .column-header {
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      background: var(--vscode-titleBar-activeBackground, rgba(0,0,0,0.2));
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .column-header .count {
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      border-radius: 9px;
+      padding: 0 6px;
+      font-size: 10px;
+      min-width: 18px;
+      text-align: center;
+    }
+    .column-cards {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .card {
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 3px;
+      padding: 8px 10px;
+      cursor: pointer;
+      transition: border-color 0.1s;
+    }
+    .card:hover { border-color: var(--vscode-focusBorder); }
+    .card-title { font-size: 12px; font-weight: 500; margin-bottom: 4px; word-break: break-word; }
+    .card-meta { display: flex; flex-wrap: wrap; gap: 4px; font-size: 10px; color: var(--vscode-descriptionForeground); }
+    .badge {
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 10px;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+    }
+    .badge-blocker { background: var(--vscode-statusBarItem-errorBackground, #c72e0f); }
+    .badge-review  { background: var(--vscode-statusBarItem-warningBackground, #c98d00); }
+
+    /* Column accent colours */
+    .col-backlog    .column-header { color: var(--vscode-descriptionForeground); }
+    .col-active     .column-header { color: var(--vscode-charts-blue, #569cd6); }
+    .col-waiting    .column-header { color: var(--vscode-charts-yellow, #d7ba7d); }
+    .col-blocked    .column-header { color: var(--vscode-errorForeground, #f48771); }
+    .col-done       .column-header { color: var(--vscode-charts-green, #4ec9b0); }
+
+    /* ── Detail panel ─────────────────────────────────────── */
+    .detail-panel { display: flex; flex-direction: column; gap: 12px; }
+    .section {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 3px;
+    }
+    .section-header {
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      background: var(--vscode-list-inactiveSelectionBackground, rgba(255,255,255,0.05));
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+    }
+    .section-body { padding: 10px; }
+    .section-body.collapsed { display: none; }
+
+    .kv-list { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; }
+    .kv-key { color: var(--vscode-descriptionForeground); }
+    .kv-val { word-break: break-all; }
+
+    .stage-history { display: flex; flex-direction: column; gap: 4px; }
+    .stage-row { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+    .stage-dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+      background: var(--vscode-descriptionForeground);
+    }
+    .stage-dot.active  { background: var(--vscode-charts-blue, #569cd6); }
+    .stage-dot.completed { background: var(--vscode-charts-green, #4ec9b0); }
+    .stage-dot.blocked   { background: var(--vscode-errorForeground, #f48771); }
+
+    .task-graph { display: flex; flex-direction: column; gap: 6px; }
+    .task-node { padding: 6px 10px; border-left: 2px solid var(--vscode-panel-border); cursor: pointer; }
+    .task-node:hover { background: var(--vscode-list-hoverBackground); }
+    .task-node.child { margin-left: 18px; font-size: 11px; }
+
+    /* ── Artifact cards ───────────────────────────────────── */
+    .artifact-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+    .artifact-card {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 3px;
+      padding: 8px;
+      font-size: 11px;
+    }
+    .artifact-card .af-name { font-weight: 600; margin-bottom: 4px; word-break: break-all; }
+    .artifact-card .af-meta { color: var(--vscode-descriptionForeground); }
+    .artifact-card .af-link { color: var(--vscode-textLink-foreground); cursor: pointer; }
+    .artifact-card .af-link:hover { text-decoration: underline; }
+
+    /* ── Timeline ─────────────────────────────────────────── */
+    .timeline { display: flex; flex-direction: column; gap: 0; }
+    .timeline-event {
+      display: flex;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      font-size: 11px;
+    }
+    .timeline-event:last-child { border-bottom: none; }
+    .timeline-time { color: var(--vscode-descriptionForeground); min-width: 80px; }
+    .timeline-icon { width: 20px; text-align: center; flex-shrink: 0; }
+    .timeline-body { flex: 1; }
+    .timeline-event-type { font-weight: 600; }
+
+    /* ── Handoff review ───────────────────────────────────── */
+    .handoff-card {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 3px;
+      padding: 10px;
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .handoff-card h4 { font-size: 13px; font-weight: 600; }
+    .handoff-actions { display: flex; gap: 8px; }
+
+    /* ── Wizard ───────────────────────────────────────────── */
+    .wizard { max-width: 420px; display: flex; flex-direction: column; gap: 12px; }
+    .form-group { display: flex; flex-direction: column; gap: 4px; }
+    .form-label { font-size: 11px; color: var(--vscode-descriptionForeground); }
+    .form-input, .form-select, .form-textarea {
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border);
+      padding: 5px 8px;
+      font-size: 12px;
+      font-family: inherit;
+      border-radius: 2px;
+    }
+    .form-input:focus, .form-select:focus, .form-textarea:focus {
+      outline: 1px solid var(--vscode-focusBorder);
+    }
+    .form-textarea { resize: vertical; min-height: 60px; }
+
+    /* ── Empty state ─────────────────────────────────────── */
+    .empty { color: var(--vscode-descriptionForeground); font-size: 12px; text-align: center; padding: 20px; }
+
+    /* ── Status badges ────────────────────────────────────── */
+    .status-draft     { color: var(--vscode-descriptionForeground); }
+    .status-active    { color: var(--vscode-charts-blue, #569cd6); }
+    .status-blocked   { color: var(--vscode-errorForeground, #f48771); }
+    .status-completed { color: var(--vscode-charts-green, #4ec9b0); }
+    .status-cancelled { color: var(--vscode-disabledForeground); text-decoration: line-through; }
+    .status-pending   { color: var(--vscode-charts-yellow, #d7ba7d); }
+    .status-rejected  { color: var(--vscode-errorForeground, #f48771); }
+    .status-approved  { color: var(--vscode-charts-green, #4ec9b0); }
+
+    .msg-info  { padding: 8px 12px; border-radius: 3px; background: var(--vscode-textBlockQuote-background); font-size: 12px; }
+    .msg-error { padding: 8px 12px; border-radius: 3px; background: var(--vscode-inputValidation-errorBackground, #5a1d1d); font-size: 12px; color: var(--vscode-inputValidation-errorForeground, #f48771); }
+
+    code { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
+    a { color: var(--vscode-textLink-foreground); cursor: pointer; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<!-- ── Tab bar ──────────────────────────────────────────────── -->
+<nav class="tabs">
+  <button class="tab-btn active" data-tab="board">Board</button>
+  <button class="tab-btn" data-tab="detail">Detail</button>
+  <button class="tab-btn" data-tab="events">Events</button>
+  <button class="tab-btn" data-tab="artifacts">Artifacts</button>
+  <button class="tab-btn" data-tab="wizard">New Workflow</button>
+</nav>
+
+<!-- ── Board tab ─────────────────────────────────────────────── -->
+<div id="tab-board" class="tab-content active">
+  <div class="toolbar">
+    <button class="btn btn-secondary" onclick="refreshBoard()">⟳ Refresh</button>
+    <span style="flex:1"></span>
+    <span id="board-status" style="font-size:11px;color:var(--vscode-descriptionForeground)"></span>
+  </div>
+  <div class="board">
+    <div class="column col-backlog">
+      <div class="column-header">Backlog <span class="count" id="cnt-backlog">0</span></div>
+      <div class="column-cards" id="col-backlog"></div>
+    </div>
+    <div class="column col-active">
+      <div class="column-header">Active <span class="count" id="cnt-active">0</span></div>
+      <div class="column-cards" id="col-active"></div>
+    </div>
+    <div class="column col-waiting">
+      <div class="column-header">Waiting Review <span class="count" id="cnt-waitingReview">0</span></div>
+      <div class="column-cards" id="col-waitingReview"></div>
+    </div>
+    <div class="column col-blocked">
+      <div class="column-header">Blocked <span class="count" id="cnt-blocked">0</span></div>
+      <div class="column-cards" id="col-blocked"></div>
+    </div>
+    <div class="column col-done">
+      <div class="column-header">Done <span class="count" id="cnt-done">0</span></div>
+      <div class="column-cards" id="col-done"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Detail tab ─────────────────────────────────────────────── -->
+<div id="tab-detail" class="tab-content">
+  <div class="toolbar">
+    <label class="form-label" for="detail-wf-id">Workflow ID</label>
+    <input id="detail-wf-id" class="form-input" style="flex:1" placeholder="workflow ID" oninput="scheduleDetailLoad()">
+    <button class="btn btn-primary" onclick="loadWorkflowDetail()">Load</button>
+  </div>
+  <div id="detail-content">
+    <p class="empty">Enter a workflow ID above to load the detail panel.</p>
+  </div>
+</div>
+
+<!-- ── Events tab ─────────────────────────────────────────────── -->
+<div id="tab-events" class="tab-content">
+  <div class="toolbar">
+    <input id="events-wf-id" class="form-input" style="width:200px" placeholder="workflow ID">
+    <select id="events-type-filter" class="form-select">
+      <option value="">All event types</option>
+      <option value="workflow_created">workflow_created</option>
+      <option value="stage_started">stage_started</option>
+      <option value="stage_completed">stage_completed</option>
+      <option value="task_created">task_created</option>
+      <option value="task_completed">task_completed</option>
+      <option value="task_cancelled">task_cancelled</option>
+      <option value="task_resumed">task_resumed</option>
+      <option value="blocker_raised">blocker_raised</option>
+      <option value="blocker_resolved">blocker_resolved</option>
+      <option value="handoff_created">handoff_created</option>
+      <option value="review_completed">review_completed</option>
+    </select>
+    <button class="btn btn-primary" onclick="loadEvents()">Load</button>
+  </div>
+  <div id="events-content">
+    <p class="empty">Enter a workflow ID to load the event timeline.</p>
+  </div>
+</div>
+
+<!-- ── Artifacts tab ─────────────────────────────────────────── -->
+<div id="tab-artifacts" class="tab-content">
+  <div class="toolbar">
+    <input id="artifacts-wf-id" class="form-input" style="width:200px" placeholder="workflow ID">
+    <select id="artifacts-status-filter" class="form-select">
+      <option value="">All statuses</option>
+      <option value="draft">Draft</option>
+      <option value="submitted">Submitted</option>
+      <option value="approved">Approved</option>
+      <option value="rejected">Rejected</option>
+      <option value="superseded">Superseded</option>
+    </select>
+    <button class="btn btn-primary" onclick="loadArtifacts()">Load</button>
+  </div>
+  <div id="artifacts-content">
+    <p class="empty">Enter a workflow ID to view the artifact registry.</p>
+  </div>
+</div>
+
+<!-- ── Wizard tab ─────────────────────────────────────────────── -->
+<div id="tab-wizard" class="tab-content">
+  <div class="wizard">
+    <h3 style="font-size:14px">Create New Workflow</h3>
+
+    <div class="form-group">
+      <label class="form-label" for="wiz-template">Template</label>
+      <select id="wiz-template" class="form-select">
+        <option value="feature-delivery">Feature Delivery</option>
+        <option value="bug-fix">Bug Fix</option>
+        <option value="architecture-spike">Architecture Spike</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="wiz-title">Title *</label>
+      <input id="wiz-title" class="form-input" placeholder="e.g. Add OAuth2 login support">
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="wiz-owner">Human Owner *</label>
+      <input id="wiz-owner" class="form-input" placeholder="Your name or email">
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="wiz-issue">Linked Issue (optional)</label>
+      <input id="wiz-issue" class="form-input" placeholder="e.g. GH-123 or JIRA-456">
+    </div>
+
+    <div id="wizard-msg" style="display:none"></div>
+
+    <div style="display:flex; gap:8px">
+      <button class="btn btn-primary" onclick="createWorkflow()">Create Workflow</button>
+      <button class="btn btn-secondary" onclick="switchTab('board')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── VS Code API bridge ─────────────────────────────────────────────
+const vscode = acquireVsCodeApi();
+
+function post(msg) { vscode.postMessage(msg); }
+
+// ── Tab navigation ─────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + name));
+}
+document.querySelectorAll('.tab-btn').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+
+// ── Board ──────────────────────────────────────────────────────────
+function refreshBoard() {
+  document.getElementById('board-status').textContent = 'Loading…';
+  post({ type: 'get_board_data' });
+}
+
+function renderBoard(columns) {
+  const keys = ['backlog', 'active', 'waitingReview', 'blocked', 'done'];
+  keys.forEach(key => {
+    const list = columns[key] || [];
+    document.getElementById('cnt-' + key).textContent = list.length;
+    const container = document.getElementById('col-' + key);
+    container.innerHTML = list.length === 0
+      ? '<p class="empty" style="font-size:11px">—</p>'
+      : list.map(card => `
+        <div class="card" onclick="openTaskDetail('${esc(card.workflowId)}','${esc(card.taskId)}')">
+          <div class="card-title">${esc(card.title)}</div>
+          <div class="card-meta">
+            <span>${esc(card.ownerAgentId)}</span>
+            ${card.blockerCount > 0 ? `<span class="badge badge-blocker">⚠ ${card.blockerCount} blocker${card.blockerCount !== 1 ? 's' : ''}</span>` : ''}
+            <span class="badge">${esc(card.status)}</span>
+          </div>
+          <div style="font-size:10px;color:var(--vscode-descriptionForeground);margin-top:3px">${esc(card.workflowTitle)}</div>
+        </div>`).join('');
+  });
+  document.getElementById('board-status').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+function openTaskDetail(workflowId, taskId) {
+  switchTab('detail');
+  document.getElementById('detail-wf-id').value = workflowId;
+  loadTaskDetail(workflowId, taskId);
+}
+
+// ── Detail panel ───────────────────────────────────────────────────
+let detailTimer;
+function scheduleDetailLoad() {
+  clearTimeout(detailTimer);
+  detailTimer = setTimeout(loadWorkflowDetail, 600);
+}
+
+function loadWorkflowDetail() {
+  const id = document.getElementById('detail-wf-id').value.trim();
+  if (!id) return;
+  document.getElementById('detail-content').innerHTML = '<p class="empty">Loading…</p>';
+  post({ type: 'get_workflow_detail', workflowId: id });
+}
+
+function renderWorkflowDetail(data) {
+  if (!data) { document.getElementById('detail-content').innerHTML = '<p class="msg-error">Workflow not found.</p>'; return; }
+  const { workflow, stages, activeBlockers, pendingReviews, pendingHandoffs, artifacts, decisions } = data;
+
+  let html = `
+  <div class="detail-panel">
+    <!-- Workflow overview -->
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">Overview <span>▾</span></div>
+      <div class="section-body">
+        <div class="kv-list">
+          <span class="kv-key">ID</span><span class="kv-val"><code>${esc(workflow.id)}</code></span>
+          <span class="kv-key">Title</span><span class="kv-val">${esc(workflow.title)}</span>
+          <span class="kv-key">Status</span><span class="kv-val status-${esc(workflow.status)}">${esc(workflow.status)}</span>
+          <span class="kv-key">Owner</span><span class="kv-val">${esc(workflow.humanOwner)}</span>
+          <span class="kv-key">Template</span><span class="kv-val">${esc(workflow.templateId)}</span>
+          <span class="kv-key">Created</span><span class="kv-val">${fmtDate(workflow.createdAt)}</span>
+          ${workflow.linkedIssueId ? `<span class="kv-key">Issue</span><span class="kv-val">${esc(workflow.linkedIssueId)}</span>` : ''}
+        </div>
+      </div>
+    </div>
+
+    <!-- Stage history -->
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">Stages (${stages.length}) <span>▾</span></div>
+      <div class="section-body">
+        <div class="stage-history">
+          ${stages.map(s => `
+            <div class="stage-row">
+              <div class="stage-dot ${s.status}"></div>
+              <span style="flex:1">${esc(s.name)}</span>
+              <span class="badge">${esc(s.status)}</span>
+              ${s.tasks.length > 0 ? `<span style="font-size:10px;color:var(--vscode-descriptionForeground)">${s.tasks.length} task${s.tasks.length !== 1 ? 's' : ''}</span>` : ''}
+            </div>
+            ${s.tasks.map(t => `
+              <div class="task-node child" onclick="loadTaskDetail('${esc(workflow.id)}','${esc(t.id)}')">
+                <span class="status-${esc(t.status)}">● </span>${esc(t.title)}
+                <span style="float:right;font-size:10px;color:var(--vscode-descriptionForeground)">${esc(t.ownerAgentId)}</span>
+              </div>`).join('')}
+          `).join('')}
+        </div>
+      </div>
+    </div>
+
+    <!-- Active blockers -->
+    ${activeBlockers.length > 0 ? `
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">Active Blockers (${activeBlockers.length}) <span>▾</span></div>
+      <div class="section-body">
+        ${activeBlockers.map(b => `
+          <div style="border-left:3px solid var(--vscode-errorForeground,#f48771);padding:6px 10px;margin-bottom:6px;font-size:12px">
+            <strong>[${esc(b.severity.toUpperCase())}]</strong> ${esc(b.reason)}
+            <div style="color:var(--vscode-descriptionForeground);font-size:10px">
+              Raised by ${esc(b.raisedByAgentId)} · ${fmtDate(b.createdAt)}
+              ${b.isEscalated ? ' · <strong>ESCALATED</strong>' : ''}
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+
+    <!-- Pending handoff approvals -->
+    ${pendingHandoffs.length > 0 ? `
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">Pending Handoff Approvals (${pendingHandoffs.length}) <span>▾</span></div>
+      <div class="section-body">
+        ${pendingHandoffs.map(h => `
+          <div class="handoff-card">
+            <h4>${esc(h.objective)}</h4>
+            <div class="kv-list">
+              <span class="kv-key">From</span><span class="kv-val">${esc(h.fromAgentId)}</span>
+              <span class="kv-key">To</span><span class="kv-val">${esc(h.toAgentId)}</span>
+            </div>
+            <div class="handoff-actions">
+              <button class="btn btn-primary" onclick="approveHandoff('${esc(workflow.id)}','${esc(h.id)}')">Approve</button>
+              <button class="btn btn-danger" onclick="rejectHandoff('${esc(workflow.id)}','${esc(h.id)}')">Reject</button>
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+
+    <!-- Pending reviews -->
+    ${pendingReviews.length > 0 ? `
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">Pending Reviews (${pendingReviews.length}) <span>▾</span></div>
+      <div class="section-body">
+        ${pendingReviews.map(r => `
+          <div style="padding:6px;border:1px solid var(--vscode-panel-border);border-radius:3px;margin-bottom:6px;font-size:12px">
+            <strong>${esc(r.itemUnderReview)}</strong>
+            <div style="color:var(--vscode-descriptionForeground);font-size:10px">
+              Requested by ${esc(r.requestingAgentId)} · Reviewer: ${esc(r.reviewerAgentId)}
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+
+    <!-- Artifacts -->
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">Artifacts (${artifacts.length}) <span>▾</span></div>
+      <div class="section-body">
+        ${artifacts.length === 0 ? '<p class="empty">No artifacts yet.</p>' :
+          `<div class="artifact-grid">${artifacts.map(a => `
+            <div class="artifact-card">
+              <div class="af-name">${esc(a.name)}</div>
+              <div class="af-meta">
+                <div>Type: ${esc(a.type)}</div>
+                <div>Status: <span class="status-${esc(a.approvalStatus)}">${esc(a.approvalStatus)}</span></div>
+                <div>By: ${esc(a.producingAgentId)}</div>
+                ${a.path ? `<div><a class="af-link" onclick="openFile('${esc(a.path)}')">${esc(a.path)}</a></div>` : ''}
+              </div>
+            </div>`).join('')}</div>`}
+      </div>
+    </div>
+
+    <!-- Decisions -->
+    ${decisions.length > 0 ? `
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">Decisions (${decisions.length}) <span>▾</span></div>
+      <div class="section-body">
+        ${decisions.map(d => `
+          <div style="border-bottom:1px solid var(--vscode-panel-border);padding-bottom:8px;margin-bottom:8px;font-size:12px">
+            <strong>${esc(d.title)}</strong>
+            <div style="margin:4px 0">${esc(d.rationale)}</div>
+            <div style="color:var(--vscode-descriptionForeground);font-size:10px">Impact: ${esc(d.impact)}</div>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+  </div>`;
+
+  document.getElementById('detail-content').innerHTML = html;
+}
+
+function loadTaskDetail(workflowId, taskId) {
+  document.getElementById('detail-content').innerHTML = '<p class="empty">Loading task…</p>';
+  post({ type: 'get_task_detail', workflowId, taskId });
+}
+
+function renderTaskDetail(data) {
+  if (!data) { document.getElementById('detail-content').innerHTML = '<p class="msg-error">Task not found.</p>'; return; }
+  const { task, parentTask, childTasks, blockers, reviews, events, triggeringHandoff } = data;
+
+  let html = `
+  <div class="detail-panel">
+    <!-- Back -->
+    <div>
+      <a onclick="loadWorkflowDetail()">← Back to workflow</a>
+    </div>
+
+    <!-- Task overview -->
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">Task Overview <span>▾</span></div>
+      <div class="section-body">
+        <div class="kv-list">
+          <span class="kv-key">ID</span><span class="kv-val"><code>${esc(task.id)}</code></span>
+          <span class="kv-key">Title</span><span class="kv-val">${esc(task.title)}</span>
+          <span class="kv-key">Status</span><span class="kv-val status-${esc(task.status)}">${esc(task.status)}</span>
+          <span class="kv-key">Owner</span><span class="kv-val">${esc(task.ownerAgentId)}</span>
+          <span class="kv-key">Objective</span><span class="kv-val">${esc(task.objective)}</span>
+          ${parentTask ? `<span class="kv-key">Parent</span><span class="kv-val"><a onclick="loadTaskDetail('${esc(task.workflowId)}','${esc(task.parentTaskId)}')">${esc(parentTask.title)}</a></span>` : ''}
+          <span class="kv-key">Created</span><span class="kv-val">${fmtDate(task.createdAt)}</span>
+          ${task.startedAt ? `<span class="kv-key">Started</span><span class="kv-val">${fmtDate(task.startedAt)}</span>` : ''}
+          ${task.completedAt ? `<span class="kv-key">Completed</span><span class="kv-val">${fmtDate(task.completedAt)}</span>` : ''}
+          ${task.notes ? `<span class="kv-key">Notes</span><span class="kv-val">${esc(task.notes)}</span>` : ''}
+        </div>
+      </div>
+    </div>
+
+    <!-- Handoff context -->
+    ${triggeringHandoff ? `
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">Handoff Context <span>▾</span></div>
+      <div class="section-body">
+        <div class="kv-list">
+          <span class="kv-key">From</span><span class="kv-val">${esc(triggeringHandoff.fromAgentId)}</span>
+          <span class="kv-key">Reason</span><span class="kv-val">${esc(triggeringHandoff.reasonForHandoff)}</span>
+        </div>
+        ${triggeringHandoff.doneCriteria.length > 0 ? `
+        <div style="margin-top:8px">
+          <strong>Done criteria:</strong>
+          <ul style="margin:4px 0 0 16px;font-size:11px">${triggeringHandoff.doneCriteria.map(c => `<li>${esc(c)}</li>`).join('')}</ul>
+        </div>` : ''}
+      </div>
+    </div>` : ''}
+
+    <!-- Child tasks -->
+    ${childTasks.length > 0 ? `
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">Child Tasks (${childTasks.length}) <span>▾</span></div>
+      <div class="section-body">
+        <div class="task-graph">
+          ${childTasks.map(c => `
+            <div class="task-node child" onclick="loadTaskDetail('${esc(task.workflowId)}','${esc(c.id)}')">
+              <span class="status-${esc(c.status)}">● </span>${esc(c.title)}
+              <span style="float:right;font-size:10px;color:var(--vscode-descriptionForeground)">${esc(c.ownerAgentId)}</span>
+            </div>`).join('')}
+        </div>
+      </div>
+    </div>` : ''}
+
+    <!-- Blockers -->
+    ${blockers.length > 0 ? `
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">Blockers (${blockers.length}) <span>▾</span></div>
+      <div class="section-body">
+        ${blockers.map(b => `
+          <div style="border-left:3px solid ${b.isResolved ? 'var(--vscode-charts-green,#4ec9b0)' : 'var(--vscode-errorForeground,#f48771)'};padding:6px 10px;margin-bottom:6px;font-size:12px">
+            <strong>[${esc(b.severity.toUpperCase())}]</strong> ${esc(b.reason)}
+            ${b.isResolved ? `<div style="color:var(--vscode-charts-green,#4ec9b0);font-size:10px">✓ Resolved by ${esc(b.resolvedBy)} — ${esc(b.resolutionNotes)}</div>` : ''}
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+
+    <!-- Reviews -->
+    ${reviews.length > 0 ? `
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">Reviews (${reviews.length}) <span>▾</span></div>
+      <div class="section-body">
+        ${reviews.map(r => `
+          <div style="border:1px solid var(--vscode-panel-border);border-radius:3px;padding:6px 10px;margin-bottom:6px;font-size:12px">
+            <strong>${esc(r.itemUnderReview)}</strong>
+            <span class="badge status-${esc(r.status)}" style="float:right">${esc(r.status)}</span>
+            ${r.comments ? `<div style="margin-top:4px;color:var(--vscode-descriptionForeground)">${esc(r.comments)}</div>` : ''}
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+
+    <!-- Audit events -->
+    ${events.length > 0 ? `
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">Audit Events (${events.length}) <span>▾</span></div>
+      <div class="section-body">
+        <div class="timeline">
+          ${events.map(e => `
+            <div class="timeline-event">
+              <span class="timeline-time">${fmtDate(e.createdAt).slice(11, 19)}</span>
+              <span class="timeline-icon">${eventIcon(e.eventType)}</span>
+              <div class="timeline-body">
+                <span class="timeline-event-type">${esc(e.eventType)}</span>
+                ${e.agentId ? ` · <span style="color:var(--vscode-descriptionForeground)">${esc(e.agentId)}</span>` : ''}
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>
+    </div>` : ''}
+  </div>`;
+
+  document.getElementById('detail-content').innerHTML = html;
+}
+
+// ── Events tab ─────────────────────────────────────────────────────
+function loadEvents() {
+  const id = document.getElementById('events-wf-id').value.trim();
+  const typeFilter = document.getElementById('events-type-filter').value;
+  if (!id) { document.getElementById('events-content').innerHTML = '<p class="msg-error">Please enter a workflow ID.</p>'; return; }
+  document.getElementById('events-content').innerHTML = '<p class="empty">Loading…</p>';
+  post({ type: 'get_events', workflowId: id, eventType: typeFilter || undefined });
+}
+
+function renderEvents(events) {
+  if (!events || events.length === 0) {
+    document.getElementById('events-content').innerHTML = '<p class="empty">No events found.</p>';
+    return;
+  }
+  const html = `<div class="timeline">${events.map(e => `
+    <div class="timeline-event">
+      <span class="timeline-time">${fmtDate(e.createdAt).slice(0,19).replace('T',' ')}</span>
+      <span class="timeline-icon">${eventIcon(e.eventType)}</span>
+      <div class="timeline-body">
+        <span class="timeline-event-type">${esc(e.eventType)}</span>
+        ${e.agentId ? ` · <span style="color:var(--vscode-descriptionForeground);font-size:10px">${esc(e.agentId)}</span>` : ''}
+        ${e.stageId ? ` · <code style="font-size:10px">${esc(e.stageId)}</code>` : ''}
+        ${e.taskId ? ` · <a onclick="openTaskDetail('${esc(e.workflowId)}','${esc(e.taskId)}')" style="font-size:10px">${esc(e.taskId)}</a>` : ''}
+        ${e.payload && Object.keys(e.payload).length > 0 ? `<div style="color:var(--vscode-descriptionForeground);font-size:10px;margin-top:2px"><code>${esc(JSON.stringify(e.payload))}</code></div>` : ''}
+      </div>
+    </div>`).join('')}</div>`;
+  document.getElementById('events-content').innerHTML = html;
+}
+
+// ── Artifacts tab ──────────────────────────────────────────────────
+function loadArtifacts() {
+  const id = document.getElementById('artifacts-wf-id').value.trim();
+  const statusFilter = document.getElementById('artifacts-status-filter').value;
+  if (!id) { document.getElementById('artifacts-content').innerHTML = '<p class="msg-error">Please enter a workflow ID.</p>'; return; }
+  document.getElementById('artifacts-content').innerHTML = '<p class="empty">Loading…</p>';
+  post({ type: 'get_artifacts', workflowId: id, approvalStatus: statusFilter || undefined });
+}
+
+function renderArtifacts(artifacts) {
+  if (!artifacts || artifacts.length === 0) {
+    document.getElementById('artifacts-content').innerHTML = '<p class="empty">No artifacts found.</p>';
+    return;
+  }
+  const html = `<div class="artifact-grid">${artifacts.map(a => `
+    <div class="artifact-card">
+      <div class="af-name">${esc(a.name)}</div>
+      <div class="af-meta">
+        <div>Type: <strong>${esc(a.type)}</strong></div>
+        <div>Status: <span class="status-${esc(a.approvalStatus)}">${esc(a.approvalStatus)}</span></div>
+        <div>Agent: ${esc(a.producingAgentId)}</div>
+        <div>Stage: <code>${esc(a.stageId)}</code></div>
+        <div>v${a.version} · ${fmtDate(a.createdAt).slice(0,10)}</div>
+        ${a.path ? `<div><a class="af-link" onclick="openFile('${esc(a.path)}')">${esc(a.path)}</a></div>` : ''}
+      </div>
+    </div>`).join('')}</div>`;
+  document.getElementById('artifacts-content').innerHTML = html;
+}
+
+// ── Wizard ─────────────────────────────────────────────────────────
+function createWorkflow() {
+  const title = document.getElementById('wiz-title').value.trim();
+  const owner = document.getElementById('wiz-owner').value.trim();
+  const templateId = document.getElementById('wiz-template').value;
+  const linkedIssueId = document.getElementById('wiz-issue').value.trim() || undefined;
+
+  if (!title || !owner) {
+    showWizardMsg('error', 'Title and Human Owner are required.');
+    return;
+  }
+
+  // Build a minimal template stub; the extension host will load the real template from disk.
+  const template = { id: templateId };
+  post({ type: 'create_workflow', template, title, humanOwner: owner, linkedIssueId });
+  showWizardMsg('info', 'Creating workflow…');
+}
+
+function showWizardMsg(type, text) {
+  const el = document.getElementById('wizard-msg');
+  el.className = type === 'error' ? 'msg-error' : 'msg-info';
+  el.textContent = text;
+  el.style.display = '';
+}
+
+// ── Handoff actions ────────────────────────────────────────────────
+function approveHandoff(workflowId, handoffId) {
+  post({ type: 'approve_handoff', workflowId, handoffId, approvedBy: 'human' });
+}
+
+function rejectHandoff(workflowId, handoffId) {
+  const reason = prompt('Rejection reason:');
+  if (!reason) return;
+  post({ type: 'reject_handoff', workflowId, handoffId, rejectedBy: 'human', reason });
+}
+
+// ── File opener ────────────────────────────────────────────────────
+function openFile(relPath) {
+  post({ type: 'open_file', path: relPath });
+}
+
+// ── UI helpers ─────────────────────────────────────────────────────
+function toggleSection(headerEl) {
+  const body = headerEl.nextElementSibling;
+  const isCollapsed = body.classList.toggle('collapsed');
+  headerEl.querySelector('span').textContent = isCollapsed ? '▸' : '▾';
+}
+
+function esc(str) {
+  if (str == null) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return iso.replace('T',' ').slice(0, 19);
+}
+
+function eventIcon(type) {
+  const icons = {
+    workflow_created: '🆕', stage_started: '▶', stage_completed: '✅',
+    task_created: '📋', task_completed: '✓', task_cancelled: '✗',
+    task_resumed: '↩', blocker_raised: '🚫', blocker_resolved: '✅',
+    handoff_created: '↗', review_completed: '👁', override_applied: '⚡'
+  };
+  return icons[type] || '•';
+}
+
+// ── Message listener ────────────────────────────────────────────────
+window.addEventListener('message', event => {
+  const msg = event.data;
+  switch (msg.type) {
+    case 'board_data':          renderBoard(msg.data); break;
+    case 'workflow_detail':     renderWorkflowDetail(msg.data); break;
+    case 'task_detail':         renderTaskDetail(msg.data); break;
+    case 'artifacts':           renderArtifacts(msg.data); break;
+    case 'events':              renderEvents(msg.data); break;
+    case 'handoff_result':
+      alert(msg.data.success ? 'Handoff approved.' : 'Handoff rejected.');
+      break;
+    case 'create_result':
+      showWizardMsg('info', `Workflow created: ${msg.data.workflowId}`);
+      setTimeout(() => switchTab('board'), 1500);
+      break;
+    case 'error':
+      const errEl = document.getElementById('detail-content');
+      if (errEl) errEl.innerHTML = `<p class="msg-error">${esc(msg.message)}</p>`;
+      break;
+  }
+});
+
+// ── Auto-load board on open ────────────────────────────────────────
+refreshBoard();
+</script>
+</body>
+</html>

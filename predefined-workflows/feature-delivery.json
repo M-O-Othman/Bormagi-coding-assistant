@@ -1,0 +1,133 @@
+{
+  "id": "feature-delivery",
+  "name": "New Feature Delivery",
+  "description": "End-to-end feature delivery: from requirements capture through architecture, data design, implementation, QA validation, and release readiness. Each stage gate enforces that required artifacts are produced and approved before the next stage begins.",
+  "version": "1.0.0",
+  "initialAgentId": "business-analyst",
+  "initialStageId": "requirements",
+  "stages": [
+    {
+      "id": "requirements",
+      "name": "Requirements",
+      "description": "Capture and validate business and functional requirements for the feature.",
+      "ownerAgentId": "business-analyst",
+      "requiredInputTypes": [],
+      "requiredOutputTypes": ["requirements-document"],
+      "allowedTransitions": ["architecture"],
+      "entryRules": [],
+      "exitRules": ["requirements-document must be approved"],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": true
+    },
+    {
+      "id": "architecture",
+      "name": "Architecture",
+      "description": "Design the technical architecture and produce an architecture decision record.",
+      "ownerAgentId": "solution-architect",
+      "requiredInputTypes": ["requirements-document"],
+      "requiredOutputTypes": ["architecture-document", "adr"],
+      "allowedTransitions": ["data-design", "requirements"],
+      "entryRules": ["requirements-document must be approved"],
+      "exitRules": ["architecture-document must be submitted", "adr must be submitted"],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": false
+    },
+    {
+      "id": "data-design",
+      "name": "Data Design",
+      "description": "Design database schema, data models, and migration plan.",
+      "ownerAgentId": "data-architect",
+      "requiredInputTypes": ["architecture-document"],
+      "requiredOutputTypes": ["data-model", "migration-plan"],
+      "allowedTransitions": ["implementation", "architecture"],
+      "entryRules": ["architecture-document must be approved"],
+      "exitRules": ["data-model must be submitted"],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": false
+    },
+    {
+      "id": "implementation",
+      "name": "Implementation",
+      "description": "Write all production code and unit tests as described in the architecture and data design.",
+      "ownerAgentId": "advanced-coder",
+      "requiredInputTypes": ["architecture-document", "data-model"],
+      "requiredOutputTypes": ["implementation", "unit-tests"],
+      "allowedTransitions": ["qa-validation", "data-design"],
+      "entryRules": ["architecture-document must be approved"],
+      "exitRules": ["implementation must be submitted", "unit-tests must be submitted"],
+      "requiresApprovalBeforeStart": true,
+      "requiresApprovalBeforeComplete": false
+    },
+    {
+      "id": "qa-validation",
+      "name": "QA Validation",
+      "description": "Run integration tests, review acceptance criteria, and produce a test report.",
+      "ownerAgentId": "software-qa",
+      "requiredInputTypes": ["implementation", "unit-tests"],
+      "requiredOutputTypes": ["test-report"],
+      "allowedTransitions": ["release-readiness", "implementation"],
+      "entryRules": ["implementation must be submitted"],
+      "exitRules": ["test-report must be approved"],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": false
+    },
+    {
+      "id": "release-readiness",
+      "name": "Release Readiness",
+      "description": "Prepare release notes, deployment plan, and confirm all acceptance criteria are met.",
+      "ownerAgentId": "business-analyst",
+      "requiredInputTypes": ["test-report"],
+      "requiredOutputTypes": ["release-notes", "deployment-plan"],
+      "allowedTransitions": ["done"],
+      "entryRules": ["test-report must be approved"],
+      "exitRules": ["release-notes must be submitted"],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": true
+    },
+    {
+      "id": "done",
+      "name": "Done",
+      "description": "Feature is released and all artifacts are approved.",
+      "ownerAgentId": null,
+      "requiredInputTypes": ["release-notes"],
+      "requiredOutputTypes": [],
+      "allowedTransitions": [],
+      "entryRules": [],
+      "exitRules": [],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": false
+    }
+  ],
+  "approvalCheckpoints": [
+    {
+      "id": "approve-requirements",
+      "triggerType": "before_completion",
+      "stageId": "requirements",
+      "description": "Human owner must approve the requirements document before architecture begins."
+    },
+    {
+      "id": "approve-implementation-start",
+      "triggerType": "before_stage",
+      "stageId": "implementation",
+      "description": "Human owner must approve the start of the implementation stage."
+    },
+    {
+      "id": "approve-release",
+      "triggerType": "before_completion",
+      "stageId": "release-readiness",
+      "description": "Human owner must approve the release before the workflow is marked done."
+    }
+  ],
+  "delegationRules": {
+    "business-analyst": ["solution-architect", "software-qa"],
+    "solution-architect": ["advanced-coder", "data-architect"],
+    "data-architect": ["advanced-coder"],
+    "advanced-coder": ["software-qa"],
+    "software-qa": ["advanced-coder"]
+  },
+  "metadata": {
+    "estimatedDurationDays": 10,
+    "complexity": "high",
+    "tags": ["feature", "full-stack"]
+  }
+}

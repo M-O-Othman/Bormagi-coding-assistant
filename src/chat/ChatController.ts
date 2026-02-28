@@ -13,6 +13,8 @@ import { DiffManager } from '../ui/DiffManager';
 import { ApprovalDialog } from '../ui/ApprovalDialog';
 import { StatusBar } from '../ui/StatusBar';
 import { ProviderType, ThoughtEvent } from '../types';
+import type { WorkflowEngine } from '../workflow/WorkflowEngine';
+import type { WorkflowStorage } from '../workflow/WorkflowStorage';
 
 // Models available per provider (mirrors AgentSettingsPanel)
 const PROVIDER_MODELS: Record<ProviderType, string[]> = {
@@ -32,7 +34,8 @@ export type MessageToWebview =
   | { type: 'agent_list'; agents: { id: string; name: string; category: string; providerType: string; model: string }[]; activeAgentId?: string }
   | { type: 'undo_result'; message: string }
   | { type: 'token_usage'; lastInputTokens: number; lastOutputTokens: number; sessionInputTokens: number; sessionOutputTokens: number; model: string }
-  | { type: 'model_switched'; model: string };
+  | { type: 'model_switched'; model: string }
+  | { type: 'wf_command_result'; message: string };
 
 export class ChatController {
   private _activeAgentId: string | undefined;
@@ -46,6 +49,10 @@ export class ChatController {
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
   private currentModel = '';
+
+  // Optional workflow engine — injected after construction when workflow features are active.
+  private workflowEngine?: WorkflowEngine;
+  private workflowStorage?: WorkflowStorage;
 
   constructor(
     private readonly agentManager: AgentManager,
@@ -74,6 +81,12 @@ export class ChatController {
     );
   }
 
+  /** Inject workflow engine after construction (called from extension.ts when workflow is enabled). */
+  setWorkflowEngine(engine: WorkflowEngine, storage: WorkflowStorage): void {
+    this.workflowEngine = engine;
+    this.workflowStorage = storage;
+  }
+
   get activeAgentName(): string | undefined {
     if (!this._activeAgentId) {
       return undefined;
@@ -100,6 +113,12 @@ export class ChatController {
     // Handle /artifact command
     if (rawMessage.trim().startsWith('/artifact')) {
       await this.handleArtifactCommand(rawMessage.trim());
+      return;
+    }
+
+    // Handle /wf-* workflow management commands
+    if (rawMessage.trim().startsWith('/wf-')) {
+      await this.handleWorkflowCommand(rawMessage.trim());
       return;
     }
 
@@ -239,6 +258,228 @@ export class ChatController {
     };
 
     await this.handleUserMessage(`[Artifact extraction — ${artifactType}]\n${PROMPTS[artifactType]}`);
+  }
+
+  // ─── WF-402: Workflow management commands ─────────────────────────────────────
+
+  private async handleWorkflowCommand(raw: string): Promise<void> {
+    if (!this.workflowEngine || !this.workflowStorage) {
+      this.post({
+        type: 'wf_command_result',
+        message: '⚠ Workflow engine is not available in this session. Ensure a workspace with a `.bormagi/workflows/` directory is open.'
+      });
+      return;
+    }
+
+    const parts = raw.split(/\s+/);
+    const subcommand = parts[0].slice(4); // strip leading '/wf-'
+
+    switch (subcommand) {
+      case 'list':
+        await this.wfList();
+        break;
+      case 'status':
+        await this.wfStatus(parts[1]);
+        break;
+      case 'resume':
+        await this.wfResume(parts[1]);
+        break;
+      case 'cancel':
+        await this.wfCancel(parts[1], parts.slice(2).join(' '));
+        break;
+      case 'reassign':
+        await this.wfReassign(parts[1], parts[2]);
+        break;
+      default:
+        this.post({
+          type: 'wf_command_result',
+          message: [
+            'Available workflow commands:',
+            '  /wf-list                             — list all active workflows',
+            '  /wf-status [workflowId]              — show workflow summary (prompts if omitted)',
+            '  /wf-resume <taskId>                  — resume a paused/waiting task',
+            '  /wf-cancel <taskId> [reason]         — cancel a task (with confirmation)',
+            '  /wf-reassign <taskId> <newAgentId>   — reassign task to a different agent',
+          ].join('\n')
+        });
+    }
+  }
+
+  private async wfList(): Promise<void> {
+    const ids = await this.workflowStorage!.listWorkflowIds();
+    if (ids.length === 0) {
+      this.post({ type: 'wf_command_result', message: 'No workflows found in this workspace.' });
+      return;
+    }
+
+    const lines: string[] = [`Found ${ids.length} workflow(s):\n`];
+    for (const id of ids) {
+      const wf = await this.workflowStorage!.loadWorkflow(id);
+      if (wf) {
+        lines.push(`  • [${wf.status.toUpperCase()}] ${wf.title} (${wf.id})`);
+      }
+    }
+    this.post({ type: 'wf_command_result', message: lines.join('\n') });
+  }
+
+  private async wfStatus(workflowId?: string): Promise<void> {
+    const id = await this.resolveWorkflowId(workflowId);
+    if (!id) return;
+
+    try {
+      const summary = await this.workflowEngine!.generateWorkflowSummary(id);
+      this.post({ type: 'wf_command_result', message: summary.markdownSummary });
+    } catch (err) {
+      this.post({ type: 'wf_command_result', message: `Error: ${String(err)}` });
+    }
+  }
+
+  private async wfResume(taskId?: string): Promise<void> {
+    if (!taskId) {
+      this.post({ type: 'wf_command_result', message: 'Usage: /wf-resume <taskId>' });
+      return;
+    }
+
+    const workflowId = await this.resolveWorkflowIdForTask(taskId);
+    if (!workflowId) {
+      this.post({ type: 'wf_command_result', message: `Task "${taskId}" not found in any workflow.` });
+      return;
+    }
+
+    const confirmed = await vscode.window.showWarningMessage(
+      `Resume task "${taskId}" in workflow "${workflowId}"?`,
+      { modal: true },
+      'Resume'
+    );
+    if (confirmed !== 'Resume') return;
+
+    try {
+      // resumeAfterReview is the canonical resume path; for manual resume we pass the taskId as the reviewId
+      // which resolves the waiting-review state. For WaitingChild tasks, callers should cancel the child.
+      const resumed = await this.workflowEngine!.resumeAfterReview(workflowId, taskId);
+      const msg = resumed
+        ? `Task "${resumed.title ?? taskId}" resumed successfully.`
+        : `Task "${taskId}" could not be resumed (check its current status with /wf-status).`;
+      await this.auditLogger.logAgentSwitch(`wf-resume:${taskId}`);
+      this.post({ type: 'wf_command_result', message: msg });
+    } catch (err) {
+      this.post({ type: 'wf_command_result', message: `Error resuming task: ${String(err)}` });
+    }
+  }
+
+  private async wfCancel(taskId?: string, reason?: string): Promise<void> {
+    if (!taskId) {
+      this.post({ type: 'wf_command_result', message: 'Usage: /wf-cancel <taskId> [reason]' });
+      return;
+    }
+
+    const workflowId = await this.resolveWorkflowIdForTask(taskId);
+    if (!workflowId) {
+      this.post({ type: 'wf_command_result', message: `Task "${taskId}" not found in any workflow.` });
+      return;
+    }
+
+    const finalReason = reason?.trim() || await vscode.window.showInputBox({
+      title: `Cancel task "${taskId}"`,
+      prompt: 'Enter cancellation reason (required)',
+      placeHolder: 'e.g. Superseded by new requirements'
+    });
+    if (!finalReason) return;
+
+    const confirmed = await vscode.window.showWarningMessage(
+      `Cancel task "${taskId}"? This cannot be undone.`,
+      { modal: true },
+      'Cancel Task'
+    );
+    if (confirmed !== 'Cancel Task') return;
+
+    try {
+      await this.workflowEngine!.cancelTask(workflowId, taskId, finalReason, 'human');
+      await this.auditLogger.logAgentSwitch(`wf-cancel:${taskId}`);
+      this.post({ type: 'wf_command_result', message: `Task "${taskId}" cancelled. Reason: ${finalReason}` });
+    } catch (err) {
+      this.post({ type: 'wf_command_result', message: `Error cancelling task: ${String(err)}` });
+    }
+  }
+
+  private async wfReassign(taskId?: string, newAgentId?: string): Promise<void> {
+    if (!taskId || !newAgentId) {
+      this.post({ type: 'wf_command_result', message: 'Usage: /wf-reassign <taskId> <newAgentId>' });
+      return;
+    }
+
+    const newAgent = this.agentManager.getAgent(newAgentId);
+    if (!newAgent) {
+      this.post({ type: 'wf_command_result', message: `Agent "${newAgentId}" not found. Check the agent ID with the agent list.` });
+      return;
+    }
+
+    const workflowId = await this.resolveWorkflowIdForTask(taskId);
+    if (!workflowId) {
+      this.post({ type: 'wf_command_result', message: `Task "${taskId}" not found in any workflow.` });
+      return;
+    }
+
+    const confirmed = await vscode.window.showWarningMessage(
+      `Reassign task "${taskId}" to agent "${newAgent.name}"?`,
+      { modal: true },
+      'Reassign'
+    );
+    if (confirmed !== 'Reassign') return;
+
+    try {
+      const tasks = await this.workflowStorage!.loadTasks(workflowId);
+      const index = tasks.findIndex(t => t.id === taskId);
+      if (index === -1) {
+        this.post({ type: 'wf_command_result', message: `Task "${taskId}" not found in storage.` });
+        return;
+      }
+      const previous = tasks[index].ownerAgentId;
+      tasks[index] = { ...tasks[index], ownerAgentId: newAgentId };
+      await this.workflowStorage!.saveTasks(workflowId, tasks);
+      await this.auditLogger.logAgentSwitch(`wf-reassign:${taskId}:${newAgentId}`);
+      this.post({
+        type: 'wf_command_result',
+        message: `Task "${taskId}" reassigned from "${previous}" to "${newAgentId}" (${newAgent.name}).`
+      });
+    } catch (err) {
+      this.post({ type: 'wf_command_result', message: `Error reassigning task: ${String(err)}` });
+    }
+  }
+
+  // ─── Workflow command helpers ──────────────────────────────────────────────────
+
+  /** Resolve a workflowId — prompts with quick-pick if not provided or ambiguous. */
+  private async resolveWorkflowId(workflowId?: string): Promise<string | undefined> {
+    if (workflowId) return workflowId;
+
+    const ids = await this.workflowStorage!.listWorkflowIds();
+    if (ids.length === 0) {
+      this.post({ type: 'wf_command_result', message: 'No workflows found in this workspace.' });
+      return undefined;
+    }
+    if (ids.length === 1) return ids[0];
+
+    const items = await Promise.all(ids.map(async id => {
+      const wf = await this.workflowStorage!.loadWorkflow(id);
+      return { label: wf ? `${wf.title} (${wf.status})` : id, id };
+    }));
+
+    const chosen = await vscode.window.showQuickPick(
+      items.map(i => i.label),
+      { title: 'Select workflow', placeHolder: 'Choose a workflow' }
+    );
+    return chosen ? items.find(i => i.label === chosen)?.id : undefined;
+  }
+
+  /** Find which workflow owns a given task by scanning all workflows. */
+  private async resolveWorkflowIdForTask(taskId: string): Promise<string | undefined> {
+    const ids = await this.workflowStorage!.listWorkflowIds();
+    for (const id of ids) {
+      const tasks = await this.workflowStorage!.loadTasks(id);
+      if (tasks.some(t => t.id === taskId)) return id;
+    }
+    return undefined;
   }
 
   private estimateCost(model: string, totalInputTokens: number, totalOutputTokens: number): number {

@@ -73,4 +73,75 @@ export class AuditLogger {
   ): Promise<void> {
     await this.log({ event: 'TOKEN_USAGE', agent: agentId, provider, model, inputTokens, outputTokens, costUsd });
   }
+
+  // ─── WF-701: Structured workflow events ────────────────────────────────────────
+
+  async logWorkflowCreated(workflowId: string, title: string, templateId: string, humanOwner: string): Promise<void> {
+    await this.log({ event: 'WF_CREATED', workflowId, title, templateId, humanOwner });
+  }
+
+  async logStageTransition(workflowId: string, fromStageId: string | null, toStageId: string, triggeredBy: string): Promise<void> {
+    await this.log({ event: 'WF_STAGE_TRANSITION', workflowId, fromStageId, toStageId, triggeredBy });
+  }
+
+  async logTaskDelegated(
+    workflowId: string,
+    taskId: string,
+    fromAgentId: string,
+    toAgentId: string,
+    handoffId: string
+  ): Promise<void> {
+    await this.log({ event: 'WF_DELEGATION', workflowId, taskId, fromAgentId, toAgentId, handoffId });
+  }
+
+  async logReviewCompleted(
+    workflowId: string,
+    reviewId: string,
+    taskId: string,
+    outcome: string,
+    reviewerAgentId: string
+  ): Promise<void> {
+    await this.log({ event: 'WF_REVIEW_COMPLETED', workflowId, reviewId, taskId, outcome, reviewerAgentId });
+  }
+
+  async logBlockerRaised(
+    workflowId: string,
+    blockerId: string,
+    taskId: string,
+    severity: string,
+    raisedByAgentId: string
+  ): Promise<void> {
+    await this.log({ event: 'WF_BLOCKER_RAISED', workflowId, blockerId, taskId, severity, raisedByAgentId });
+  }
+
+  async logBlockerResolved(
+    workflowId: string,
+    blockerId: string,
+    taskId: string,
+    resolvedBy: string
+  ): Promise<void> {
+    await this.log({ event: 'WF_BLOCKER_RESOLVED', workflowId, blockerId, taskId, resolvedBy });
+  }
+
+  async logOverrideApplied(
+    workflowId: string,
+    permission: string,
+    performedBy: string,
+    reason: string,
+    targetId?: string
+  ): Promise<void> {
+    await this.log({ event: 'WF_OVERRIDE', workflowId, permission, performedBy, reason, targetId: targetId ?? null });
+  }
+
+  async logWorkflowCancelled(workflowId: string, reason: string, cancelledBy: string): Promise<void> {
+    await this.log({ event: 'WF_CANCELLED', workflowId, reason, cancelledBy });
+  }
+
+  async logApprovalCheckpointGranted(
+    workflowId: string,
+    checkpointId: string,
+    grantedBy: string
+  ): Promise<void> {
+    await this.log({ event: 'WF_APPROVAL_GRANTED', workflowId, checkpointId, grantedBy });
+  }
 }

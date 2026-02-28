@@ -1,0 +1,92 @@
+{
+  "id": "bug-fix",
+  "name": "Bug Fix",
+  "description": "Structured bug fix workflow: triage the issue to confirm root cause, implement the fix, validate with QA, then confirm release readiness. Keeps fixes focused and traceable.",
+  "version": "1.0.0",
+  "initialAgentId": "software-qa",
+  "initialStageId": "triage",
+  "stages": [
+    {
+      "id": "triage",
+      "name": "Triage",
+      "description": "Reproduce the bug, identify the root cause, scope the fix, and document the triage report.",
+      "ownerAgentId": "software-qa",
+      "requiredInputTypes": [],
+      "requiredOutputTypes": ["triage-report"],
+      "allowedTransitions": ["implementation"],
+      "entryRules": [],
+      "exitRules": ["triage-report must be submitted"],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": false
+    },
+    {
+      "id": "implementation",
+      "name": "Implementation",
+      "description": "Apply the fix as described in the triage report. Include a regression test.",
+      "ownerAgentId": "advanced-coder",
+      "requiredInputTypes": ["triage-report"],
+      "requiredOutputTypes": ["implementation", "regression-test"],
+      "allowedTransitions": ["qa-validation", "triage"],
+      "entryRules": ["triage-report must be submitted"],
+      "exitRules": ["implementation must be submitted", "regression-test must be submitted"],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": false
+    },
+    {
+      "id": "qa-validation",
+      "name": "QA Validation",
+      "description": "Validate the fix: confirm the bug is resolved and no regressions are introduced.",
+      "ownerAgentId": "software-qa",
+      "requiredInputTypes": ["implementation", "regression-test"],
+      "requiredOutputTypes": ["test-report"],
+      "allowedTransitions": ["release-readiness", "implementation"],
+      "entryRules": ["implementation must be submitted"],
+      "exitRules": ["test-report must be submitted"],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": false
+    },
+    {
+      "id": "release-readiness",
+      "name": "Release Readiness",
+      "description": "Confirm the fix is ready for production deployment. Produce a brief release note.",
+      "ownerAgentId": "advanced-coder",
+      "requiredInputTypes": ["test-report"],
+      "requiredOutputTypes": ["release-notes"],
+      "allowedTransitions": ["done"],
+      "entryRules": ["test-report must be submitted"],
+      "exitRules": ["release-notes must be submitted"],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": true
+    },
+    {
+      "id": "done",
+      "name": "Done",
+      "description": "Bug fix is released and verified.",
+      "ownerAgentId": null,
+      "requiredInputTypes": ["release-notes"],
+      "requiredOutputTypes": [],
+      "allowedTransitions": [],
+      "entryRules": [],
+      "exitRules": [],
+      "requiresApprovalBeforeStart": false,
+      "requiresApprovalBeforeComplete": false
+    }
+  ],
+  "approvalCheckpoints": [
+    {
+      "id": "approve-release",
+      "triggerType": "before_completion",
+      "stageId": "release-readiness",
+      "description": "Human owner must approve the release before the bug fix is marked done."
+    }
+  ],
+  "delegationRules": {
+    "software-qa": ["advanced-coder"],
+    "advanced-coder": ["software-qa"]
+  },
+  "metadata": {
+    "estimatedDurationDays": 2,
+    "complexity": "low",
+    "tags": ["bug", "hotfix"]
+  }
+}

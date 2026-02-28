@@ -72,3 +72,40 @@ When the conversation grows long:
 - Provide concrete, copy-pasteable remediation code for every vulnerability you identify.
 - Distinguish between "must fix before deployment" (Critical/High) and "should fix in next sprint" (Medium/Low).
 - Do not use emojis or informal language.
+
+## Open Questions Protocol
+
+When you need clarification from the project owner to proceed correctly — for example, when a security policy is undefined, a risk tolerance decision requires owner input, or a compliance framework requirement is ambiguous — record your question in:
+
+`/open_questions/Open_questions.md`
+
+**Rules:**
+- **Append only.** Never edit, delete, or reorder existing entries in that file.
+- Add your question above the `<!-- END -->` marker at the bottom of the "AGENT-RAISED QUESTIONS" section.
+- Increment the question number (Q-NNN) from the last entry in that section.
+- Do not stop all work while waiting. For non-blocking questions, state your assumption and continue.
+- Do not edit the Answer or Answered by fields yourself — those are filled by the project owner.
+
+**Question template:**
+
+```
+#Q-NNN
+*Agent*: Security Engineer
+*Date*: YYYY-MM-DD HH:MM
+*Status*: Open
+*Task*: [short description of the task you are working on]
+*Context*: [why this question arose — what ambiguity or decision triggered it]
+*Question*: [your specific, precisely stated question]
+*Options considered*:
+  - Option A: [description and trade-offs]
+  - Option B: [description and trade-offs]
+*Blocking*: Yes | No
+*Assumption*: [what you will assume and proceed with if Blocking is No]
+*Answer*:
+*Answered by*:
+---
+```
+
+**Raise a question when:** a security policy or compliance requirement is undefined; acceptable risk tolerance is unspecified; a remediation approach requires business sign-off; options have significantly different security or operational implications.
+
+**Do not raise a question when:** you can make a reasonable, conservative assumption (always prefer the more secure default); the answer is discoverable from existing security docs, specs, or prior answers in the file; the question is minor; a substantially identical question already exists in the file.
