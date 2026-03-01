@@ -65,7 +65,7 @@ export class MeetingPanel {
         localResourceRoots: [extensionUri]
       }
     );
-    panel.iconPath = vscode.Uri.joinPath(extensionUri, 'media', 'bormagi-icon.svg');
+    panel.iconPath = vscode.Uri.joinPath(extensionUri, 'media', 'icon.png');
 
     MeetingPanel.current = new MeetingPanel(panel, extensionUri, agentManager, configManager, workspaceRoot, secretsManager);
   }
@@ -140,6 +140,10 @@ export class MeetingPanel {
         }
         break;
       }
+      case 'stop_meeting': {
+        await this.handleStopMeeting();
+        break;
+      }
       case 'generate_minutes': {
         if (this.activeMeeting) {
           const markdown = await this.orchestrator.generateMinutes(this.activeMeeting);
@@ -159,12 +163,25 @@ export class MeetingPanel {
     }
   }
 
+  private async handleStopMeeting(): Promise<void> {
+    if (!this.activeMeeting) { return; }
+    this.orchestrator.abort();
+    // Give the current stream a moment to receive the abort signal
+    await new Promise<void>(resolve => setTimeout(resolve, 400));
+    this.activeMeeting.status = 'completed';
+    await this.storage.saveMeeting(this.activeMeeting);
+    const minutes = await this.orchestrator.generateMinutes(this.activeMeeting);
+    await this.storage.saveMinutes(this.activeMeeting.id, minutes);
+    this.post({ type: 'meeting_stopped', minutes });
+  }
+
   private async handleStartMeeting(msg: Record<string, unknown>): Promise<void> {
-    const { title, agendaLines, participants, resourceFiles } = msg as {
+    const { title, agendaLines, participants, resourceFiles, initialActionItems } = msg as {
       title: string;
       agendaLines: string[];
       participants: string[];
       resourceFiles: string[];
+      initialActionItems?: Array<{ text: string; assignedTo: string }>;
     };
 
     const id = this.storage.generateId();
@@ -172,6 +189,12 @@ export class MeetingPanel {
       .map((text) => text.trim())
       .filter(t => t.length > 0)
       .map((text, i) => ({ id: `item-${i}`, text, status: 'pending' as const }));
+
+    const preItems: ActionItem[] = (initialActionItems ?? []).map((ai, i) => ({
+      id: `ai-pre-${i}`,
+      text: ai.text,
+      assignedTo: ai.assignedTo
+    }));
 
     const meeting: Meeting = {
       id,
@@ -182,7 +205,7 @@ export class MeetingPanel {
       resourceFiles,
       agenda,
       rounds: [],
-      actionItems: []
+      actionItems: preItems
     };
 
     this.activeMeeting = meeting;

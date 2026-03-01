@@ -10,11 +10,18 @@ export type RoundDeltaCallback = (agendaItemId: string, agentId: string, delta: 
 export type RoundDoneCallback = (agendaItemId: string, agentId: string, fullResponse: string) => void;
 
 export class MeetingOrchestrator {
+  private aborted = false;
+
   constructor(
     private readonly agentManager: AgentManager,
     private readonly configManager: ConfigManager,
     private readonly workspaceRoot: string
   ) {}
+
+  /** Signal the orchestrator to stop after the current agent finishes. */
+  abort(): void { this.aborted = true; }
+
+  private resetAbort(): void { this.aborted = false; }
 
   /**
    * Run one round of responses for a single agenda item.
@@ -30,12 +37,14 @@ export class MeetingOrchestrator {
     onDelta: RoundDeltaCallback,
     onDone: RoundDoneCallback
   ): Promise<void> {
+    this.resetAbort();
     const item = meeting.agenda.find(a => a.id === agendaItemId);
     if (!item) { return; }
 
     const resourceContext = this.loadResourceFiles(meeting.resourceFiles);
 
     for (const agentId of meeting.participants) {
+      if (this.aborted) { break; }
       const agentConfig = this.agentManager.getAgent(agentId);
       if (!agentConfig) { continue; }
 
@@ -79,6 +88,15 @@ export class MeetingOrchestrator {
           systemPrompt += '\n' + fs.readFileSync(spPath, 'utf8');
         }
       }
+      // Meeting behaviour constraints — always appended last so they take priority
+      systemPrompt +=
+        '\n\nMEETING BEHAVIOUR RULES (mandatory):\n' +
+        '- Communicate exclusively in plain, conversational English prose.\n' +
+        '- Do NOT write code blocks, shell commands, scripts, or terminal output.\n' +
+        '- Describe technical ideas by explaining intent, approach, and trade-offs in words.\n' +
+        '- Keep your contribution concise — one to three paragraphs maximum.\n' +
+        '- Only produce actual code if the meeting chair explicitly asks for it (e.g. "show the code" or "write the implementation").';
+
 
       // Build conversation messages — system prompt first
       const messages: ChatMessage[] = [
@@ -112,6 +130,7 @@ export class MeetingOrchestrator {
       // Stream the response
       let fullResponse = '';
       for await (const event of provider.stream(messages, [])) {
+        if (this.aborted) { break; }
         if (event.type === 'text') {
           fullResponse += event.delta;
           onDelta(agendaItemId, agentId, event.delta);

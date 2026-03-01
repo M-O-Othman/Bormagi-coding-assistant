@@ -154,7 +154,18 @@
     </div>
   </div>
 
+  <div class="form-group">
+    <label>Pre-Meeting Action Items (optional)</label>
+    <div id="pre-action-list" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;"></div>
+    <div class="add-action-form">
+      <input type="text" id="pre-action-text" placeholder="Describe the action item"/>
+      <input type="text" id="pre-action-assignee" list="agents-datalist" placeholder="Assigned to (any name)"/>
+      <button class="btn btn-sm btn-outline" type="button" onclick="addPreActionItem()">Add</button>
+    </div>
+  </div>
+
   <button class="btn" onclick="startMeeting()" id="start-btn">Start Meeting</button>
+  <datalist id="agents-datalist"></datalist>
 </div>
 
 <!-- ══════════════════════════════════════════════════
@@ -190,6 +201,7 @@
         <div class="chat-controls">
           <button class="btn btn-outline btn-sm" onclick="resolveCurrentItem()">✓ Mark Resolved</button>
           <button class="btn btn-outline btn-sm" onclick="switchTab('actions')">+ Action Item</button>
+          <button class="btn btn-danger btn-sm" onclick="endMeeting()" id="end-meeting-btn">■ End Meeting</button>
         </div>
       </div>
     </div>
@@ -208,7 +220,7 @@
     <label style="display:block;margin-bottom:6px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">Add Action Item</label>
     <div class="add-action-form">
       <input type="text" id="new-action-text" placeholder="Action item description"/>
-      <select id="new-action-agent"><option value="">Assign to…</option></select>
+      <input type="text" id="new-action-assignee" list="agents-datalist" placeholder="Assigned to (any name)"/>
       <button class="btn btn-sm" onclick="addActionItem()">Add</button>
     </div>
   </div>
@@ -230,11 +242,13 @@
 const vscode = acquireVsCodeApi();
 
 // ── State ──────────────────────────────────────────────────
-let allAgents = [];     // { id, name }[]
-let allFiles = [];      // string[]
-let meeting = null;     // Meeting object from extension
+let allAgents = [];        // { id, name }[]
+let allFiles = [];         // string[]
+let meeting = null;        // Meeting object from extension
 let activeItemId = null;
 let roundRunning = false;
+let meetingEnded = false;
+let preActionItems = [];   // { text, assignedTo }[] — collected before meeting starts
 
 // Per-item chat feeds: itemId → array of rendered html strings (we append to the DOM directly)
 const itemBuffers = {};   // itemId → { agentBuffers: { agentId: string }, roundCount: number }
@@ -261,6 +275,7 @@ window.addEventListener('message', e => {
     case 'item_resolved':     onItemResolved(msg.agendaItemId, msg.decision); break;
     case 'action_item_added': onActionItemAdded(msg.actionItem); break;
     case 'minutes_ready':     onMinutesReady(msg.markdown); break;
+    case 'meeting_stopped':   onMeetingStopped(msg.minutes); break;
   }
 });
 
@@ -273,10 +288,11 @@ function onAgentsList(agents) {
     `<label><input type="checkbox" value="${esc(a.id)}"/> ${esc(a.name)}</label>`
   ).join('');
 
-  // Populate action item assignment dropdown
-  const sel = document.getElementById('new-action-agent');
-  sel.innerHTML = '<option value="">Assign to…</option>' +
-    agents.map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
+  // Populate agents-datalist for action item assignee autocomplete
+  const dl = document.getElementById('agents-datalist');
+  if (dl) {
+    dl.innerHTML = agents.map(a => `<option value="${esc(a.name)}"/>`).join('');
+  }
 }
 
 function onWorkspaceFiles(files) {
@@ -301,7 +317,7 @@ function startMeeting() {
   const resourceFiles = [...document.querySelectorAll('#file-checkboxes input:checked')].map(cb => cb.value);
 
   document.getElementById('start-btn').disabled = true;
-  vscode.postMessage({ type: 'start_meeting', title, agendaLines, participants, resourceFiles });
+  vscode.postMessage({ type: 'start_meeting', title, agendaLines, participants, resourceFiles, initialActionItems: preActionItems });
 }
 
 // ── Meeting started ────────────────────────────────────────
@@ -320,6 +336,11 @@ function onMeetingStarted(m) {
 
   // Show chat input bar
   document.getElementById('chat-input-bar').style.display = '';
+
+  // Render any pre-meeting action items that were included
+  if (meeting.actionItems && meeting.actionItems.length > 0) {
+    meeting.actionItems.forEach(ai => onActionItemAdded(ai));
+  }
 
   // Clear feed, show first item
   const feed = document.getElementById('chat-feed');
@@ -548,20 +569,19 @@ function onActionItemAdded(ai) {
   const empty = list.querySelector('.empty');
   if (empty) { empty.remove(); }
 
-  const agent = allAgents.find(a => a.id === ai.assignedTo);
-  const agentName = agent ? agent.name : ai.assignedTo;
   const card = document.createElement('div');
   card.className = 'action-card';
   card.innerHTML = `<span class="action-text">${esc(ai.text)}</span>
-    <span class="action-assignee">${esc(agentName)}</span>`;
+    <span class="action-assignee">${esc(ai.assignedTo || 'Unassigned')}</span>`;
   list.appendChild(card);
 }
 
 function addActionItem() {
   const text = document.getElementById('new-action-text').value.trim();
-  const assignedTo = document.getElementById('new-action-agent').value;
+  const assignedTo = document.getElementById('new-action-assignee').value.trim() || 'Unassigned';
   if (!text) { return; }
   document.getElementById('new-action-text').value = '';
+  document.getElementById('new-action-assignee').value = '';
   vscode.postMessage({ type: 'add_action_item', text, assignedTo });
 }
 
@@ -612,6 +632,67 @@ function esc(str) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+// ── End Meeting ────────────────────────────────────────────
+function endMeeting() {
+  if (!meeting || meetingEnded) { return; }
+  if (!confirm('End the meeting now? Minutes will be saved automatically.')) { return; }
+  const endBtn = document.getElementById('end-meeting-btn');
+  if (endBtn) { endBtn.disabled = true; endBtn.textContent = 'Ending…'; }
+  vscode.postMessage({ type: 'stop_meeting' });
+}
+
+function onMeetingStopped(minutes) {
+  meetingEnded = true;
+  roundRunning = false;
+  setRoundUiState(false);
+
+  const endBtn = document.getElementById('end-meeting-btn');
+  if (endBtn) { endBtn.disabled = true; endBtn.textContent = '✓ Ended'; }
+  const continueBtn = document.getElementById('continue-btn');
+  if (continueBtn) { continueBtn.disabled = true; }
+
+  const feed = document.getElementById('chat-feed');
+  const banner = document.createElement('div');
+  banner.className = 'resolved-notice';
+  banner.innerHTML = '<strong>Meeting ended.</strong> Minutes have been saved automatically.';
+  feed.appendChild(banner);
+  feed.scrollTop = feed.scrollHeight;
+
+  if (minutes) {
+    document.getElementById('minutes-output').textContent = minutes;
+    switchTab('minutes');
+  }
+}
+
+// ── Pre-Meeting Action Items ───────────────────────────────
+function addPreActionItem() {
+  const text = document.getElementById('pre-action-text').value.trim();
+  const assignedTo = document.getElementById('pre-action-assignee').value.trim() || 'Unassigned';
+  if (!text) { return; }
+  preActionItems.push({ text, assignedTo });
+  document.getElementById('pre-action-text').value = '';
+  document.getElementById('pre-action-assignee').value = '';
+  renderPreActionItems();
+}
+
+function removePreActionItem(i) {
+  preActionItems.splice(i, 1);
+  renderPreActionItems();
+}
+
+function renderPreActionItems() {
+  const list = document.getElementById('pre-action-list');
+  if (!list) { return; }
+  if (preActionItems.length === 0) { list.innerHTML = ''; return; }
+  list.innerHTML = preActionItems.map((ai, i) =>
+    `<div class="action-card" style="font-size:12px;">
+      <span class="action-text">${esc(ai.text)}</span>
+      <span class="action-assignee">${esc(ai.assignedTo)}</span>
+      <button class="btn btn-sm btn-outline" style="padding:1px 6px;margin-left:4px;" onclick="removePreActionItem(${i})">×</button>
+    </div>`
+  ).join('');
 }
 </script>
 </body>
