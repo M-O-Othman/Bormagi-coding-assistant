@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "compile",
+      "label": "bormagi-compile",
       "type": "process",
       "command": "node",
       "args": ["C:/Users/mothm/Downloads/VS code Extension/bormagi-extension/node_modules/webpack/bin/webpack.js"],

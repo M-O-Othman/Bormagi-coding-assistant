@@ -12,7 +12,7 @@
       "outFiles": [
         "C:/Users/mothm/Downloads/VS code Extension/bormagi-extension/dist/**/*.js"
       ],
-      "preLaunchTask": "compile"
+      "preLaunchTask": "bormagi-compile"
     }
   ]
 }
