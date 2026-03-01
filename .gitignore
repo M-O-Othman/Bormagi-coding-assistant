@@ -13,6 +13,9 @@ out/
 .env
 .env.*
 
+# Packaged extension
+*.vsix
+
 # OS
 .DS_Store
 Thumbs.db
