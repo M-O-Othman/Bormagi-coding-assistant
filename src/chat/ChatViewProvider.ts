@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ChatController, MessageToWebview } from './ChatController';
+import { getAppData } from '../data/DataStore';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
@@ -25,8 +26,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this.getHtml();
 
-    // Register callback so controller can post messages to the webview
-    this.controller.registerWebviewCallback((msg: MessageToWebview) => {
+    // Subscribe so controller can post messages to the webview
+    this.controller.addSubscriber((msg: MessageToWebview) => {
       webviewView.webview.postMessage(msg);
     });
 
@@ -54,7 +55,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private getHtml(): string {
     const htmlPath = path.join(this.extensionUri.fsPath, 'media', 'chat.html');
     try {
-      return fs.readFileSync(htmlPath, 'utf8');
+      const raw = fs.readFileSync(htmlPath, 'utf8');
+      // Inject model context limits from the shared constants so chat.html
+      // never needs its own hardcoded copy.
+      return raw.replace(
+        /\/\*__MODEL_CONTEXT_LIMITS_JSON__\*\/\{\}\/\*__END__\*\//,
+        JSON.stringify(getAppData().contextLimits)
+      );
     } catch {
       return '<html><body><p>Bormagi: Could not load chat UI.</p></body></html>';
     }

@@ -1,6 +1,7 @@
 import { ConfigManager } from '../config/ConfigManager';
 import { TemplateEngine } from '../utils/TemplateEngine';
 import { AgentConfig } from '../types';
+import { getAppData } from '../data/DataStore';
 
 export class PromptComposer {
   constructor(private readonly config: ConfigManager) {}
@@ -26,14 +27,11 @@ export class PromptComposer {
   }
 
   private defaultPrompt(agentConfig: AgentConfig): string {
-    return `You are ${agentConfig.name}, a ${agentConfig.category}.
-
-${agentConfig.description}
-
-You have access to tools that let you read and write files, run terminal commands, interact with git, and deploy to Google Cloud Platform. Always think step-by-step before acting. When you plan to modify files or run commands, clearly state what you intend to do and why.
-
-Current project: {{project_name}}
-Current date: {{date}}
-Workspace: {{workspace}}`;
+    // Load from prompts/default-system-prompt.md and substitute agent-specific fields.
+    // Remaining {{project_name}}, {{date}}, {{workspace}} are resolved by TemplateEngine.resolve().
+    return getAppData().defaultSystemPrompt
+      .replace(/\{\{name\}\}/g, agentConfig.name)
+      .replace(/\{\{category\}\}/g, agentConfig.category)
+      .replace(/\{\{description\}\}/g, agentConfig.description);
   }
 }

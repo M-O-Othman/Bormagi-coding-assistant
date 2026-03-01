@@ -1,0 +1,51 @@
+[
+  {
+    "label": "OpenAI",
+    "type": "openai",
+    "defaultModel": "gpt-4o-mini",
+    "authMethod": "api_key",
+    "keyPlaceholder": "sk-..."
+  },
+  {
+    "label": "Anthropic",
+    "type": "anthropic",
+    "defaultModel": "claude-haiku-4-5-20251001",
+    "authMethod": "api_key",
+    "keyPlaceholder": "sk-ant-..."
+  },
+  {
+    "label": "Google AI",
+    "type": "gemini",
+    "defaultModel": "gemini-2.0-flash",
+    "authMethod": "api_key",
+    "keyPlaceholder": "AIza..."
+  },
+  {
+    "label": "DeepSeek",
+    "type": "deepseek",
+    "defaultModel": "deepseek-chat",
+    "authMethod": "api_key",
+    "keyPlaceholder": "sk-..."
+  },
+  {
+    "label": "Qwen",
+    "type": "qwen",
+    "defaultModel": "qwen-plus",
+    "authMethod": "api_key",
+    "keyPlaceholder": "sk-..."
+  },
+  {
+    "label": "GCP (ADC) \u2014 no API key needed",
+    "type": "gemini",
+    "defaultModel": "gemini-2.0-flash",
+    "authMethod": "gcp_adc",
+    "keyPlaceholder": ""
+  },
+  {
+    "label": "Custom (OpenAI-compatible)",
+    "type": "openai_compatible",
+    "defaultModel": "",
+    "authMethod": "api_key",
+    "keyPlaceholder": "your-api-key (leave blank for Ollama)"
+  }
+]

@@ -1,12 +1,7 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import { AgentManager } from '../agents/AgentManager';
 import { AgentRunner } from '../agents/AgentRunner';
-import { PromptComposer } from '../agents/PromptComposer';
-import { MemoryManager } from '../agents/MemoryManager';
 import { UndoManager } from '../agents/UndoManager';
-import { SkillManager } from '../skills/SkillManager';
-import { MCPHost } from '../mcp/MCPHost';
 import { AuditLogger } from '../audit/AuditLogger';
 import { ConfigManager } from '../config/ConfigManager';
 import { DiffManager } from '../ui/DiffManager';
@@ -15,15 +10,7 @@ import { StatusBar } from '../ui/StatusBar';
 import { ProviderType, ThoughtEvent } from '../types';
 import type { WorkflowEngine } from '../workflow/WorkflowEngine';
 import type { WorkflowStorage } from '../workflow/WorkflowStorage';
-
-// Models available per provider (mirrors AgentSettingsPanel)
-const PROVIDER_MODELS: Record<ProviderType, string[]> = {
-  openai:    ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4.5-preview', 'o1-preview', 'o1-mini', 'o3-mini'],
-  anthropic: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'],
-  gemini:    ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'],
-  deepseek:  ['deepseek-chat', 'deepseek-coder', 'deepseek-reasoner'],
-  qwen:      ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-coder-turbo']
-};
+import { getAppData } from '../data/DataStore';
 
 export type MessageToWebview =
   | { type: 'text_delta'; agentId: string; delta: string }
@@ -39,10 +26,6 @@ export type MessageToWebview =
 
 export class ChatController {
   private _activeAgentId: string | undefined;
-  private runner: AgentRunner;
-  private memoryManager: MemoryManager;
-  private undoManager: UndoManager;
-  private skillManager: SkillManager;
   private diffManager = new DiffManager();
   private approvalDialog = new ApprovalDialog();
   private readonly _subscribers = new Set<(msg: MessageToWebview) => void>();
@@ -56,30 +39,12 @@ export class ChatController {
 
   constructor(
     private readonly agentManager: AgentManager,
-    private readonly mcpHost: MCPHost,
     private readonly configManager: ConfigManager,
     private readonly auditLogger: AuditLogger,
     private readonly statusBar: StatusBar,
-    workspaceRoot: string
-  ) {
-    this.memoryManager = new MemoryManager(configManager);
-    this.undoManager = new UndoManager();
-    this.skillManager = new SkillManager(configManager);
-
-    const promptComposer = new PromptComposer(configManager);
-
-    this.runner = new AgentRunner(
-      agentManager,
-      mcpHost,
-      promptComposer,
-      this.memoryManager,
-      this.undoManager,
-      this.skillManager,
-      auditLogger,
-      configManager,
-      workspaceRoot
-    );
-  }
+    private readonly runner: AgentRunner,
+    private readonly undoManager: UndoManager
+  ) {}
 
   /** Inject workflow engine after construction (called from extension.ts when workflow is enabled). */
   setWorkflowEngine(engine: WorkflowEngine, storage: WorkflowStorage): void {
@@ -94,12 +59,7 @@ export class ChatController {
     return this.agentManager.getAgent(this._activeAgentId)?.name;
   }
 
-  /** Register a webview to receive all chat messages (sidebar). */
-  registerWebviewCallback(cb: (msg: MessageToWebview) => void): void {
-    this._subscribers.add(cb);
-  }
-
-  /** Subscribe to chat messages (main panel). Returns an unsubscribe function. */
+  /** Subscribe to chat messages. Returns an unsubscribe function. */
   addSubscriber(cb: (msg: MessageToWebview) => void): () => void {
     this._subscribers.add(cb);
     return () => this._subscribers.delete(cb);
@@ -148,9 +108,6 @@ export class ChatController {
       return;
     }
 
-    // Load skills before running
-    await this.skillManager.loadAll();
-
     const agent = this.agentManager.getAgent(agentId);
     const providerType = agent?.provider.type ?? '';
     const model = agent?.provider.model ?? this.currentModel;
@@ -191,7 +148,7 @@ export class ChatController {
       case 'switch_model': {
         const agent = this._activeAgentId ? this.agentManager.getAgent(this._activeAgentId) : undefined;
         if (!agent) break;
-        const models = PROVIDER_MODELS[agent.provider.type as ProviderType] ?? [];
+        const models = getAppData().providerModels[agent.provider.type as ProviderType] ?? [];
         const chosen = await vscode.window.showQuickPick(models, {
           title: `Switch model — ${agent.provider.type}`,
           placeHolder: `Current: ${agent.provider.model}`
@@ -298,29 +255,24 @@ export class ChatController {
   }
 
   private async handleArtifactCommand(raw: string): Promise<void> {
-    const ARTIFACT_TYPES = ['adr', 'pr-description', 'design-doc', 'task-breakdown', 'test-plan'];
+    const { artifactCommands, artifactPrompts } = getAppData();
+    const artifactIds = artifactCommands.map(c => c.id);
     const parts = raw.split(/\s+/);
     let artifactType = parts[1];
 
-    if (!artifactType || !ARTIFACT_TYPES.includes(artifactType)) {
-      artifactType = await vscode.window.showQuickPick(ARTIFACT_TYPES, {
-        title: 'Extract artifact from conversation',
-        placeHolder: 'Choose artifact type'
-      }) ?? '';
+    if (!artifactType || !artifactIds.includes(artifactType)) {
+      const picked = await vscode.window.showQuickPick(
+        artifactCommands.map(c => ({ label: c.id, description: c.label })),
+        { title: 'Extract artifact from conversation', placeHolder: 'Choose artifact type' }
+      );
+      artifactType = picked?.label ?? '';
       if (!artifactType) {
         return;
       }
     }
 
-    const PROMPTS: Record<string, string> = {
-      'adr': 'Based on our conversation above, write an Architecture Decision Record with the standard sections: Title, Status, Context, Decision, and Consequences.',
-      'pr-description': 'Based on our conversation above, write a pull request description with: Summary (3 bullets), Type of Change checkboxes, Testing steps, and a Checklist.',
-      'design-doc': 'Based on our conversation above, write a technical design document with sections: Overview, Goals, Architecture, Implementation Plan, and Risks.',
-      'task-breakdown': 'Based on our conversation above, produce a numbered task breakdown. For each task include: description, effort estimate (S/M/L), and dependencies.',
-      'test-plan': 'Based on our conversation above, write a test plan covering: scope, test cases with expected results, edge cases, and acceptance criteria.'
-    };
-
-    await this.handleUserMessage(`[Artifact extraction — ${artifactType}]\n${PROMPTS[artifactType]}`);
+    const prompt = artifactPrompts[artifactType] ?? `Generate a ${artifactType} based on our conversation above.`;
+    await this.handleUserMessage(`[Artifact extraction — ${artifactType}]\n${prompt}`);
   }
 
   // ─── WF-402: Workflow management commands ─────────────────────────────────────
@@ -546,30 +498,8 @@ export class ChatController {
   }
 
   private estimateCost(model: string, totalInputTokens: number, totalOutputTokens: number): number {
-    // USD per 1M tokens
-    const PRICING: Record<string, { in: number; out: number }> = {
-      'gpt-4o':                    { in: 5.00,  out: 15.00 },
-      'gpt-4o-mini':               { in: 0.15,  out: 0.60  },
-      'gpt-4-turbo':               { in: 10.00, out: 30.00 },
-      'gpt-4.5-preview':           { in: 75.00, out: 150.00 },
-      'o1-preview':                { in: 15.00, out: 60.00 },
-      'o1-mini':                   { in: 1.10,  out: 4.40  },
-      'o3-mini':                   { in: 1.10,  out: 4.40  },
-      'claude-opus-4-6':           { in: 15.00, out: 75.00 },
-      'claude-sonnet-4-6':         { in: 3.00,  out: 15.00 },
-      'claude-haiku-4-5-20251001': { in: 0.80,  out: 4.00  },
-      'gemini-2.0-flash':          { in: 0.10,  out: 0.40  },
-      'gemini-1.5-pro':            { in: 3.50,  out: 10.50 },
-      'gemini-1.5-flash':          { in: 0.075, out: 0.30  },
-      'deepseek-chat':             { in: 0.27,  out: 1.10  },
-      'deepseek-coder':            { in: 0.27,  out: 1.10  },
-      'deepseek-reasoner':         { in: 0.55,  out: 2.19  },
-      'qwen-max':                  { in: 0.80,  out: 2.40  },
-      'qwen-plus':                 { in: 0.30,  out: 0.90  },
-      'qwen-turbo':                { in: 0.05,  out: 0.20  },
-      'qwen-coder-turbo':          { in: 0.30,  out: 0.90  }
-    };
-    const p = PRICING[model];
+    // USD per 1M tokens — loaded from data/models.json
+    const p = getAppData().pricing[model];
     if (!p) return 0;
     return (totalInputTokens / 1e6) * p.in + (totalOutputTokens / 1e6) * p.out;
   }
@@ -577,7 +507,4 @@ export class ChatController {
   private post(msg: MessageToWebview): void {
     this._subscribers.forEach(cb => { try { cb(msg); } catch { /* disposed */ } });
   }
-
-  // Needed so ChatViewProvider can forward messages from the webview
-  get path(): typeof path { return path; }
 }

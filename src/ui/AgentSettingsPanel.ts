@@ -3,31 +3,9 @@ import { AgentManager } from '../agents/AgentManager';
 import { SecretsManager } from '../config/SecretsManager';
 import { ConfigManager } from '../config/ConfigManager';
 import { AgentConfig, AgentCategory, ProviderConfig, ProviderType } from '../types';
+import { getAppData } from '../data/DataStore';
 
 type PanelMode = 'list' | 'new' | 'edit';
-
-const AGENT_CATEGORIES: AgentCategory[] = [
-  'Solution Architect Agent',
-  'Data Architect Agent',
-  'Business Analyst Agent',
-  'Cloud Architect Agent',
-  'Software QA / Testing Agent',
-  'Front-End Designer Agent',
-  'Advanced Coder Agent',
-  'Security Engineer Agent',
-  'DevOps Engineer Agent',
-  'Technical Writer Agent',
-  'AI / LLM Engineer Agent',
-  'Custom Agent'
-];
-
-const PROVIDER_MODELS: Record<ProviderType, string[]> = {
-  openai:    ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4.5-preview', 'o1-preview', 'o1-mini', 'o3-mini'],
-  anthropic: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'],
-  gemini:    ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'],
-  deepseek:  ['deepseek-chat', 'deepseek-coder', 'deepseek-reasoner'],
-  qwen:      ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-coder-turbo']
-};
 
 export class AgentSettingsPanel {
   private static current: AgentSettingsPanel | undefined;
@@ -154,12 +132,12 @@ export class AgentSettingsPanel {
         this.panel.webview.postMessage({
           type: 'models',
           provider: msg.provider as string,
-          models: PROVIDER_MODELS[msg.provider as ProviderType] ?? []
+          models: getAppData().providerModels[msg.provider as ProviderType] ?? []
         });
         break;
 
       case 'get_categories':
-        this.panel.webview.postMessage({ type: 'categories', categories: AGENT_CATEGORIES });
+        this.panel.webview.postMessage({ type: 'categories', categories: getAppData().agentCategories });
         break;
 
       case 'save_default_provider': {
@@ -192,11 +170,12 @@ export class AgentSettingsPanel {
   }
 
   private getHtml(): string {
-    const categoryOptions = AGENT_CATEGORIES
+    const { agentCategories, providerModels } = getAppData();
+    const categoryOptions = agentCategories
       .map(c => `<option value="${c}">${c}</option>`)
       .join('');
 
-    const providerOptions = (Object.keys(PROVIDER_MODELS) as ProviderType[])
+    const providerOptions = (Object.keys(providerModels) as ProviderType[])
       .map(p => `<option value="${p}">${p}</option>`)
       .join('');
 
@@ -388,7 +367,7 @@ export class AgentSettingsPanel {
     let agents = [];
     let editingId = null;
 
-    const MODELS = ${JSON.stringify(PROVIDER_MODELS)};
+    const MODELS = ${JSON.stringify(getAppData().providerModels)};
 
     // ── Default provider section ───────────────────────────────────────────
     function onDefaultProviderChange() {

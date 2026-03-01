@@ -60,6 +60,22 @@ export class ProviderFactory {
           providerLabel: 'qwen'
         });
 
+      case 'openai_compatible': {
+        if (!provider.base_url) {
+          throw new Error(
+            'Bormagi: "openai_compatible" provider requires a Base URL. ' +
+            'Set it in Agent Settings → Provider → Base URL.'
+          );
+        }
+        return new OpenAIProvider({
+          apiKey,
+          model: provider.model,
+          baseUrl: provider.base_url,
+          proxyUrl: provider.proxy_url ?? undefined,
+          providerLabel: 'openai_compatible'
+        });
+      }
+
       default: {
         const exhaustiveCheck: never = provider.type;
         throw new Error(`Bormagi: Unknown provider type "${exhaustiveCheck}"`);

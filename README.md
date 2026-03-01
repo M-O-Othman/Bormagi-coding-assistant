@@ -30,6 +30,7 @@ No admin permissions are required. Install from the VS Code Marketplace or from 
    - [Google Gemini — GCP SSO (Corporate Identity)](#google-gemini--gcp-sso-corporate-identity)
    - [Deepseek](#deepseek)
    - [Qwen (Alibaba Cloud)](#qwen-alibaba-cloud)
+   - [Custom (OpenAI-compatible)](#custom-openai-compatible)
 10. [Using a Proxy for LLM Calls](#using-a-proxy-for-llm-calls)
 11. [Chatting with an Agent](#chatting-with-an-agent)
 12. [Skills](#skills)
@@ -566,6 +567,50 @@ This creates a local credential file (`~/.config/gcloud/application_default_cred
 2. Set Provider to `qwen`, select model (`qwen-max` recommended).
 3. Paste your API key. The base URL is set automatically.
 
+### Custom (OpenAI-compatible)
+
+Any service that exposes an OpenAI-compatible chat completions API can be used — including local models via Ollama, hosted routing services like OpenRouter, and many other providers (Mistral, Groq, Together AI, Cohere, etc.).
+
+1. In Agent Settings, select **Custom (OpenAI-compatible)** as the provider.
+2. Set the **Base URL** to the endpoint's chat completions base (the path up to but not including `/chat/completions`).
+3. Enter a model name exactly as the endpoint expects it.
+4. Paste your API key, or leave it blank for endpoints that do not require authentication (e.g. a local Ollama instance).
+
+**Common base URLs:**
+
+| Service | Base URL |
+|---|---|
+| Ollama (local) | `http://localhost:11434/v1` |
+| OpenRouter | `https://openrouter.ai/api/v1` |
+| Groq | `https://api.groq.com/openai/v1` |
+| Mistral | `https://api.mistral.ai/v1` |
+| Together AI | `https://api.together.xyz/v1` |
+| LiteLLM proxy | `http://your-server:4000` |
+
+**Using Ollama with a local model:**
+
+```bash
+# Install Ollama (https://ollama.ai)
+ollama pull llama3.2        # or: mistral, codellama, phi4, etc.
+ollama serve                 # starts the API server on port 11434
+```
+
+In Agent Settings:
+- Provider: `Custom (OpenAI-compatible)`
+- Base URL: `http://localhost:11434/v1`
+- Model: `llama3.2` (must match the name used in `ollama pull`)
+- API Key: leave blank
+
+**Using OpenRouter (200+ hosted models):**
+
+```
+Base URL:  https://openrouter.ai/api/v1
+Model:     anthropic/claude-3.5-sonnet  (or any slug from openrouter.ai/models)
+API Key:   your OpenRouter key
+```
+
+> If the endpoint requires a specific HTTP header that is not an `Authorization` header, set up a lightweight proxy and point the Base URL at it.
+
 ---
 
 ## Using a Proxy for LLM Calls
@@ -746,7 +791,7 @@ Skills are automatically injected into every agent's context.
 | `category` | string | Agent category (one of the seven predefined types or "Custom Agent") |
 | `description` | string | Short description of the agent's role |
 | `enabled` | boolean | Whether the agent is active |
-| `provider.type` | string | `openai`, `anthropic`, `gemini`, `deepseek`, `qwen` |
+| `provider.type` | string | `openai`, `anthropic`, `gemini`, `deepseek`, `qwen`, `openai_compatible` |
 | `provider.model` | string | Model identifier (e.g. `gpt-4o`, `claude-sonnet-4-6`) |
 | `provider.base_url` | string \| null | Override the default API endpoint |
 | `provider.proxy_url` | string \| null | Route all calls through this proxy |

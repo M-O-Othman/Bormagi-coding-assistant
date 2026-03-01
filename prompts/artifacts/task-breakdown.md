@@ -1,0 +1,1 @@
+Based on our conversation above, produce a detailed task breakdown. For each task include: a short title, description, acceptance criteria, estimated complexity (S/M/L), dependencies on other tasks, and the recommended agent or role to execute it.

@@ -1,0 +1,64 @@
+{
+  "virtualTools": [
+    {
+      "name": "get_diagnostics",
+      "description": "Read VS Code diagnostics (Problems panel) for a file or the entire workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "description": "Optional relative file path to filter diagnostics." }
+        }
+      }
+    },
+    {
+      "name": "create_document",
+      "description": "Create a Word document (.docx) from Markdown content and save it to the workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "filename":         { "type": "string", "description": "Output filename, e.g. \"architecture.docx\"" },
+          "title":            { "type": "string", "description": "Document title (optional)" },
+          "content_markdown": { "type": "string", "description": "Full document body in Markdown. Use # h1, ## h2, ### h3, - bullets." }
+        },
+        "required": ["filename", "content_markdown"]
+      }
+    },
+    {
+      "name": "create_presentation",
+      "description": "Create a PowerPoint presentation (.pptx). Use ## for each slide title, then - bullets for content.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "filename":        { "type": "string", "description": "Output filename, e.g. \"design.pptx\"" },
+          "slides_markdown": { "type": "string", "description": "Slides in Markdown: ## Slide Title\\n- bullet 1\\n- bullet 2" }
+        },
+        "required": ["filename", "slides_markdown"]
+      }
+    }
+  ],
+  "toolServerMap": {
+    "read_file":         "filesystem",
+    "write_file":        "filesystem",
+    "list_files":        "filesystem",
+    "search_files":      "filesystem",
+    "run_command":       "terminal",
+    "git_status":        "git",
+    "git_diff":          "git",
+    "git_commit":        "git",
+    "git_log":           "git",
+    "git_create_branch": "git",
+    "git_push":          "git",
+    "git_create_pr":     "git",
+    "gcp_auth_status":   "gcp",
+    "gcp_deploy":        "gcp"
+  },
+  "approvalTools": [
+    "run_command",
+    "git_commit",
+    "git_push",
+    "git_create_pr",
+    "gcp_deploy",
+    "create_document",
+    "create_presentation"
+  ]
+}

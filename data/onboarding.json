@@ -1,0 +1,41 @@
+{
+  "roles": [
+    {
+      "id": "Developer",
+      "description": "Write, test, and ship code \u2014 coder, QA, and writer agents pre-selected",
+      "recommendedAgents": ["advanced-coder", "software-qa", "technical-writer"],
+      "recommendedWorkflows": ["feature-delivery", "bug-fix"]
+    },
+    {
+      "id": "Architect",
+      "description": "Design systems and make technology decisions \u2014 architect agents pre-selected",
+      "recommendedAgents": ["solution-architect", "data-architect", "cloud-architect", "security-engineer"],
+      "recommendedWorkflows": ["architecture-spike", "feature-delivery"]
+    },
+    {
+      "id": "Business Analyst",
+      "description": "Gather requirements and document solutions \u2014 analyst and writer agents pre-selected",
+      "recommendedAgents": ["business-analyst", "technical-writer", "solution-architect"],
+      "recommendedWorkflows": ["feature-delivery", "architecture-spike"]
+    },
+    {
+      "id": "Reviewer",
+      "description": "Review code, security, and documentation \u2014 QA and security agents pre-selected",
+      "recommendedAgents": ["software-qa", "security-engineer", "technical-writer"],
+      "recommendedWorkflows": ["bug-fix", "feature-delivery"]
+    }
+  ],
+  "availableAgents": [
+    "solution-architect",
+    "data-architect",
+    "business-analyst",
+    "cloud-architect",
+    "software-qa",
+    "frontend-designer",
+    "advanced-coder",
+    "security-engineer",
+    "devops-engineer",
+    "technical-writer",
+    "ai-engineer"
+  ]
+}

@@ -1,11 +1,17 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as crypto from 'crypto';
 import * as fs from 'fs';
+import { initDataStore } from './data/DataStore';
 import { ConfigManager } from './config/ConfigManager';
+import { verifyAuditLog } from './audit/AuditVerifier';
 import { SecretsManager } from './config/SecretsManager';
 import { GitignoreManager } from './config/GitignoreManager';
 import { AgentManager } from './agents/AgentManager';
+import { AgentRunner } from './agents/AgentRunner';
+import { MemoryManager } from './agents/MemoryManager';
+import { UndoManager } from './agents/UndoManager';
+import { SkillManager } from './skills/SkillManager';
+import { PromptComposer } from './agents/PromptComposer';
 import { ChatViewProvider } from './chat/ChatViewProvider';
 import { ChatController } from './chat/ChatController';
 import { AgentSettingsPanel } from './ui/AgentSettingsPanel';
@@ -25,6 +31,9 @@ let mcpHost: MCPHost | undefined;
 let statusBar: StatusBar | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  // Initialise DataStore first — all other components depend on it.
+  await initDataStore(context.extensionPath);
+
   const workspaceFolders = vscode.workspace.workspaceFolders;
   if (!workspaceFolders || workspaceFolders.length === 0) {
     return;
@@ -54,7 +63,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   mcpHost = new MCPHost(context.extensionPath, auditLogger);
   agentManager = new AgentManager(configManager, secretsManager, mcpHost);
   statusBar = new StatusBar();
-  chatController = new ChatController(agentManager, mcpHost, configManager, auditLogger, statusBar, workspaceRoot);
+
+  const memoryManager  = new MemoryManager(configManager);
+  const undoManager    = new UndoManager();
+  const skillManager   = new SkillManager(configManager);
+  const promptComposer = new PromptComposer(configManager);
+  const runner = new AgentRunner(
+    agentManager, mcpHost, promptComposer, memoryManager,
+    undoManager, skillManager, auditLogger, configManager, workspaceRoot
+  );
+  chatController = new ChatController(agentManager, configManager, auditLogger, statusBar, runner, undoManager);
 
   // ─── Main Dashboard panel (configure singleton before any command fires) ──
   MainPanel.configure({
@@ -126,49 +144,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
 
     // ─── NF2-SEC-002: Audit log integrity verification ─────────────────────
-    vscode.commands.registerCommand('bormagi.verifyAuditLog', async () => {
+    vscode.commands.registerCommand('bormagi.verifyAuditLog', () => {
       const logPath = configManager!.auditLogPath;
       if (!fs.existsSync(logPath)) {
         vscode.window.showInformationMessage('Bormagi: No audit log found.');
         return;
       }
 
-      const raw = fs.readFileSync(logPath, 'utf8');
-      const lines = raw.split('\n').filter(l => l.trim().length > 0);
-      const hmacKey = vscode.env.machineId;
-      let prevHash = '0'.repeat(64);
-      let ok = 0;
-      let legacy = 0;
-      const broken: number[] = [];
-
-      for (let i = 0; i < lines.length; i++) {
-        try {
-          const obj = JSON.parse(lines[i]) as Record<string, unknown>;
-          if (typeof obj.entry_hash !== 'string') {
-            // Pre-chain entry written before NF2-SEC-002; reset chain anchor.
-            legacy++;
-            prevHash = '0'.repeat(64);
-            continue;
-          }
-          const storedPrevHash = obj.prev_hash as string;
-          const storedEntryHash = obj.entry_hash as string;
-          const copy = { ...obj };
-          delete copy.prev_hash;
-          delete copy.entry_hash;
-          const corePayload = JSON.stringify(copy);
-          const expected = crypto.createHmac('sha256', hmacKey)
-            .update(corePayload + prevHash)
-            .digest('hex');
-          if (storedEntryHash !== expected || storedPrevHash !== prevHash) {
-            broken.push(i + 1);
-          } else {
-            ok++;
-          }
-          prevHash = storedEntryHash;
-        } catch {
-          broken.push(i + 1);
-        }
-      }
+      const { ok, legacy, broken } = verifyAuditLog(logPath, vscode.env.machineId);
 
       if (broken.length === 0) {
         vscode.window.showInformationMessage(

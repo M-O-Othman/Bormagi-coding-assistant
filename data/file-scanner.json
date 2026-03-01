@@ -1,0 +1,26 @@
+{
+  "includeExtensions": [
+    ".ts", ".tsx", ".js", ".jsx",
+    ".py", ".java", ".cs", ".cpp", ".c", ".h",
+    ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".scala", ".r", ".m",
+    ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".xml", ".sql",
+    ".csv", ".tsv", ".sh", ".bash", ".zsh", ".ps1", ".tf", ".hcl"
+  ],
+  "excludePatterns": [
+    "node_modules", ".git", "dist", "build", "__pycache__", ".bormagi",
+    "out", "target", "bin", "obj", ".venv", "venv", "env"
+  ],
+  "sensitiveFilenamePatterns": [
+    { "pattern": "^\\.env(\\..+)?$",          "flags": "i" },
+    { "pattern": "credentials?",               "flags": "i" },
+    { "pattern": "secret",                     "flags": "i" },
+    { "pattern": "private[\\._\\-]?key",       "flags": "i" },
+    { "pattern": "\\.pem$",                    "flags": "i" },
+    { "pattern": "\\.p12$",                    "flags": "i" },
+    { "pattern": "\\.pfx$",                    "flags": "i" },
+    { "pattern": "service[\\._\\-]?account",   "flags": "i" },
+    { "pattern": "api[\\._\\-]?key",           "flags": "i" },
+    { "pattern": "auth[\\._\\-]?token",        "flags": "i" }
+  ]
+}

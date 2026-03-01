@@ -7,31 +7,21 @@
 // Run with: npx jest src/tests/integration/context-window.test.ts
 
 import type { ChatMessage } from '../../types';
+import { __setTestData, getAppData } from '../../data/DataStore';
 
-// ─── Logic extracted from AgentRunner (keep in sync if AgentRunner changes) ───
-
-const MODEL_CONTEXT_LIMITS: Record<string, number> = {
-  'gpt-4o':                    128_000,
-  'gpt-4o-mini':               128_000,
-  'gpt-4-turbo':               128_000,
-  'gpt-4.5-preview':           128_000,
-  'o1-preview':                128_000,
-  'o1-mini':                   128_000,
-  'o3-mini':                   200_000,
-  'claude-opus-4-6':           200_000,
-  'claude-sonnet-4-6':         200_000,
-  'claude-haiku-4-5-20251001': 200_000,
-  'gemini-2.0-flash':          1_048_576,
-  'gemini-1.5-pro':            2_097_152,
-  'gemini-1.5-flash':          1_048_576,
-  'deepseek-chat':              65_536,
-  'deepseek-coder':             65_536,
-  'deepseek-reasoner':         131_072,
-  'qwen-turbo':                131_072,
-  'qwen-plus':                 131_072,
-  'qwen-max':                  131_072,
-  'qwen2.5-coder-32b-instruct': 131_072,
-};
+// Inject the context limits needed by these tests before any test runs.
+beforeAll(() => {
+  __setTestData({
+    contextLimits: {
+      'gpt-4o':                    128_000,
+      'claude-sonnet-4-6':         200_000,
+      'deepseek-chat':              65_536,
+    },
+    contextWindow: { trimThreshold: 0.9, keepTurns: 10 },
+    secretPatterns:    [],
+    injectionPatterns: [],
+  });
+});
 
 function estimateTokenCount(messages: ChatMessage[]): number {
   let chars = 0;
@@ -53,7 +43,7 @@ const TRIM_THRESHOLD = 0.9;  // 90% of limit
 const KEEP_TURNS = 10;
 
 function shouldTrim(messages: ChatMessage[], modelName: string): boolean {
-  const limit = MODEL_CONTEXT_LIMITS[modelName] ?? 0;
+  const limit = getAppData().contextLimits[modelName] ?? 0;
   if (limit === 0) { return false; }
   return estimateTokenCount(messages) >= limit * TRIM_THRESHOLD;
 }
@@ -105,13 +95,14 @@ describe('Context window — token estimation', () => {
   });
 
   test('known model is in the limits map', () => {
-    expect(MODEL_CONTEXT_LIMITS['claude-sonnet-4-6']).toBe(200_000);
-    expect(MODEL_CONTEXT_LIMITS['gpt-4o']).toBe(128_000);
-    expect(MODEL_CONTEXT_LIMITS['deepseek-chat']).toBe(65_536);
+    const limits = getAppData().contextLimits;
+    expect(limits['claude-sonnet-4-6']).toBe(200_000);
+    expect(limits['gpt-4o']).toBe(128_000);
+    expect(limits['deepseek-chat']).toBe(65_536);
   });
 
   test('unknown model returns 0 (no limit enforced)', () => {
-    expect(MODEL_CONTEXT_LIMITS['totally-unknown-model'] ?? 0).toBe(0);
+    expect(getAppData().contextLimits['totally-unknown-model'] ?? 0).toBe(0);
   });
 });
 

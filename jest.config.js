@@ -1,6 +1,5 @@
 /** @type {import('jest').Config} */
 module.exports = {
-  preset: 'ts-jest',
   testEnvironment: 'node',
   testMatch: [
     '**/src/workflow/tests/**/*.test.ts',
@@ -9,10 +8,12 @@ module.exports = {
   moduleNameMapper: {
     '^vscode$': '<rootDir>/src/__mocks__/vscode.ts',
   },
-  globals: {
-    'ts-jest': {
-      tsconfig: 'tsconfig.test.json',
-    },
+  transform: {
+    '^.+\\.tsx?$': ['ts-jest', { tsconfig: 'tsconfig.test.json' }],
   },
+  // Exclude compiled output so jest-haste-map doesn't find out/__mocks__/vscode.js
+  // alongside src/__mocks__/vscode.ts and emit a duplicate-mock warning.
+  modulePathIgnorePatterns: ['<rootDir>/out/'],
+  testPathIgnorePatterns: ['<rootDir>/out/', '<rootDir>/node_modules/'],
   testTimeout: 30000,
 };

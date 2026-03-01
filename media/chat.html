@@ -717,16 +717,8 @@
     'qwen-coder-turbo':          { in: 0.30,  out: 0.90   }
   };
 
-  // ── Model context limits (tokens) — mirrors AgentRunner.MODEL_CONTEXT_LIMITS ─
-  const MODEL_CONTEXT_LIMITS = {
-    'gpt-4o': 128000, 'gpt-4o-mini': 128000, 'gpt-4-turbo': 128000,
-    'gpt-4.5-preview': 128000, 'o1-preview': 128000, 'o1-mini': 128000,
-    'o3-mini': 200000, 'claude-opus-4-6': 200000, 'claude-sonnet-4-6': 200000,
-    'claude-haiku-4-5-20251001': 200000, 'gemini-2.0-flash': 1048576,
-    'gemini-1.5-pro': 2097152, 'gemini-1.5-flash': 1048576,
-    'deepseek-chat': 65536, 'deepseek-coder': 65536, 'deepseek-reasoner': 65536,
-    'qwen-max': 32768, 'qwen-plus': 131072, 'qwen-turbo': 131072, 'qwen-coder-turbo': 131072
-  };
+  // ── Model context limits — injected by ChatViewProvider from src/constants/models.ts ─
+  const MODEL_CONTEXT_LIMITS = /*__MODEL_CONTEXT_LIMITS_JSON__*/{}/*__END__*/;
 
   // ── Input auto-resize + history navigation ────────────────────────────────
 

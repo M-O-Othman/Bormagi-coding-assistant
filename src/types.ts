@@ -14,7 +14,7 @@ export interface ProjectConfig {
   userRole?: UserRole;
 }
 
-export type ProviderType = 'openai' | 'anthropic' | 'gemini' | 'deepseek' | 'qwen';
+export type ProviderType = 'openai' | 'anthropic' | 'gemini' | 'deepseek' | 'qwen' | 'openai_compatible';
 export type AuthMethod = 'api_key' | 'gcp_adc';
 
 export interface ProviderConfig {

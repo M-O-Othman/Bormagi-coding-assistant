@@ -15,35 +15,8 @@ import { ConfigManager } from '../config/ConfigManager';
 import { SecretsManager } from '../config/SecretsManager';
 import { AgentManager } from '../agents/AgentManager';
 import { GitignoreManager } from '../config/GitignoreManager';
-import { UserRole, ProjectConfig, ProviderConfig, ProviderType } from '../types';
-
-// ─── Role → recommended agents mapping ───────────────────────────────────────
-
-const ROLE_AGENTS: Record<UserRole, string[]> = {
-  'Developer':         ['advanced-coder', 'software-qa', 'technical-writer'],
-  'Architect':         ['solution-architect', 'data-architect', 'cloud-architect', 'security-engineer'],
-  'Business Analyst':  ['business-analyst', 'technical-writer', 'solution-architect'],
-  'Reviewer':          ['software-qa', 'security-engineer', 'technical-writer'],
-};
-
-// ─── Provider presets ─────────────────────────────────────────────────────────
-
-interface ProviderPreset {
-  label: string;
-  type: ProviderType;
-  defaultModel: string;
-  authMethod: 'api_key' | 'gcp_adc';
-  keyPlaceholder: string;
-}
-
-const PROVIDER_PRESETS: ProviderPreset[] = [
-  { label: 'OpenAI',     type: 'openai',    defaultModel: 'gpt-4o-mini',               authMethod: 'api_key', keyPlaceholder: 'sk-...' },
-  { label: 'Anthropic',  type: 'anthropic', defaultModel: 'claude-haiku-4-5-20251001', authMethod: 'api_key', keyPlaceholder: 'sk-ant-...' },
-  { label: 'Google AI',  type: 'gemini',    defaultModel: 'gemini-2.0-flash',          authMethod: 'api_key', keyPlaceholder: 'AIza...' },
-  { label: 'DeepSeek',   type: 'deepseek',  defaultModel: 'deepseek-chat',             authMethod: 'api_key', keyPlaceholder: 'sk-...' },
-  { label: 'Qwen',       type: 'qwen',      defaultModel: 'qwen-plus',                 authMethod: 'api_key', keyPlaceholder: 'sk-...' },
-  { label: 'GCP (ADC) — no API key needed', type: 'gemini', defaultModel: 'gemini-2.0-flash', authMethod: 'gcp_adc', keyPlaceholder: '' },
-];
+import { UserRole, ProjectConfig, ProviderConfig } from '../types';
+import { getAppData } from '../data/DataStore';
 
 // ─── Wizard result ─────────────────────────────────────────────────────────────
 
@@ -72,9 +45,10 @@ export class SetupWizard {
 
     // ── Step 1: Welcome + Role selection ──────────────────────────────────────
 
-    const roleItems = (Object.keys(ROLE_AGENTS) as UserRole[]).map(role => ({
-      label: role,
-      description: SetupWizard.roleDescription(role),
+    const { onboarding, providerPresets } = getAppData();
+    const roleItems = onboarding.roles.map(r => ({
+      label: r.id as UserRole,
+      description: r.description,
     }));
 
     const rolePick = await vscode.window.showQuickPick(roleItems, {
@@ -88,7 +62,7 @@ export class SetupWizard {
 
     // ── Step 2: Provider selection ────────────────────────────────────────────
 
-    const providerItems = PROVIDER_PRESETS.map(p => ({
+    const providerItems = providerPresets.map(p => ({
       label: p.label,
       description: `Default model: ${p.defaultModel}`,
       preset: p,
@@ -114,40 +88,56 @@ export class SetupWizard {
 
     if (modelName === undefined) { return null; }
 
+    // ── Step 2b: Base URL (required for openai_compatible only) ───────────────
+
+    let customBaseUrl: string | null = null;
+
+    if (preset.type === 'openai_compatible') {
+      const urlInput = await vscode.window.showInputBox({
+        title: 'Bormagi Setup (2/4) — API base URL',
+        prompt: 'Enter the OpenAI-compatible API base URL for this provider.',
+        placeHolder: 'e.g. http://localhost:11434/v1  (Ollama)  or  https://openrouter.ai/api/v1',
+        ignoreFocusOut: true,
+        validateInput: v => (v.trim().length === 0 ? 'Base URL cannot be empty' : null),
+      });
+
+      if (urlInput === undefined) { return null; }
+      customBaseUrl = urlInput.trim();
+    }
+
     const provider: ProviderConfig = {
       type: preset.type,
       model: modelName.trim(),
-      base_url: null,
+      base_url: customBaseUrl,
       proxy_url: null,
       auth_method: preset.authMethod,
     };
 
-    // ── Step 3: API key entry (skip for gcp_adc) ───────────────────────────────
+    // ── Step 3: API key entry (skip for gcp_adc; optional for openai_compatible) ──
 
     let apiKey: string | null = null;
 
     if (preset.authMethod === 'api_key') {
+      const keyOptional = preset.type === 'openai_compatible';
       const keyInput = await vscode.window.showInputBox({
         title: `Bormagi Setup (3/4) — ${preset.label} API key`,
-        prompt: `Paste your ${preset.label} API key. It will be stored in VS Code SecretStorage (never on disk in plain text).`,
+        prompt: keyOptional
+          ? 'Paste your API key, or leave blank if the endpoint does not require one (e.g. Ollama).'
+          : `Paste your ${preset.label} API key. It will be stored in VS Code SecretStorage (never on disk in plain text).`,
         placeHolder: preset.keyPlaceholder,
         password: true,
         ignoreFocusOut: true,
-        validateInput: v => (v.trim().length === 0 ? 'API key cannot be empty' : null),
+        validateInput: v => (!keyOptional && v.trim().length === 0 ? 'API key cannot be empty' : null),
       });
 
       if (keyInput === undefined) { return null; }
-      apiKey = keyInput.trim();
+      apiKey = keyInput.trim() || null;
     }
 
     // ── Step 4: Predefined agents ──────────────────────────────────────────────
 
-    const recommended = ROLE_AGENTS[role];
-    const allAgents = [
-      'solution-architect', 'data-architect', 'business-analyst', 'cloud-architect',
-      'software-qa', 'frontend-designer', 'advanced-coder', 'security-engineer',
-      'devops-engineer', 'technical-writer', 'ai-engineer',
-    ];
+    const recommended = onboarding.roles.find(r => r.id === role)?.recommendedAgents ?? [];
+    const allAgents = onboarding.availableAgents;
 
     const agentItems = allAgents.map(id => ({
       label: id,
@@ -209,38 +199,26 @@ export class SetupWizard {
 
   // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-  private static roleDescription(role: UserRole): string {
-    switch (role) {
-      case 'Developer':        return 'Write, test, and ship code — coder, QA, and writer agents pre-selected';
-      case 'Architect':        return 'Design systems and make technology decisions — architect agents pre-selected';
-      case 'Business Analyst': return 'Gather requirements and document solutions — analyst and writer agents pre-selected';
-      case 'Reviewer':         return 'Review code, security, and documentation — QA and security agents pre-selected';
-    }
-  }
-
   /**
    * Return the agent IDs in role-ranked order for a given role.
    * Recommended agents come first; others follow alphabetically.
    */
   static rankAgentsForRole(agentIds: string[], role: UserRole | undefined): string[] {
     if (!role) { return agentIds; }
-    const recommended = new Set(ROLE_AGENTS[role]);
+    const roleData = getAppData().onboarding.roles.find(r => r.id === role);
+    const recommended = new Set(roleData?.recommendedAgents ?? []);
     const ranked = agentIds.filter(id => recommended.has(id));
     const rest = agentIds.filter(id => !recommended.has(id)).sort();
     return [...ranked, ...rest];
   }
 
   /**
-   * Recommended workflow template IDs for each role.
+   * Recommended workflow template IDs for each role (loaded from data/onboarding.json).
    * Used to surface the most relevant templates first in the workflow creation wizard.
    */
   static recommendedWorkflowTemplates(role: UserRole | undefined): string[] {
-    switch (role) {
-      case 'Developer':        return ['feature-delivery', 'bug-fix'];
-      case 'Architect':        return ['architecture-spike', 'feature-delivery'];
-      case 'Business Analyst': return ['feature-delivery', 'architecture-spike'];
-      case 'Reviewer':         return ['bug-fix', 'feature-delivery'];
-      default:                 return ['feature-delivery', 'bug-fix', 'architecture-spike'];
-    }
+    if (!role) { return ['feature-delivery', 'bug-fix', 'architecture-spike']; }
+    const roleData = getAppData().onboarding.roles.find(r => r.id === role);
+    return roleData?.recommendedWorkflows ?? ['feature-delivery', 'bug-fix', 'architecture-spike'];
   }
 }

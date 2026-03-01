@@ -1,0 +1,24 @@
+{
+  "contextWindow": {
+    "trimThreshold": 0.9,
+    "keepTurns": 10
+  },
+  "secretPatterns": [
+    { "pattern": "sk-[A-Za-z0-9]{32,}",                 "flags": "" },
+    { "pattern": "AIza[A-Za-z0-9\\-_]{35}",             "flags": "" },
+    { "pattern": "ghp_[A-Za-z0-9]{36}",                  "flags": "" },
+    { "pattern": "xox[baprs]-[0-9A-Za-z\\-]+",          "flags": "" },
+    { "pattern": "-----BEGIN [A-Z ]*PRIVATE KEY-----",   "flags": "" }
+  ],
+  "injectionPatterns": [
+    { "pattern": "^\\s*ignore\\s+(all\\s+)?(previous|prior|above|earlier)\\s+(instructions?|prompts?|context)",    "flags": "i" },
+    { "pattern": "^\\s*disregard\\s+(all\\s+)?(previous|prior|above|earlier)\\s+(instructions?|prompts?|context)", "flags": "i" },
+    { "pattern": "^\\s*forget\\s+(all\\s+)?(previous|prior|above|earlier)\\s+(instructions?|prompts?|context)",    "flags": "i" },
+    { "pattern": "^\\s*new\\s+(system\\s+)?instructions?\\s*:",                                                    "flags": "i" },
+    { "pattern": "^\\s*system\\s*:\\s*(you\\s+(are|must)|ignore|override)",                                        "flags": "i" },
+    { "pattern": "^\\s*\\[system\\]",                                                                              "flags": "i" },
+    { "pattern": "^\\s*\\[override\\]",                                                                            "flags": "i" },
+    { "pattern": "^\\s*act\\s+as\\s+(if\\s+you\\s+are|a\\s+different)",                                           "flags": "i" },
+    { "pattern": "^\\s*you\\s+are\\s+now\\s+(a|an)\\s+",                                                          "flags": "i" }
+  ]
+}

@@ -1,0 +1,7 @@
+[
+  { "id": "adr",            "label": "Architecture Decision Record", "promptFile": "adr.md" },
+  { "id": "pr-description", "label": "Pull Request Description",     "promptFile": "pr-description.md" },
+  { "id": "design-doc",     "label": "Technical Design Document",    "promptFile": "design-doc.md" },
+  { "id": "task-breakdown", "label": "Task Breakdown",               "promptFile": "task-breakdown.md" },
+  { "id": "test-plan",      "label": "Test Plan",                    "promptFile": "test-plan.md" }
+]

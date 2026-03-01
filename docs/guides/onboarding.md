@@ -40,6 +40,10 @@ You need at least one AI provider API key to chat with agents. Supported provide
 | DeepSeek  | deepseek-chat, deepseek-reasoner | [platform.deepseek.com](https://platform.deepseek.com/) |
 | Qwen      | qwen-plus, qwen-max | [bailian.console.aliyun.com](https://bailian.console.aliyun.com/) |
 | GCP (ADC) | gemini-* via Vertex | `gcloud auth application-default login` |
+| Ollama (local) | llama3.2, mistral, phi4 | `ollama pull <model>` — no key required |
+| OpenRouter | any of 200+ models | [openrouter.ai/keys](https://openrouter.ai/keys) |
+
+The last two rows use the **Custom (OpenAI-compatible)** provider type — see [§5 below](#5-configure-a-workspace-default-provider) for setup, and the README for a full list of compatible base URLs.
 
 ---
 
@@ -309,6 +313,124 @@ bormagi-extension/
 ### Adding a new workflow template
 
 See [`docs/workflow-developer-api.md`](../workflow-developer-api.md) for the full template schema and examples.
+
+### Adding a new LLM provider
+
+There are two ways to add a new provider, depending on whether it uses an OpenAI-compatible API or a unique wire protocol.
+
+#### Option A — OpenAI-compatible endpoint (data only, no code change)
+
+If the provider exposes an OpenAI-compatible `/chat/completions` API (Ollama, OpenRouter, Groq, Mistral, Together AI, LiteLLM, and many others), no code change is needed at all. Users select **Custom (OpenAI-compatible)** in Agent Settings and supply the base URL.
+
+To make the provider appear as a named preset in the setup wizard and Agent Settings dropdown, add one entry to `data/providers.json`:
+
+```json
+{
+  "label": "My New Provider",
+  "type": "openai_compatible",
+  "defaultModel": "my-model-v1",
+  "authMethod": "api_key",
+  "keyPlaceholder": "your-api-key"
+}
+```
+
+No TypeScript changes. No rebuild required — `data/providers.json` is read at runtime.
+
+#### Option B — Native provider (unique wire protocol)
+
+Use this path only when the provider's streaming format cannot be expressed as an OpenAI-compatible endpoint (e.g. a new proprietary streaming protocol).
+
+**Step 1 — Add the provider type.**
+
+In [src/types.ts](../../src/types.ts), extend the `ProviderType` union:
+
+```typescript
+export type ProviderType =
+  | 'openai' | 'anthropic' | 'gemini' | 'deepseek' | 'qwen'
+  | 'openai_compatible'
+  | 'my_new_provider';   // ← add here
+```
+
+**Step 2 — Implement the provider class.**
+
+Create `src/providers/MyNewProvider.ts` implementing `ILLMProvider`:
+
+```typescript
+import { ILLMProvider } from './ILLMProvider';
+import { ChatMessage, MCPToolDefinition, StreamEvent } from '../types';
+
+export class MyNewProvider implements ILLMProvider {
+  readonly providerType = 'my_new_provider';
+  readonly model: string;
+
+  constructor(options: { apiKey: string; model: string }) {
+    this.model = options.model;
+  }
+
+  async *stream(
+    messages: ChatMessage[],
+    tools?: MCPToolDefinition[],
+    maxTokens = 4096
+  ): AsyncIterable<StreamEvent> {
+    // Translate messages → provider request, stream response,
+    // normalise each chunk to StreamEvent (text / tool_use / token_usage / done).
+    yield { type: 'done' };
+  }
+}
+```
+
+Key normalisation rules for `stream()`:
+
+| StreamEvent type | When to emit |
+|---|---|
+| `{ type: 'text', delta: string }` | Each text fragment as it arrives |
+| `{ type: 'tool_use', id, name, input }` | Once per complete tool call (after accumulating streamed JSON) |
+| `{ type: 'token_usage', usage }` | Once per response, when the provider reports token counts |
+| `{ type: 'done' }` | At the end of the response (always last) |
+
+**Step 3 — Wire it into ProviderFactory.**
+
+In [src/providers/ProviderFactory.ts](../../src/providers/ProviderFactory.ts), add a `case` inside the `switch`:
+
+```typescript
+import { MyNewProvider } from './MyNewProvider';
+
+// inside ProviderFactory.create():
+case 'my_new_provider':
+  return new MyNewProvider({
+    apiKey,
+    model: provider.model
+  });
+```
+
+**Step 4 — Add provider data.**
+
+Add a model list entry to `data/models.json` under `providerModels`:
+
+```json
+"my_new_provider": ["model-name-v1", "model-name-v2"]
+```
+
+Add a preset entry to `data/providers.json`:
+
+```json
+{
+  "label": "My New Provider",
+  "type": "my_new_provider",
+  "defaultModel": "model-name-v1",
+  "authMethod": "api_key",
+  "keyPlaceholder": "your-api-key"
+}
+```
+
+**Step 5 — Verify.**
+
+```bash
+npx tsc --noEmit      # must be zero errors (exhaustive switch check enforces this)
+npx jest --no-coverage
+```
+
+The TypeScript exhaustive-check in `ProviderFactory` (`const exhaustiveCheck: never = provider.type`) will produce a compile error if you add a new `ProviderType` value without also adding a matching `case`. This ensures no provider type is ever silently unhandled.
 
 ### Adding a new MCP server
 

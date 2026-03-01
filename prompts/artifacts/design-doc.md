@@ -1,0 +1,1 @@
+Based on our conversation above, write a Technical Design Document with the following sections: Overview, Goals and Non-Goals, Background, Detailed Design, Alternatives Considered, and Open Questions.

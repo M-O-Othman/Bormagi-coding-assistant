@@ -43,6 +43,8 @@ Thumbs.db
 # predefined-agents/
 # predefined-workflows/
 # predefined-skills/
+# data/            — runtime JSON configuration (models, providers, tools, etc.)
+# prompts/         — runtime Markdown prompt templates
 # README.md
 # CHANGELOG.md (if present)
 # package.json
