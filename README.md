@@ -38,6 +38,8 @@ No admin permissions are required. Install from the VS Code Marketplace or from 
 15. [MCP Tools Reference](#mcp-tools-reference)
 16. [Security](#security)
 17. [Publishing to the Marketplace](#publishing-to-the-marketplace)
+18. [Recent Enhancements](#recent-enhancements-nf2-batch--all-complete)
+19. [Building Agents](#building-agents)
 
 ---
 
@@ -829,6 +831,64 @@ npm run vsce:publish
 ```
 
 For the full step-by-step guide — including how to create an Azure DevOps organisation, generate a PAT, and set up automated publishing via GitHub Actions — see [PUBLISHING.md](PUBLISHING.md).
+
+---
+
+---
+
+## Recent Enhancements (NF2 batch — all complete)
+
+The following 12 improvements were delivered as the NF2 enhancement batch, sourced from a multi-agent architecture review (`docs/newfeatures2.md`). All are implemented and shipped. See `tasks/task_plan.md` (Phase NF2-*) for full task notes.
+
+| ID | Title | Theme | What was delivered |
+|----|-------|-------|--------------------|
+| NF2-UX-002 | Unified Status Panel | UX | Persistent `#status-bar` on chat, meeting, and workflow panels with pulse animation, error state, and auto-dismiss |
+| NF2-AI-001 | Context Window Management | AI Quality | Character-based token estimation; oldest turns trimmed when within 10% of model limit; badge shown in thought trace |
+| NF2-SEC-001 | Secrets & Dependency Audit | Security | CI gates: gitleaks secrets scan + `npm audit --audit-level=high`; `.gitleaks.toml` allowlist |
+| NF2-QA-001 | Integration Test Harness | Testing | 57 tests across 7 suites: meeting storage, meeting flow, context-window logic, workflow state machine, e2e workflow, restart recovery, contract tests |
+| NF2-UX-001 | Design System | UX | `media/styles.css` canonical component library; overflow toolbar and slide-out log drawer in chat panel |
+| NF2-DOC-001 | Developer Onboarding Guide | Docs | `docs/guides/onboarding.md`: prerequisites, build, F5 dev mode, E2E verification, common errors |
+| NF2-AI-002 | Structured Output Validation | AI Quality | 9 prompt-injection patterns; `sanitiseExecutionResult()` strips offending lines; `PROMPT_INJECTION_DETECTED` audit event |
+| NF2-UX-003 | Role-Based Onboarding | UX | First-launch setup wizard: role selection → provider → API key → agent pre-selection; role persisted in config |
+| NF2-DOC-002 | Architecture Decision Records | Docs | `docs/adr/` with template + 4 ADRs (workspace folder, SecretStorage, JSONL dual-store, webpack CommonJS) |
+| NF2-SEC-002 | Audit Log Integrity | Security | Rolling HMAC-SHA256 chain on every audit log entry; `bormagi.verifyAuditLog` command reports broken links |
+| NF2-DOC-003 | Agent Protocol Contract | Docs | `docs/agent-protocol.md` + `schemas/agent-completion.schema.json` (JSON Schema Draft 07); see Building Agents section below |
+| NF2-QA-002 | Acceptance Criteria in Specs | Testing | All feature specs converted to Given/When/Then; spec-lint CI gate added |
+
+---
+
+## Building Agents
+
+Bormagi agents communicate with the workflow orchestration engine using a structured completion protocol. When an agent runs inside a workflow task, it can signal one of four outcomes by embedding a JSON block in its response:
+
+| Outcome | When to use |
+|---------|-------------|
+| `completed` | The agent finished its objective |
+| `delegated` | A specialist agent should take over or collaborate |
+| `review_requested` | A reviewer agent should validate the work before proceeding |
+| `blocked` | The agent cannot proceed without human input or a missing dependency |
+
+**Example — delegation:**
+
+````
+```json
+{
+  "__bormagi_outcome__": true,
+  "outcome": "delegated",
+  "summary": "Requirements approved. Handing off to the solution architect.",
+  "toAgentId": "solution-architect",
+  "objective": "Design the system architecture based on the approved requirements.",
+  "reasonForHandoff": "Requirements phase complete.",
+  "expectedOutputs": ["Architecture diagram", "ADR"],
+  "doneCriteria": ["All components defined", "ADRs written"]
+}
+```
+````
+
+Agents that produce no structured payload are treated as **completed** automatically — all existing plain-text agents work without modification.
+
+Full protocol reference: [`docs/agent-protocol.md`](docs/agent-protocol.md)
+JSON Schema (Draft 07): [`schemas/agent-completion.schema.json`](schemas/agent-completion.schema.json)
 
 ---
 

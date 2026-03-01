@@ -1,13 +1,54 @@
+import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as vscode from 'vscode';
 import { ConfigManager } from '../config/ConfigManager';
 import { MCPToolResult } from '../types';
 
+const GENESIS_HASH = '0'.repeat(64);
+
 export class AuditLogger {
+  /** In-memory chain head. Undefined until first log() call triggers lazy init. */
+  private prevHash: string | undefined;
+
   constructor(private readonly config: ConfigManager) {}
 
+  // ─── NF2-SEC-002: Rolling HMAC chain ────────────────────────────────────────
+
+  /**
+   * Read the last JSONL line in the audit log and return its `entry_hash`.
+   * Falls back to GENESIS_HASH when the file is absent or the last line has no chain fields.
+   */
+  private loadLastHash(): string {
+    const logPath = this.config.auditLogPath;
+    if (!fs.existsSync(logPath)) { return GENESIS_HASH; }
+    const content = fs.readFileSync(logPath, 'utf8');
+    const lines = content.split('\n').filter(l => l.trim().length > 0);
+    if (lines.length === 0) { return GENESIS_HASH; }
+    try {
+      const parsed = JSON.parse(lines[lines.length - 1]);
+      return typeof parsed.entry_hash === 'string' ? parsed.entry_hash : GENESIS_HASH;
+    } catch {
+      return GENESIS_HASH;
+    }
+  }
+
   private async log(record: Record<string, unknown>): Promise<void> {
-    await this.config.appendAuditLog(
-      JSON.stringify({ ts: new Date().toISOString(), ...record })
-    );
+    // Lazy chain initialisation — pick up from last persisted entry on restart.
+    if (this.prevHash === undefined) {
+      this.prevHash = this.loadLastHash();
+    }
+
+    const ts = new Date().toISOString();
+    // Core payload used as HMAC input: timestamp + all record fields (no chain fields).
+    const corePayload = JSON.stringify({ ts, ...record });
+    const hmacKey = vscode.env.machineId;
+    const entryHash = crypto.createHmac('sha256', hmacKey)
+      .update(corePayload + this.prevHash)
+      .digest('hex');
+
+    const line = JSON.stringify({ ts, ...record, prev_hash: this.prevHash, entry_hash: entryHash });
+    this.prevHash = entryHash;
+    await this.config.appendAuditLog(line);
   }
 
   /**
@@ -143,5 +184,21 @@ export class AuditLogger {
     grantedBy: string
   ): Promise<void> {
     await this.log({ event: 'WF_APPROVAL_GRANTED', workflowId, checkpointId, grantedBy });
+  }
+
+  // ─── NF2-AI-002: Prompt injection detection ────────────────────────────────
+
+  /**
+   * Log a detected prompt injection attempt in a structured completion payload.
+   * The `offendingFields` list names the affected fields; actual content is NOT
+   * written to the log to avoid persisting adversarial text.
+   */
+  async logPromptInjectionAttempt(agentId: string, offendingFields: string[]): Promise<void> {
+    await this.log({
+      event: 'PROMPT_INJECTION_DETECTED',
+      agent: agentId,
+      offendingFields,
+      note: 'Offending content stripped from structured completion payload.',
+    });
   }
 }

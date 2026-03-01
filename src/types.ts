@@ -1,5 +1,8 @@
 // ─── Project & Agent configuration types ──────────────────────────────────────
 
+/** User role selected during onboarding wizard (NF2-UX-003). */
+export type UserRole = 'Developer' | 'Architect' | 'Business Analyst' | 'Reviewer';
+
 export interface ProjectConfig {
   project: {
     name: string;
@@ -7,6 +10,8 @@ export interface ProjectConfig {
   };
   agents: string[];
   defaultProvider?: ProviderConfig;
+  /** Role selected during first-launch onboarding wizard. Used to rank agent list. */
+  userRole?: UserRole;
 }
 
 export type ProviderType = 'openai' | 'anthropic' | 'gemini' | 'deepseek' | 'qwen';

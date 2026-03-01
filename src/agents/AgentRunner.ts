@@ -41,6 +41,36 @@ export class AgentRunner {
     private readonly workspaceRoot: string
   ) {}
 
+  // ─── Model context limits (tokens) ────────────────────────────────────────
+  private static readonly MODEL_CONTEXT_LIMITS: Record<string, number> = {
+    'gpt-4o':                    128_000,
+    'gpt-4o-mini':               128_000,
+    'gpt-4-turbo':               128_000,
+    'gpt-4.5-preview':           128_000,
+    'o1-preview':                128_000,
+    'o1-mini':                   128_000,
+    'o3-mini':                   200_000,
+    'claude-opus-4-6':           200_000,
+    'claude-sonnet-4-6':         200_000,
+    'claude-haiku-4-5-20251001': 200_000,
+    'gemini-2.0-flash':          1_048_576,
+    'gemini-1.5-pro':            2_097_152,
+    'gemini-1.5-flash':          1_048_576,
+    'deepseek-chat':              65_536,
+    'deepseek-coder':             65_536,
+    'deepseek-reasoner':          65_536,
+    'qwen-max':                   32_768,
+    'qwen-plus':                 131_072,
+    'qwen-turbo':                131_072,
+    'qwen-coder-turbo':          131_072,
+  };
+
+  /** Character-based token estimate: ~4 chars/token. Conservative for code/prose. */
+  private static estimateTokenCount(messages: ChatMessage[]): number {
+    const chars = messages.reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
+    return Math.ceil(chars / 4);
+  }
+
   // ─── Secret patterns scanned before each LLM call ─────────────────────────
   private static readonly SECRET_PATTERNS = [
     /sk-[A-Za-z0-9]{32,}/,
@@ -49,6 +79,83 @@ export class AgentRunner {
     /xox[baprs]-[0-9A-Za-z\-]+/,
     /-----BEGIN [A-Z ]*PRIVATE KEY-----/
   ];
+
+  // ─── NF2-AI-002: Prompt injection patterns ─────────────────────────────────
+  // Patterns that indicate an agent is trying to override instructions.
+  // Matched case-insensitively against individual lines within text fields.
+  private static readonly INJECTION_PATTERNS: RegExp[] = [
+    /^\s*ignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|context)/i,
+    /^\s*disregard\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|context)/i,
+    /^\s*forget\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|context)/i,
+    /^\s*new\s+(system\s+)?instructions?\s*:/i,
+    /^\s*system\s*:\s*(you\s+(are|must)|ignore|override)/i,
+    /^\s*\[system\]/i,
+    /^\s*\[override\]/i,
+    /^\s*act\s+as\s+(if\s+you\s+are|a\s+different)/i,
+    /^\s*you\s+are\s+now\s+(a|an)\s+/i,
+  ];
+
+  /**
+   * Sanitise a single text field from a structured completion payload.
+   * Strips any line that matches a known prompt injection pattern.
+   * Returns { clean, hadInjection }.
+   */
+  private static sanitiseStructuredField(text: string): { clean: string; hadInjection: boolean } {
+    const lines = text.split('\n');
+    let hadInjection = false;
+    const cleaned = lines.filter(line => {
+      const isInjection = AgentRunner.INJECTION_PATTERNS.some(p => p.test(line));
+      if (isInjection) { hadInjection = true; }
+      return !isInjection;
+    });
+    return { clean: cleaned.join('\n').trim(), hadInjection };
+  }
+
+  /**
+   * Sanitise all user-visible text fields of a parsed execution result.
+   * Returns the cleaned result and the names of any fields that contained
+   * injection patterns.
+   */
+  private sanitiseExecutionResult(
+    parsed: Omit<AgentExecutionResult, 'taskId' | 'workflowId' | 'agentId' | 'completedAt'>
+  ): { result: typeof parsed; injectionFields: string[] } {
+    const injectionFields: string[] = [];
+    const clone = { ...parsed };
+
+    const clean = (value: string, field: string): string => {
+      const { clean: c, hadInjection } = AgentRunner.sanitiseStructuredField(value);
+      if (hadInjection) { injectionFields.push(field); }
+      return c;
+    };
+
+    clone.summary = clean(parsed.summary, 'summary');
+
+    if (clone.handoffRequest) {
+      clone.handoffRequest = {
+        ...clone.handoffRequest,
+        objective: clean(clone.handoffRequest.objective, 'handoffRequest.objective'),
+        reasonForHandoff: clean(clone.handoffRequest.reasonForHandoff, 'handoffRequest.reasonForHandoff'),
+      };
+    }
+
+    if (clone.reviewRequest) {
+      clone.reviewRequest = {
+        ...clone.reviewRequest,
+        itemUnderReview: clean(clone.reviewRequest.itemUnderReview, 'reviewRequest.itemUnderReview'),
+        reviewScope: clean(clone.reviewRequest.reviewScope, 'reviewRequest.reviewScope'),
+      };
+    }
+
+    if (clone.blocker) {
+      clone.blocker = {
+        ...clone.blocker,
+        reason: clean(clone.blocker.reason, 'blocker.reason'),
+        suggestedRoute: clean(clone.blocker.suggestedRoute, 'blocker.suggestedRoute'),
+      };
+    }
+
+    return { result: clone, injectionFields };
+  }
 
   async run(
     agentId: string,
@@ -196,6 +303,27 @@ export class AgentRunner {
         detail: 'Sensitive patterns (API keys, tokens, private keys) found in the context being sent to the LLM. Review and remove them if unintended.',
         timestamp: new Date()
       });
+    }
+
+    // Context window management — trim oldest turns when within 10% of the model's limit
+    const modelName = effectiveProvider.model ?? '';
+    const contextLimit = AgentRunner.MODEL_CONTEXT_LIMITS[modelName] ?? 0;
+    if (contextLimit > 0) {
+      const estimated = AgentRunner.estimateTokenCount(messages);
+      if (estimated >= contextLimit * 0.9) {
+        const KEEP_TURNS = 10;
+        const systemMsgs  = messages.filter(m => m.role === 'system');
+        const nonSystem   = messages.filter(m => m.role !== 'system');
+        const trimmed     = nonSystem.length > KEEP_TURNS ? nonSystem.slice(nonSystem.length - KEEP_TURNS) : nonSystem;
+        const removedCount = nonSystem.length - trimmed.length;
+        messages.length = 0;
+        messages.push(...systemMsgs, ...trimmed);
+        onThought({
+          type: 'thinking',
+          label: `⚠ Context near limit (~${Math.round(estimated / 1000)}k / ${Math.round(contextLimit / 1000)}k tokens) — ${removedCount} oldest turn(s) trimmed`,
+          timestamp: new Date()
+        });
+      }
     }
 
     // Create LLM provider using the resolved (possibly default) provider config
@@ -472,13 +600,26 @@ export class AgentRunner {
     const parsed = this.parseStructuredCompletion(fullResponse);
 
     if (parsed) {
+      // NF2-AI-002: Sanitise text fields for prompt injection patterns.
+      const { result: sanitised, injectionFields } = this.sanitiseExecutionResult(parsed);
+
+      if (injectionFields.length > 0) {
+        // Log the detection without writing the offending content.
+        await this.auditLogger.logPromptInjectionAttempt(agentId, injectionFields);
+        onThought({
+          type: 'thinking',
+          label: `⚠ Prompt injection stripped from fields: ${injectionFields.join(', ')}`,
+          timestamp: new Date(),
+        });
+      }
+
       onThought({
         type: 'thinking',
-        label: `Structured outcome: ${parsed.outcome}`,
-        detail: JSON.stringify({ outcome: parsed.outcome, summary: parsed.summary }, null, 2),
+        label: `Structured outcome: ${sanitised.outcome}`,
+        detail: JSON.stringify({ outcome: sanitised.outcome, summary: sanitised.summary }, null, 2),
         timestamp: new Date(),
       });
-      return { ...parsed, taskId, workflowId, agentId, completedAt };
+      return { ...sanitised, taskId, workflowId, agentId, completedAt };
     }
 
     // No structured payload — treat as plain completion

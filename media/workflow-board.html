@@ -294,6 +294,24 @@
     code { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
     a { color: var(--vscode-textLink-foreground); cursor: pointer; }
     a:hover { text-decoration: underline; }
+
+    /* ── Status bar ──────────────────────────────────────────*/
+    #status-bar {
+      flex-shrink: 0; display: flex; align-items: center; gap: 7px;
+      padding: 3px 10px; min-height: 20px;
+      background: var(--vscode-statusBar-background, var(--vscode-tab-inactiveBackground));
+      border-top: 1px solid var(--vscode-panel-border);
+      font-size: 10px; color: var(--vscode-statusBar-foreground, var(--vscode-descriptionForeground));
+      opacity: 0; transition: opacity 200ms ease; pointer-events: none; overflow: hidden;
+    }
+    #status-bar.visible { opacity: 1; pointer-events: auto; }
+    #sb-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--vscode-descriptionForeground); flex-shrink: 0; transition: background 200ms; }
+    #sb-dot.active { background: var(--vscode-charts-blue, #569cd6); animation: sbpulse 1.2s ease-in-out infinite; }
+    #sb-dot.error  { background: var(--vscode-errorForeground, #f48771); }
+    @keyframes sbpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+    #sb-text { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.8; }
+    #sb-dismiss { background: none; border: none; cursor: pointer; opacity: 0.3; color: inherit; font-size: 12px; padding: 0 2px; flex-shrink: 0; line-height: 1; }
+    #sb-dismiss:hover { opacity: 0.7; }
   </style>
 </head>
 <body>
@@ -871,27 +889,60 @@ function eventIcon(type) {
 window.addEventListener('message', event => {
   const msg = event.data;
   switch (msg.type) {
-    case 'board_data':          renderBoard(msg.data); break;
+    case 'board_data':
+      renderBoard(msg.data);
+      setStatus('Board refreshed', 'idle', 3000);
+      break;
     case 'workflow_detail':     renderWorkflowDetail(msg.data); break;
     case 'task_detail':         renderTaskDetail(msg.data); break;
     case 'artifacts':           renderArtifacts(msg.data); break;
     case 'events':              renderEvents(msg.data); break;
     case 'handoff_result':
       alert(msg.data.success ? 'Handoff approved.' : 'Handoff rejected.');
+      setStatus(msg.data.success ? 'Handoff approved' : 'Handoff rejected', msg.data.success ? 'idle' : 'error', 4000);
       break;
     case 'create_result':
       showWizardMsg('info', `Workflow created: ${msg.data.workflowId}`);
+      setStatus('Workflow created: ' + msg.data.workflowId, 'idle', 5000);
       setTimeout(() => switchTab('board'), 1500);
       break;
-    case 'error':
+    case 'error': {
       const errEl = document.getElementById('detail-content');
       if (errEl) errEl.innerHTML = `<p class="msg-error">${esc(msg.message)}</p>`;
+      setStatus('Error: ' + msg.message, 'error');
       break;
+    }
   }
 });
+
+// ── Status bar ────────────────────────────────────────────────────
+let sbTimer = null;
+function setStatus(text, state /* 'idle'|'active'|'error' */, autoClearMs) {
+  const bar = document.getElementById('status-bar');
+  const dot = document.getElementById('sb-dot');
+  const txt = document.getElementById('sb-text');
+  if (!bar) { return; }
+  clearTimeout(sbTimer);
+  bar.classList.add('visible');
+  dot.className = state === 'active' ? 'active' : state === 'error' ? 'error' : '';
+  txt.textContent = text;
+  if (autoClearMs) { sbTimer = setTimeout(() => bar.classList.remove('visible'), autoClearMs); }
+}
+function dismissStatus() {
+  const bar = document.getElementById('status-bar');
+  if (bar) { bar.classList.remove('visible'); }
+}
 
 // ── Auto-load board on open ────────────────────────────────────────
 refreshBoard();
 </script>
+
+<!-- ── STATUS BAR ────────────────────────────────────────────────── -->
+<div id="status-bar">
+  <span id="sb-dot"></span>
+  <span id="sb-text"></span>
+  <button id="sb-dismiss" title="Dismiss" onclick="dismissStatus()">×</button>
+</div>
+
 </body>
 </html>

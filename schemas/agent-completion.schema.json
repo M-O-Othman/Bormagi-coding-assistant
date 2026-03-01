@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://bormagi.dev/schemas/agent-completion/v1",
+  "title": "Bormagi Agent Structured Completion Payload",
+  "description": "JSON payload emitted inside a ```json fence by an agent to signal a structured workflow outcome. The orchestration engine parses this from the agent's text response.",
+  "type": "object",
+  "required": ["__bormagi_outcome__", "outcome", "summary"],
+  "properties": {
+    "__bormagi_outcome__": {
+      "type": "boolean",
+      "const": true,
+      "description": "Sentinel field that identifies this object as a Bormagi structured outcome. Must be exactly true."
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["completed", "delegated", "review_requested", "blocked"],
+      "description": "The outcome type. Determines which additional fields are required."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "Human-readable summary of what the agent did or why it is stopping. Shown in the workflow board and task detail panel."
+    },
+    "producedArtifactIds": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "IDs of artifacts registered via the artifact registry during this task. May be empty."
+    },
+
+    "toAgentId": {
+      "type": "string",
+      "description": "[outcome=delegated] The agent ID to hand the task to. Must match a configured agent ID.",
+      "examples": ["solution-architect", "software-qa", "security-engineer"]
+    },
+    "objective": {
+      "type": "string",
+      "description": "[outcome=delegated] Clear description of what the receiving agent must accomplish."
+    },
+    "reasonForHandoff": {
+      "type": "string",
+      "description": "[outcome=delegated] Why this agent is handing off rather than continuing."
+    },
+    "inputArtifactIds": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "[outcome=delegated] Artifact IDs the receiving agent should use as inputs."
+    },
+    "relevantDecisionIds": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "[outcome=delegated] Decision log entry IDs that are relevant context for the receiving agent."
+    },
+    "constraints": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "[outcome=delegated] Constraints the receiving agent must respect (e.g. 'Do not modify the public API')."
+    },
+    "expectedOutputs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "[outcome=delegated] Artifacts or deliverables expected from the receiving agent."
+    },
+    "doneCriteria": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "[outcome=delegated] Acceptance criteria the receiving agent should meet before returning."
+    },
+    "isBlocking": {
+      "type": "boolean",
+      "default": true,
+      "description": "[outcome=delegated|review_requested] Whether the current task waits for the child task to complete."
+    },
+
+    "reviewerAgentId": {
+      "type": "string",
+      "description": "[outcome=review_requested] The agent ID who should perform the review.",
+      "examples": ["software-qa", "security-engineer", "technical-writer"]
+    },
+    "itemUnderReview": {
+      "type": "string",
+      "description": "[outcome=review_requested] Description of what is being reviewed (artifact name, change description)."
+    },
+    "reviewScope": {
+      "type": "string",
+      "description": "[outcome=review_requested] Specific aspects the reviewer should focus on."
+    },
+    "reviewCriteria": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "[outcome=review_requested] Specific criteria or checklist items for the reviewer."
+    },
+
+    "reason": {
+      "type": "string",
+      "description": "[outcome=blocked] Explanation of why the agent cannot proceed."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "critical"],
+      "default": "medium",
+      "description": "[outcome=blocked] Severity of the blocker. Critical blockers halt stage progression."
+    },
+    "suggestedRoute": {
+      "type": "string",
+      "description": "[outcome=blocked] What the human owner or orchestrator should do to unblock the agent."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "outcome": { "const": "delegated" } } },
+      "then": { "required": ["toAgentId", "objective", "reasonForHandoff"] }
+    },
+    {
+      "if": { "properties": { "outcome": { "const": "review_requested" } } },
+      "then": { "required": ["reviewerAgentId", "itemUnderReview"] }
+    },
+    {
+      "if": { "properties": { "outcome": { "const": "blocked" } } },
+      "then": { "required": ["reason"] }
+    }
+  ],
+  "additionalProperties": false
+}

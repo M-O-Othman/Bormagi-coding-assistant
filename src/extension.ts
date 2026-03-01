@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as crypto from 'crypto';
+import * as fs from 'fs';
 import { ConfigManager } from './config/ConfigManager';
 import { SecretsManager } from './config/SecretsManager';
 import { GitignoreManager } from './config/GitignoreManager';
@@ -10,6 +12,7 @@ import { AgentSettingsPanel } from './ui/AgentSettingsPanel';
 import { MainPanel } from './ui/MainPanel';
 import { MeetingPanel } from './ui/MeetingPanel';
 import { StatusBar } from './ui/StatusBar';
+import { SetupWizard } from './ui/SetupWizard';
 import { AuditLogger } from './audit/AuditLogger';
 import { MCPHost } from './mcp/MCPHost';
 import { ProjectConfig } from './types';
@@ -120,14 +123,100 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       } catch {
         vscode.window.showInformationMessage('Bormagi: No audit log found. Initialise the workspace first.');
       }
+    }),
+
+    // ─── NF2-SEC-002: Audit log integrity verification ─────────────────────
+    vscode.commands.registerCommand('bormagi.verifyAuditLog', async () => {
+      const logPath = configManager!.auditLogPath;
+      if (!fs.existsSync(logPath)) {
+        vscode.window.showInformationMessage('Bormagi: No audit log found.');
+        return;
+      }
+
+      const raw = fs.readFileSync(logPath, 'utf8');
+      const lines = raw.split('\n').filter(l => l.trim().length > 0);
+      const hmacKey = vscode.env.machineId;
+      let prevHash = '0'.repeat(64);
+      let ok = 0;
+      let legacy = 0;
+      const broken: number[] = [];
+
+      for (let i = 0; i < lines.length; i++) {
+        try {
+          const obj = JSON.parse(lines[i]) as Record<string, unknown>;
+          if (typeof obj.entry_hash !== 'string') {
+            // Pre-chain entry written before NF2-SEC-002; reset chain anchor.
+            legacy++;
+            prevHash = '0'.repeat(64);
+            continue;
+          }
+          const storedPrevHash = obj.prev_hash as string;
+          const storedEntryHash = obj.entry_hash as string;
+          const copy = { ...obj };
+          delete copy.prev_hash;
+          delete copy.entry_hash;
+          const corePayload = JSON.stringify(copy);
+          const expected = crypto.createHmac('sha256', hmacKey)
+            .update(corePayload + prevHash)
+            .digest('hex');
+          if (storedEntryHash !== expected || storedPrevHash !== prevHash) {
+            broken.push(i + 1);
+          } else {
+            ok++;
+          }
+          prevHash = storedEntryHash;
+        } catch {
+          broken.push(i + 1);
+        }
+      }
+
+      if (broken.length === 0) {
+        vscode.window.showInformationMessage(
+          `Bormagi: Audit log verified. ${ok} chained entr${ok === 1 ? 'y' : 'ies'} OK` +
+          (legacy > 0 ? `, ${legacy} legacy (pre-chain).` : '.')
+        );
+      } else {
+        vscode.window.showWarningMessage(
+          `Bormagi: Audit log integrity FAILED — broken at line${broken.length > 1 ? 's' : ''}: ` +
+          `${broken.join(', ')}. ${ok} OK, ${legacy} legacy.`
+        );
+      }
     })
   );
 
-  // ─── Auto-initialise if .bormagi already exists ───────────────────────────
+  // ─── Auto-initialise or run first-launch wizard ───────────────────────────
   const existingConfig = await configManager.readProjectConfig();
   if (existingConfig) {
     await agentManager.loadAgents();
     statusBar.update(chatController.activeAgentName);
+  } else {
+    // No .bormagi/ config found — offer the onboarding wizard on first launch.
+    // Use a slight delay so the sidebar has time to render before the wizard opens.
+    setTimeout(async () => {
+      const result = await SetupWizard.run(
+        context.extensionPath,
+        workspaceRoot,
+        configManager!,
+        secretsManager!,
+        agentManager!
+      );
+      if (result) {
+        statusBar!.update(chatController!.activeAgentName);
+        vscode.window.showInformationMessage(
+          `Bormagi is ready! Role: ${result.role} · ${result.installedAgents.length} agent(s) installed.`
+        );
+      } else {
+        // Wizard cancelled — surface a manual init command hint
+        vscode.window.showInformationMessage(
+          'Bormagi: Run "Bormagi: Initialise Workspace" to set up the extension when ready.',
+          'Initialise'
+        ).then(action => {
+          if (action === 'Initialise') {
+            vscode.commands.executeCommand('bormagi.initialiseWorkspace');
+          }
+        });
+      }
+    }, 800);
   }
 }
 

@@ -24,6 +24,7 @@
       height: 100vh;
       overflow: hidden;
       line-height: 1.5;
+      position: relative;
     }
 
     /* ── TOOLBAR ──────────────────────────────────────────────────────────── */
@@ -369,6 +370,16 @@
       padding: 0 2px;
     }
 
+    #ctx-badge {
+      display: none;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--vscode-editorWarning-foreground, #cca700);
+      margin-top: 2px;
+      padding: 0 2px;
+    }
+    #ctx-badge.visible { display: block; }
+
     /* ── SCROLLBAR ───────────────────────────────────────────────────────────*/
 
     ::-webkit-scrollbar { width: 4px; height: 4px; }
@@ -406,6 +417,129 @@
     .tok-seg b { font-weight: 600; color: var(--vscode-foreground); }
     .tok-label { opacity: 0.55; }
     .tok-sep { opacity: 0.25; font-size: 9px; }
+
+    /* ── STATUS BAR ───────────────────────────────────────────────────────────*/
+
+    #status-bar {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 3px 10px;
+      background: var(--vscode-statusBar-background, var(--vscode-sideBarSectionHeader-background, var(--vscode-editor-background)));
+      border-top: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.15));
+      font-size: 10px;
+      color: var(--vscode-statusBar-foreground, var(--vscode-descriptionForeground));
+      min-height: 20px;
+      opacity: 0;
+      transition: opacity 200ms ease;
+      pointer-events: none;
+      overflow: hidden;
+    }
+    #status-bar.visible { opacity: 1; pointer-events: auto; }
+    #sb-dot {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: var(--vscode-descriptionForeground);
+      flex-shrink: 0;
+      transition: background 200ms;
+    }
+    #sb-dot.active { background: var(--vscode-button-background); animation: sbpulse 1.2s ease-in-out infinite; }
+    #sb-dot.error  { background: var(--vscode-errorForeground, #f44336); }
+    @keyframes sbpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+    #sb-text { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.8; }
+    #sb-dismiss {
+      background: none; border: none; cursor: pointer; opacity: 0.3; color: inherit;
+      font-size: 12px; padding: 0 2px; flex-shrink: 0; line-height: 1;
+    }
+    #sb-dismiss:hover { opacity: 0.7; }
+
+    /* ── OVERFLOW MENU ───────────────────────────────────────────────────────*/
+
+    #overflow-wrap { position: relative; }
+
+    #overflow-dropdown {
+      position: absolute;
+      right: 0; top: calc(100% + 4px);
+      min-width: 150px;
+      background: var(--vscode-menu-background, var(--vscode-editorWidget-background, var(--vscode-editor-background)));
+      border: 1px solid var(--vscode-menu-border, rgba(128,128,128,0.3));
+      border-radius: var(--radius-sm);
+      z-index: 200;
+      display: none;
+      flex-direction: column;
+      padding: 3px 0;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    }
+    #overflow-dropdown.open { display: flex; }
+
+    .ovf-item {
+      display: flex; align-items: center; gap: 7px;
+      padding: 6px 10px;
+      cursor: pointer; font-size: 12px;
+      color: var(--vscode-foreground);
+      border: none; background: none;
+      width: 100%; text-align: left; font-family: inherit;
+      transition: background 120ms ease;
+    }
+    .ovf-item:hover { background: var(--vscode-list-hoverBackground); }
+
+    /* ── LOG DRAWER ──────────────────────────────────────────────────────────*/
+
+    #log-drawer {
+      position: absolute;
+      top: 0; right: 0;
+      width: 270px; max-width: 70%;
+      height: 100%;
+      background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+      border-left: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.2));
+      display: flex; flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 250ms ease;
+      z-index: 50;
+    }
+    #log-drawer.open { transform: translateX(0); }
+
+    #log-drawer-hd {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.2));
+      background: var(--vscode-sideBarSectionHeader-background, var(--vscode-editor-background));
+      font-size: 11px; font-weight: 600; flex-shrink: 0;
+    }
+    #log-drawer-hd span { flex: 1; opacity: 0.65; }
+    #log-close {
+      background: none; border: none; cursor: pointer;
+      color: var(--vscode-foreground); opacity: 0.4;
+      font-size: 14px; padding: 0 2px; line-height: 1;
+    }
+    #log-close:hover { opacity: 0.9; }
+
+    #log-feed {
+      flex: 1; overflow-y: auto; padding: 8px;
+      display: flex; flex-direction: column; gap: 5px;
+    }
+
+    .log-entry {
+      font-size: 10px;
+      border-left: 2px solid var(--vscode-badge-background);
+      padding: 3px 7px;
+      background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.1));
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    }
+    .log-entry-hd { display: flex; align-items: center; gap: 4px; font-weight: 600; opacity: 0.85; }
+    .log-entry-detail {
+      margin-top: 2px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      opacity: 0.6; white-space: pre-wrap;
+      overflow: hidden; max-height: 60px;
+    }
+
+    #log-empty {
+      font-size: 11px; opacity: 0.3; text-align: center; padding: 20px;
+    }
+
+    #log-toggle-btn.active { opacity: 0.9; }
   </style>
 </head>
 <body>
@@ -422,18 +556,7 @@
 
   <span id="provider-pill"></span>
 
-  <button class="tb-btn" onclick="refreshAgents()" title="Refresh agents">
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-      <path d="M13.5 8a5.5 5.5 0 1 1-1.1-3.3l-1.2.9A4 4 0 1 0 12 8h-2l2.5-2.5L15 8h-1.5z"/>
-    </svg>
-  </button>
-
-  <button class="tb-btn" onclick="exportConversation()" title="Export conversation as Markdown">
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-      <path d="M13 1H3a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm-1 12H4V3h8v10zM6 6h4v1H6zm0 2h4v1H6zm0 2h3v1H6z"/>
-    </svg>
-  </button>
-
+  <!-- Primary actions (always visible) -->
   <button class="tb-btn" onclick="clearChat()" title="Clear conversation">
     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
       <path d="M10.12 1H5.88L5 2H2v1h12V2h-3l-.88-1zM4 5v9a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V5H4zm2 2h1v6H6V7zm3 0h1v6H9V7z"/>
@@ -447,12 +570,6 @@
     </svg>
   </button>
 
-  <button class="tb-btn" onclick="openDashboard()" title="Open Bormagi Dashboard">
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-      <path d="M1 1h6v6H1V1zm1 1v4h4V2H2zm7-1h6v6H9V1zm1 1v4h4V2h-4zM1 9h6v6H1V9zm1 1v4h4v-4H2zm7-1h6v6H9V9zm1 1v4h4v-4h-4z"/>
-    </svg>
-  </button>
-
   <button class="tb-btn" onclick="openMeeting()" title="Start Virtual Meeting">
     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
       <path d="M7 14s-1 0-1-1 1-4 5-4 5 3 5 4-1 1-1 1H7zm4-6a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/>
@@ -460,6 +577,36 @@
       <path d="M4.5 8a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/>
     </svg>
   </button>
+
+  <!-- Log drawer toggle -->
+  <button class="tb-btn" id="log-toggle-btn" onclick="toggleDrawer()" title="Tool log">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M2 2h12v1H2V2zm0 3h12v1H2V5zm0 3h8v1H2V8zm0 3h6v1H2v-1z"/>
+    </svg>
+  </button>
+
+  <!-- Secondary actions (overflow menu) -->
+  <div id="overflow-wrap">
+    <button class="tb-btn" onclick="toggleOverflow()" title="More actions">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+        <circle cx="4" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="12" cy="8" r="1.5"/>
+      </svg>
+    </button>
+    <div id="overflow-dropdown">
+      <button class="ovf-item" onclick="refreshAgents(); closeOverflow()">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.5 8a5.5 5.5 0 1 1-1.1-3.3l-1.2.9A4 4 0 1 0 12 8h-2l2.5-2.5L15 8h-1.5z"/></svg>
+        Refresh agents
+      </button>
+      <button class="ovf-item" onclick="exportConversation(); closeOverflow()">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13 1H3a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm-1 12H4V3h8v10zM6 6h4v1H6zm0 2h4v1H6zm0 2h3v1H6z"/></svg>
+        Export conversation
+      </button>
+      <button class="ovf-item" onclick="openDashboard(); closeOverflow()">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M1 1h6v6H1V1zm1 1v4h4V2H2zm7-1h6v6H9V1zm1 1v4h4V2h-4zM1 9h6v6H1V9zm1 1v4h4v-4H2zm7-1h6v6H9V9zm1 1v4h4v-4h-4z"/></svg>
+        Open Dashboard
+      </button>
+    </div>
+  </div>
 </div>
 
 <!-- ── TOKEN STATS ──────────────────────────────────────────────────────────── -->
@@ -500,6 +647,25 @@
     </button>
   </div>
   <div id="input-hint">Enter — send &nbsp;·&nbsp; Shift+Enter — new line</div>
+  <div id="ctx-badge"></div>
+</div>
+
+<!-- ── STATUS BAR ────────────────────────────────────────────────────────── -->
+<div id="status-bar">
+  <span id="sb-dot"></span>
+  <span id="sb-text"></span>
+  <button id="sb-dismiss" title="Dismiss" onclick="dismissStatus()">×</button>
+</div>
+
+<!-- ── LOG DRAWER ────────────────────────────────────────────────────── -->
+<div id="log-drawer">
+  <div id="log-drawer-hd">
+    <span>Tool Log</span>
+    <button id="log-close" title="Close log" onclick="toggleDrawer()">×</button>
+  </div>
+  <div id="log-feed">
+    <div id="log-empty">No tool calls yet</div>
+  </div>
 </div>
 
 <script>
@@ -549,6 +715,17 @@
     'qwen-plus':                 { in: 0.30,  out: 0.90   },
     'qwen-turbo':                { in: 0.05,  out: 0.20   },
     'qwen-coder-turbo':          { in: 0.30,  out: 0.90   }
+  };
+
+  // ── Model context limits (tokens) — mirrors AgentRunner.MODEL_CONTEXT_LIMITS ─
+  const MODEL_CONTEXT_LIMITS = {
+    'gpt-4o': 128000, 'gpt-4o-mini': 128000, 'gpt-4-turbo': 128000,
+    'gpt-4.5-preview': 128000, 'o1-preview': 128000, 'o1-mini': 128000,
+    'o3-mini': 200000, 'claude-opus-4-6': 200000, 'claude-sonnet-4-6': 200000,
+    'claude-haiku-4-5-20251001': 200000, 'gemini-2.0-flash': 1048576,
+    'gemini-1.5-pro': 2097152, 'gemini-1.5-flash': 1048576,
+    'deepseek-chat': 65536, 'deepseek-coder': 65536, 'deepseek-reasoner': 65536,
+    'qwen-max': 32768, 'qwen-plus': 131072, 'qwen-turbo': 131072, 'qwen-coder-turbo': 131072
   };
 
   // ── Input auto-resize + history navigation ────────────────────────────────
@@ -706,6 +883,7 @@
     sendBtn.disabled = true;
     typingRow.style.display = 'flex';
     typingLabel.textContent = (activeAgentId || 'Agent') + ' is thinking…';
+    setStatus((activeAgentName || activeAgentId || 'Agent') + ' is responding…', 'active');
 
     const label    = activeAgentId || 'Agent';
     const initials = label.slice(0, 2).toUpperCase();
@@ -794,6 +972,9 @@
     const n = body.querySelectorAll('.thought-item').length;
     counter.textContent = n + ' tool action' + (n === 1 ? '' : 's');
     scrollEnd();
+
+    // Mirror to log drawer
+    appendToDrawer(event);
   }
 
   // ── End stream ─────────────────────────────────────────────────────────────
@@ -817,6 +998,7 @@
 
     currentContentEl    = null;
     currentThoughtStrip = null;
+    clearStatus();
   }
 
   // ── System / error messages ────────────────────────────────────────────────
@@ -905,6 +1087,7 @@
       case 'error':
         endStream();
         appendSystemMsg(m.message, true);
+        setStatus('Error: ' + m.message + ' — check Settings for API key', 'error');
         break;
 
       case 'agent_changed':
@@ -960,6 +1143,91 @@
       document.getElementById('tok-cost-val').textContent = costStr;
     }
     document.getElementById('token-stats').classList.add('visible');
+
+    // Near-capacity badge on chat input
+    const limit = MODEL_CONTEXT_LIMITS[currentModel] ?? 0;
+    const badge = document.getElementById('ctx-badge');
+    if (badge && limit > 0 && lastIn >= limit * 0.8) {
+      const pct = Math.round((lastIn / limit) * 100);
+      badge.textContent = `⚠ Context ${pct}% full — oldest turns may be trimmed on next message`;
+      badge.classList.add('visible');
+    } else if (badge) {
+      badge.classList.remove('visible');
+    }
+  }
+
+  // ── Status bar ─────────────────────────────────────────────────────────────
+
+  let sbTimer = null;
+
+  function setStatus(text, state /* 'idle'|'active'|'error' */, autoClearMs) {
+    const bar = document.getElementById('status-bar');
+    const dot = document.getElementById('sb-dot');
+    const txt = document.getElementById('sb-text');
+    if (!bar) { return; }
+    clearTimeout(sbTimer);
+    bar.classList.add('visible');
+    dot.className = state === 'active' ? 'active' : state === 'error' ? 'error' : '';
+    txt.textContent = text;
+    if (autoClearMs) { sbTimer = setTimeout(clearStatus, autoClearMs); }
+  }
+
+  function clearStatus() {
+    const bar = document.getElementById('status-bar');
+    if (bar) { bar.classList.remove('visible'); }
+  }
+
+  function dismissStatus() { clearStatus(); }
+
+  // ── Overflow menu ──────────────────────────────────────────────────────────
+
+  function toggleOverflow() {
+    document.getElementById('overflow-dropdown').classList.toggle('open');
+  }
+
+  function closeOverflow() {
+    document.getElementById('overflow-dropdown').classList.remove('open');
+  }
+
+  // Close overflow when clicking outside of it
+  document.addEventListener('click', e => {
+    const wrap = document.getElementById('overflow-wrap');
+    if (wrap && !wrap.contains(e.target)) {
+      closeOverflow();
+    }
+  });
+
+  // ── Log drawer ─────────────────────────────────────────────────────────────
+
+  let drawerOpen = false;
+
+  function toggleDrawer() {
+    drawerOpen = !drawerOpen;
+    document.getElementById('log-drawer').classList.toggle('open', drawerOpen);
+    document.getElementById('log-toggle-btn').classList.toggle('active', drawerOpen);
+  }
+
+  function appendToDrawer(event) {
+    const feed = document.getElementById('log-feed');
+    const empty = document.getElementById('log-empty');
+    if (empty) { empty.remove(); }
+
+    const icon = event.type === 'tool_call'   ? '→' :
+                 event.type === 'tool_result'  ? '←' :
+                 event.type === 'thinking'     ? '◎' : '⚠';
+
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+    entry.innerHTML =
+      '<div class="log-entry-hd">' +
+        '<span>' + icon + '</span>' +
+        '<span>' + esc(event.label) + '</span>' +
+      '</div>' +
+      (event.detail
+        ? '<div class="log-entry-detail">' + esc(String(event.detail).slice(0, 400)) + '</div>'
+        : '');
+    feed.appendChild(entry);
+    feed.scrollTop = feed.scrollHeight;
   }
 
   // Boot

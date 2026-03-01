@@ -29,3 +29,21 @@ jobs:
 
       - name: Compile (webpack)
         run: npm run compile
+
+      - name: Dependency audit (high severity CVEs)
+        run: npm audit --audit-level=high
+
+  secrets-scan:
+    name: Secrets Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

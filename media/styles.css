@@ -1,0 +1,460 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   Bormagi Shared Design System  (NF2-UX-001)
+   Canonical source — referenced by chat.html, meeting-room.html, workflow-board.html
+
+   Usage in VS Code webviews:
+     Each HTML panel embeds this file's component classes within its own <style>
+     block, OR links to it via a webview URI when its provider sets __STYLES_URI__.
+
+   Design principles:
+     • CSS variable palette maps VS Code theme tokens to semantic names
+     • 8px grid: spacing scale in multiples of 8px (--space-1 = 8px)
+     • Components: btn, card, badge, alert, spinner, progress, pill
+     • All colours come from VS Code theme variables for automatic dark/light support
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* ── 1. PALETTE ──────────────────────────────────────────────────────────────
+   Maps VS Code theme tokens to semantic design-system variables.
+   Panels should declare these in :root. */
+
+:root {
+  /* Surface colours */
+  --ds-bg:            var(--vscode-editor-background);
+  --ds-surface:       var(--vscode-editorWidget-background, rgba(128,128,128,0.06));
+  --ds-surface-hover: var(--vscode-list-hoverBackground);
+  --ds-sidebar:       var(--vscode-sideBar-background, var(--vscode-editor-background));
+  --ds-header:        var(--vscode-sideBarSectionHeader-background, var(--vscode-editor-background));
+
+  /* Border */
+  --ds-border:        var(--vscode-widget-border, rgba(128,128,128,0.2));
+  --ds-border-input:  var(--vscode-input-border, rgba(128,128,128,0.35));
+  --ds-border-menu:   var(--vscode-menu-border, rgba(128,128,128,0.3));
+
+  /* Text */
+  --ds-fg:            var(--vscode-foreground);
+  --ds-fg-muted:      var(--vscode-descriptionForeground, rgba(128,128,128,0.8));
+  --ds-fg-error:      var(--vscode-errorForeground, #f44336);
+
+  /* Interactive */
+  --ds-accent:        var(--vscode-focusBorder, #007acc);
+  --ds-btn-bg:        var(--vscode-button-background);
+  --ds-btn-fg:        var(--vscode-button-foreground);
+  --ds-btn-hover:     var(--vscode-button-hoverBackground);
+
+  /* Semantic status */
+  --ds-success:       #4caf50;
+  --ds-warn:          #ff9800;
+  --ds-error:         var(--vscode-inputValidation-errorBorder, #f44336);
+
+  /* Input */
+  --ds-input-bg:      var(--vscode-input-background);
+  --ds-input-fg:      var(--vscode-input-foreground);
+  --ds-placeholder:   var(--vscode-input-placeholderForeground);
+
+  /* Badge / pill */
+  --ds-badge-bg:      var(--vscode-badge-background);
+  --ds-badge-fg:      var(--vscode-badge-foreground);
+
+  /* Radius tokens */
+  --ds-radius-sm: 3px;
+  --ds-radius-md: 6px;
+  --ds-radius-lg: 10px;
+
+  /* 8px grid spacing scale */
+  --ds-space-h: 4px;   /* half unit */
+  --ds-space-1: 8px;
+  --ds-space-2: 16px;
+  --ds-space-3: 24px;
+  --ds-space-4: 32px;
+  --ds-space-6: 48px;
+
+  /* Transition */
+  --ds-transition: 140ms ease;
+}
+
+/* ── 2. RESET ─────────────────────────────────────────────────────────────── */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: 13px;
+  color: var(--ds-fg);
+  background: var(--ds-bg);
+  line-height: 1.5;
+}
+
+/* ── 3. SCROLLBAR ─────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar            { width: 4px; height: 4px; }
+::-webkit-scrollbar-track      { background: transparent; }
+::-webkit-scrollbar-thumb      { background: var(--vscode-scrollbarSlider-background); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover{ background: var(--vscode-scrollbarSlider-hoverBackground); }
+
+/* ── 4. COMPONENT: BUTTON ─────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  background: var(--ds-btn-bg);
+  color: var(--ds-btn-fg);
+  border: none;
+  border-radius: var(--ds-radius-sm);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  transition: background var(--ds-transition), opacity var(--ds-transition);
+  user-select: none;
+}
+.btn:hover          { background: var(--ds-btn-hover); }
+.btn:disabled       { opacity: 0.4; cursor: not-allowed; }
+
+.btn-sm             { padding: 3px 8px; font-size: 11px; }
+.btn-lg             { padding: 8px 16px; font-size: 13px; }
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--ds-border);
+  color: var(--ds-fg);
+}
+.btn-outline:hover  { background: var(--ds-surface); }
+
+.btn-danger {
+  background: var(--ds-fg-error);
+  color: #fff;
+}
+.btn-danger:hover   { opacity: 0.85; }
+
+/* Toolbar icon-only button (used by all panels) */
+.tb-btn {
+  background: none;
+  border: none;
+  color: var(--ds-fg);
+  cursor: pointer;
+  padding: 3px;
+  border-radius: var(--ds-radius-sm);
+  opacity: 0.4;
+  transition: opacity var(--ds-transition), background var(--ds-transition);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+.tb-btn:hover { opacity: 0.9; background: var(--vscode-toolbar-hoverBackground); }
+.tb-btn svg   { display: block; }
+
+/* ── 5. COMPONENT: CARD ───────────────────────────────────────────────────── */
+
+.card {
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-md);
+  padding: var(--ds-space-1) var(--ds-space-2);
+}
+
+.card-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: var(--ds-space-h);
+}
+
+.card-muted {
+  font-size: 11px;
+  color: var(--ds-fg-muted);
+}
+
+/* ── 6. COMPONENT: BADGE / PILL ───────────────────────────────────────────── */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-badge-bg);
+  color: var(--ds-badge-fg);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+
+.badge-success { background: var(--ds-success); color: #fff; }
+.badge-warn    { background: var(--ds-warn);    color: #fff; }
+.badge-error   { background: var(--ds-error);   color: #fff; }
+.badge-muted   { background: var(--ds-surface); color: var(--ds-fg-muted); border: 1px solid var(--ds-border); }
+
+/* ── 7. COMPONENT: ALERT ──────────────────────────────────────────────────── */
+
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ds-space-1);
+  padding: var(--ds-space-1) var(--ds-space-2);
+  border-radius: var(--ds-radius-md);
+  border: 1px solid var(--ds-border);
+  font-size: 12px;
+  background: var(--ds-surface);
+}
+
+.alert-icon   { flex-shrink: 0; margin-top: 1px; }
+.alert-body   { flex: 1; }
+.alert-title  { font-weight: 600; margin-bottom: 2px; }
+
+.alert-success { border-color: var(--ds-success); background: rgba(76,175,80,0.10); }
+.alert-warn    { border-color: var(--ds-warn);    background: rgba(255,152,0,0.10); }
+.alert-error   {
+  border-color: var(--ds-error);
+  background: var(--vscode-inputValidation-errorBackground, rgba(244,67,54,0.10));
+  color: var(--ds-fg-error);
+}
+
+/* ── 8. COMPONENT: SPINNER ────────────────────────────────────────────────── */
+
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--ds-border);
+  border-top-color: var(--ds-accent);
+  border-radius: 50%;
+  animation: ds-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.spinner-sm { width: 12px; height: 12px; border-width: 1.5px; }
+.spinner-lg { width: 24px; height: 24px; border-width: 3px; }
+
+@keyframes ds-spin { to { transform: rotate(360deg); } }
+
+/* Dot pulsing variant (like the typing indicator) */
+.dot-spinner {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+.dot-spinner span {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--ds-badge-bg);
+  opacity: 0.55;
+  animation: ds-dot 1.1s ease-in-out infinite;
+}
+.dot-spinner span:nth-child(2) { animation-delay: .18s; }
+.dot-spinner span:nth-child(3) { animation-delay: .36s; }
+@keyframes ds-dot { 0%,60%,100% { transform: none; } 30% { transform: translateY(-4px); } }
+
+/* ── 9. COMPONENT: PROGRESS ───────────────────────────────────────────────── */
+
+.progress {
+  width: 100%;
+  height: 4px;
+  background: var(--ds-border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background: var(--ds-accent);
+  border-radius: 2px;
+  transition: width 300ms ease;
+}
+
+.progress-bar-success { background: var(--ds-success); }
+.progress-bar-warn    { background: var(--ds-warn); }
+.progress-bar-error   { background: var(--ds-error); }
+
+/* ── 10. COMPONENT: FORM ELEMENTS ─────────────────────────────────────────── */
+
+.form-group { margin-bottom: var(--ds-space-2); }
+
+label.ds-label {
+  display: block;
+  margin-bottom: var(--ds-space-h);
+  color: var(--ds-fg-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.ds-input {
+  width: 100%;
+  background: var(--ds-input-bg);
+  color: var(--ds-input-fg);
+  border: 1px solid var(--ds-border-input);
+  border-radius: var(--ds-radius-sm);
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  transition: border-color var(--ds-transition);
+}
+.ds-input:focus {
+  outline: 1px solid var(--ds-accent);
+  border-color: var(--ds-accent);
+}
+.ds-input::placeholder { color: var(--ds-placeholder); opacity: 0.6; }
+
+/* ── 11. UTILITY: STATUS BAR ──────────────────────────────────────────────── */
+
+.ds-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 10px;
+  background: var(--ds-sidebar);
+  border-top: 1px solid var(--ds-border);
+  font-size: 10px;
+  color: var(--ds-fg-muted);
+  min-height: 20px;
+  opacity: 0;
+  transition: opacity 200ms ease;
+  pointer-events: none;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.ds-status-bar.visible { opacity: 1; pointer-events: auto; }
+
+.ds-sb-dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--ds-fg-muted);
+  flex-shrink: 0;
+  transition: background 200ms;
+}
+.ds-sb-dot.active { background: var(--ds-btn-bg); animation: ds-sbpulse 1.2s ease-in-out infinite; }
+.ds-sb-dot.error  { background: var(--ds-fg-error); }
+@keyframes ds-sbpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* ── 12. UTILITY: OVERFLOW MENU ───────────────────────────────────────────── */
+
+.ds-overflow-wrap {
+  position: relative;
+}
+
+.ds-overflow-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 160px;
+  background: var(--vscode-menu-background, var(--ds-sidebar));
+  border: 1px solid var(--ds-border-menu);
+  border-radius: var(--ds-radius-sm);
+  z-index: 200;
+  display: none;
+  flex-direction: column;
+  padding: 3px 0;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+}
+.ds-overflow-menu.open { display: flex; }
+
+.ds-overflow-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ds-fg);
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  transition: background var(--ds-transition);
+}
+.ds-overflow-item:hover { background: var(--ds-surface-hover); }
+
+/* ── 13. UTILITY: LOG DRAWER ──────────────────────────────────────────────── */
+
+.ds-drawer {
+  position: absolute;
+  top: 0; right: 0;
+  width: 280px;
+  max-width: 70vw;
+  height: 100%;
+  background: var(--ds-sidebar);
+  border-left: 1px solid var(--ds-border);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 250ms ease;
+  z-index: 50;
+}
+.ds-drawer.open { transform: translateX(0); }
+
+.ds-drawer-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--ds-border);
+  background: var(--ds-header);
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.ds-drawer-header span { flex: 1; opacity: 0.7; }
+
+.ds-drawer-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--ds-fg);
+  opacity: 0.4;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.ds-drawer-close:hover { opacity: 0.9; }
+
+.ds-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ds-log-entry {
+  font-size: 10px;
+  border-left: 2px solid var(--ds-badge-bg);
+  padding: 3px 7px;
+  background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.1));
+  border-radius: 0 var(--ds-radius-sm) var(--ds-radius-sm) 0;
+}
+.ds-log-entry-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  opacity: 0.85;
+}
+.ds-log-entry-detail {
+  margin-top: 2px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  opacity: 0.6;
+  white-space: pre-wrap;
+  overflow: hidden;
+  max-height: 60px;
+}
+.ds-log-empty {
+  font-size: 11px;
+  opacity: 0.35;
+  text-align: center;
+  padding: 20px;
+}
+
+/* ── 14. UTILITY: ANIMATION ───────────────────────────────────────────────── */
+
+@keyframes ds-fadeUp {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.ds-anim-fadeUp { animation: ds-fadeUp 170ms ease; }
+
+@keyframes ds-blink { 50% { opacity: 0; } }

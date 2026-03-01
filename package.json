@@ -95,6 +95,11 @@
         "category": "Bormagi"
       },
       {
+        "command": "bormagi.verifyAuditLog",
+        "title": "Bormagi: Verify Audit Log Integrity",
+        "category": "Bormagi"
+      },
+      {
         "command": "bormagi.openDashboard",
         "title": "Bormagi: Open Dashboard",
         "category": "Bormagi"
@@ -200,6 +205,10 @@
         },
         {
           "command": "bormagi.showAuditLog",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "bormagi.verifyAuditLog",
           "when": "workspaceFolderCount > 0"
         },
         {

@@ -2,7 +2,10 @@
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
-  testMatch: ['**/src/workflow/tests/**/*.test.ts'],
+  testMatch: [
+    '**/src/workflow/tests/**/*.test.ts',
+    '**/src/tests/integration/**/*.test.ts',
+  ],
   moduleNameMapper: {
     '^vscode$': '<rootDir>/src/__mocks__/vscode.ts',
   },

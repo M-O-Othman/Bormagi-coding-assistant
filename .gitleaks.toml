@@ -1,0 +1,25 @@
+# Gitleaks configuration for Bormagi extension
+# Docs: https://github.com/gitleaks/gitleaks
+
+title = "Bormagi Gitleaks Config"
+
+[extend]
+# Use the default ruleset from gitleaks
+useDefault = true
+
+[allowlist]
+description = "Allowlist for known false positives in test fixtures and documentation"
+
+# Ignore test fixture files that contain intentionally fake keys for testing
+paths = [
+  '''src/workflow/tests/''',
+  '''src/audit/tests/''',
+  '''docs/''',
+  '''PUBLISHING\.md''',
+]
+
+# Ignore known placeholder patterns used in documentation and comments
+regexes = [
+  '''sk-\.\.\.|your-api-key-here|INSERT_API_KEY|placeholder|EXAMPLE_KEY|<your.*key>''',
+  '''AIzaSyExample|ghp_ExampleToken''',
+]

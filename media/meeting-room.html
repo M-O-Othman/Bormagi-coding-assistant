@@ -113,6 +113,24 @@
   .empty { color: var(--muted); font-size: 12px; padding: 20px; text-align: center; }
   .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--muted); border-top-color: var(--fg); border-radius: 50%; animation: spin 0.7s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Status bar ─────────────────────────────────────────── */
+  #status-bar {
+    flex-shrink: 0; display: flex; align-items: center; gap: 7px;
+    padding: 3px 10px; min-height: 20px;
+    background: var(--secondary-bg);
+    border-top: 1px solid var(--border);
+    font-size: 10px; color: var(--muted);
+    opacity: 0; transition: opacity 200ms ease; pointer-events: none; overflow: hidden;
+  }
+  #status-bar.visible { opacity: 1; pointer-events: auto; }
+  #sb-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); flex-shrink: 0; transition: background 200ms; }
+  #sb-dot.active { background: var(--accent); animation: sbpulse 1.2s ease-in-out infinite; }
+  #sb-dot.error  { background: var(--vscode-errorForeground, #f44336); }
+  @keyframes sbpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  #sb-text { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.8; }
+  #sb-dismiss { background: none; border: none; cursor: pointer; opacity: 0.3; color: var(--fg); font-size: 12px; padding: 0 2px; flex-shrink: 0; line-height: 1; }
+  #sb-dismiss:hover { opacity: 0.7; }
 </style>
 </head>
 <body>
@@ -235,6 +253,13 @@
     <button class="btn btn-outline" onclick="saveMinutes()">Save to File</button>
   </div>
   <div id="minutes-output" class="empty">Click "Generate Minutes" to create meeting minutes.</div>
+</div>
+
+<!-- ── STATUS BAR ────────────────────────────────────────── -->
+<div id="status-bar">
+  <span id="sb-dot"></span>
+  <span id="sb-text"></span>
+  <button id="sb-dismiss" title="Dismiss" onclick="dismissStatus()">×</button>
 </div>
 
 <script>
@@ -415,6 +440,8 @@ function setActiveItem(itemId) {
 function onRoundStarted(agendaItemId, userMessage) {
   roundRunning = true;
   setRoundUiState(true);
+  const item = meeting && meeting.agenda.find(a => a.id === agendaItemId);
+  setStatus('Running round' + (item ? ' — ' + item.text.slice(0, 50) : '') + '…', 'active');
 
   // If this item isn't currently shown, switch to it
   if (activeItemId !== agendaItemId) {
@@ -455,6 +482,7 @@ function onAgentDelta(agendaItemId, agentId, delta) {
     // Create streaming message card
     const agent = allAgents.find(a => a.id === agentId);
     const name = agent ? agent.name : agentId;
+    setStatus(name + ' is responding…', 'active');
     const wrapper = document.createElement('div');
     wrapper.className = 'agent-msg';
     wrapper.innerHTML = `
@@ -492,6 +520,7 @@ function onAgentRoundDone(agendaItemId, agentId, fullResponse) {
 function onRoundComplete(agendaItemId) {
   roundRunning = false;
   setRoundUiState(false);
+  setStatus('Round complete — continue or mark item resolved', 'idle', 6000);
 
   // Update agenda item status to 'discussing' (still active)
   if (meeting) {
@@ -504,6 +533,7 @@ function onRoundComplete(agendaItemId) {
 function onRoundError(agendaItemId, error) {
   roundRunning = false;
   setRoundUiState(false);
+  setStatus('Error: ' + error, 'error');
   const feed = document.getElementById('chat-feed');
   const errDiv = document.createElement('div');
   errDiv.style.cssText = 'color:var(--vscode-errorForeground,#f44);font-size:12px;padding:8px 0;';
@@ -647,6 +677,7 @@ function onMeetingStopped(minutes) {
   meetingEnded = true;
   roundRunning = false;
   setRoundUiState(false);
+  setStatus('Meeting ended — minutes saved automatically', 'idle');
 
   const endBtn = document.getElementById('end-meeting-btn');
   if (endBtn) { endBtn.disabled = true; endBtn.textContent = '✓ Ended'; }
@@ -665,6 +696,25 @@ function onMeetingStopped(minutes) {
     switchTab('minutes');
   }
 }
+
+// ── Status bar ─────────────────────────────────────────────
+let sbTimer = null;
+function setStatus(text, state /* 'idle'|'active'|'error' */, autoClearMs) {
+  const bar = document.getElementById('status-bar');
+  const dot = document.getElementById('sb-dot');
+  const txt = document.getElementById('sb-text');
+  if (!bar) { return; }
+  clearTimeout(sbTimer);
+  bar.classList.add('visible');
+  dot.className = state === 'active' ? 'active' : state === 'error' ? 'error' : '';
+  txt.textContent = text;
+  if (autoClearMs) { sbTimer = setTimeout(clearStatus, autoClearMs); }
+}
+function clearStatus() {
+  const bar = document.getElementById('status-bar');
+  if (bar) { bar.classList.remove('visible'); }
+}
+function dismissStatus() { clearStatus(); }
 
 // ── Pre-Meeting Action Items ───────────────────────────────
 function addPreActionItem() {
