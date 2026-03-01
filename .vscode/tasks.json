@@ -5,9 +5,9 @@
       "label": "compile",
       "type": "process",
       "command": "node",
-      "args": ["${workspaceFolder:bormagi-extension}/node_modules/webpack/bin/webpack.js"],
+      "args": ["C:/Users/mothm/Downloads/VS code Extension/bormagi-extension/node_modules/webpack/bin/webpack.js"],
       "options": {
-        "cwd": "${workspaceFolder:bormagi-extension}"
+        "cwd": "C:/Users/mothm/Downloads/VS code Extension/bormagi-extension"
       },
       "group": {
         "kind": "build",
