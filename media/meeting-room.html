@@ -29,7 +29,7 @@
   .tab-bar { display: flex; border-bottom: 1px solid var(--border); background: var(--secondary-bg); flex-shrink: 0; }
   .tab { padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--muted); user-select: none; }
   .tab.active { border-bottom-color: var(--accent); color: var(--fg); }
-  .tab-content { flex: 1; overflow: hidden; display: none; flex-direction: column; }
+  .tab-content { flex: 1; overflow: hidden; display: none; flex-direction: column; min-height: 0; }
   .tab-content.active { display: flex; }
 
   /* ── Forms ────────────────────────────────────────── */
@@ -69,8 +69,8 @@
   .dot-resolved { background: var(--success); }
 
   /* chat feed */
-  .chat-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-  .chat-feed { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+  .chat-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+  .chat-feed { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
   .item-header { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; padding-bottom: 8px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
   .round-divider { font-size: 10px; color: var(--muted); text-align: center; padding: 4px 0; border-top: 1px dashed var(--border); }
   .agent-msg { background: var(--secondary-bg); border-radius: 6px; padding: 10px 12px; }
@@ -446,8 +446,9 @@ function onAgentDelta(agendaItemId, agentId, delta) {
     feed.appendChild(wrapper);
     el = document.getElementById(`stream-${agendaItemId}-${agentId}`);
   }
+  const wasNearBottom = isNearBottom(feed);
   el.textContent += delta;
-  feed.scrollTop = feed.scrollHeight;
+  if (wasNearBottom) { scrollToBottom(feed); }
 }
 
 function onAgentRoundDone(agendaItemId, agentId, fullResponse) {
@@ -577,6 +578,16 @@ function saveMinutes() {
   const markdown = document.getElementById('minutes-output').textContent;
   if (!markdown || markdown.includes('Click "Generate Minutes"')) { alert('Generate minutes first.'); return; }
   vscode.postMessage({ type: 'save_minutes', markdown });
+}
+
+// ── Scroll helpers ─────────────────────────────────────────
+// Returns true when the user is already near the bottom — so auto-scroll is safe.
+// If the user has scrolled up to read, we leave them in place.
+function isNearBottom(el, threshold = 80) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+}
+function scrollToBottom(el) {
+  el.scrollTop = el.scrollHeight;
 }
 
 // ── Helpers ────────────────────────────────────────────────

@@ -50,23 +50,22 @@ export class MeetingPanel {
     workspaceRoot: string,
     secretsManager: SecretsManager
   ): void {
-    const column = vscode.window.activeTextEditor ? vscode.ViewColumn.Beside : vscode.ViewColumn.One;
-
     if (MeetingPanel.current) {
-      MeetingPanel.current.panel.reveal(column);
+      MeetingPanel.current.panel.reveal(vscode.ViewColumn.Active);
       return;
     }
 
     const panel = vscode.window.createWebviewPanel(
       'bormagi.meetingRoom',
       'Bormagi — Virtual Meeting',
-      column,
+      vscode.ViewColumn.Active,
       {
         enableScripts: true,
         retainContextWhenHidden: true,
         localResourceRoots: [extensionUri]
       }
     );
+    panel.iconPath = vscode.Uri.joinPath(extensionUri, 'media', 'bormagi-icon.svg');
 
     MeetingPanel.current = new MeetingPanel(panel, extensionUri, agentManager, configManager, workspaceRoot, secretsManager);
   }
