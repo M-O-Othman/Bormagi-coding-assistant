@@ -6,11 +6,11 @@
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}",
+        "--extensionDevelopmentPath=${workspaceFolder:bormagi-extension}",
         "C:/Users/mothm/Downloads/tmp/test-selfenhancement/Bormagi-coding-assistant"
       ],
       "outFiles": [
-        "${workspaceFolder}/dist/**/*.js"
+        "${workspaceFolder:bormagi-extension}/dist/**/*.js"
       ],
       "preLaunchTask": "compile"
     }
