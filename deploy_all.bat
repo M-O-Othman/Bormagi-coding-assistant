@@ -1,7 +1,38 @@
 @echo off
 setlocal enabledelayedexpansion
 
-set "EXT_DIR=C:\Users\mothm\Downloads\VS code Extension\bormagi-extension"
+set "SCRIPT_DIR=%~dp0"
+if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+
+if "%~1"=="" (
+    set "EXT_DIR=%SCRIPT_DIR%"
+) else (
+    set "EXT_DIR=%~1"
+)
+
+if "%~2"=="" (
+    set "WORKSPACE_TO_OPEN=%CD%"
+) else (
+    set "WORKSPACE_TO_OPEN=%~2"
+)
+
+if not exist "%EXT_DIR%\package.json" (
+    echo ERROR: package.json not found in extension directory:
+    echo        %EXT_DIR%
+    pause
+    exit /b 1
+)
+
+set "CODE_CMD="
+where code >nul 2>nul && set "CODE_CMD=code"
+if not defined CODE_CMD (
+    where code-insiders >nul 2>nul && set "CODE_CMD=code-insiders"
+)
+if not defined CODE_CMD (
+    echo ERROR: VS Code CLI not found. Install "code" or "code-insiders" in PATH.
+    pause
+    exit /b 1
+)
 
 echo ============================================================
 echo  Bormagi Extension — Build, Package and Install
@@ -55,19 +86,30 @@ echo.
 
 :: ── 4. Install into VS Code ─────────────────────────────────────
 echo [4/4] Installing extension into VS Code...
-code --install-extension "%EXT_DIR%\%VSIX_FILE%" --force
+call %CODE_CMD% --install-extension "%EXT_DIR%\%VSIX_FILE%" --force
 if errorlevel 1 (
     echo ERROR: Installation failed. Make sure VS Code is in your PATH.
-    echo        Run: code --install-extension "%EXT_DIR%\%VSIX_FILE%"
+    echo        Run: %CODE_CMD% --install-extension "%EXT_DIR%\%VSIX_FILE%"
     pause
     exit /b 1
+)
+
+for /f "delims=" %%i in ('node -p "const p=require('./package.json'); (p.publisher + '.' + p.name).toLowerCase()"') do set "EXT_ID=%%i"
+call %CODE_CMD% --list-extensions | findstr /i /x "%EXT_ID%" >nul
+if errorlevel 1 (
+    echo WARNING: Could not verify installed extension id: %EXT_ID%
+) else (
+    echo Installed extension id: %EXT_ID%
 )
 
 echo.
 echo ============================================================
 echo  SUCCESS — Bormagi installed from %VSIX_FILE%
-echo  Reload VS Code (Ctrl+Shift+P -> Developer: Reload Window)
-echo  to activate the updated extension.
+echo  Bormagi stays installed and enabled in normal VS Code sessions.
+echo  Reload VS Code (Ctrl+Shift+P ^> Developer: Reload Window) if already open.
 echo ============================================================
+echo.
+echo Opening regular VS Code window: %WORKSPACE_TO_OPEN%
+call %CODE_CMD% "%WORKSPACE_TO_OPEN%" >nul 2>nul
 echo.
 pause
