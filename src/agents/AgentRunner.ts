@@ -73,13 +73,13 @@ export class AgentRunner {
       effectiveProvider = def;
       apiKeyId = '__default__';
     } else {
-      const needsOwnKey = (agentConfig.provider?.auth_method ?? 'api_key') !== 'gcp_adc';
+      const needsOwnKey = (agentConfig.provider?.auth_method ?? 'api_key') === 'api_key';
       if (needsOwnKey) {
         const ownKey = await this.agentManager.getApiKey(agentId);
         if (!ownKey) {
           const def = await this.configManager.readDefaultProvider();
           if (def?.type) {
-            const defNeedsKey = (def.auth_method ?? 'api_key') !== 'gcp_adc';
+            const defNeedsKey = (def.auth_method ?? 'api_key') === 'api_key';
             const defKey      = defNeedsKey ? await this.agentManager.getApiKey('__default__') : 'ok';
             if (defKey) {
               effectiveProvider = def;

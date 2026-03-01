@@ -59,13 +59,13 @@ export class MeetingOrchestrator {
         effectiveProvider = def;
         apiKeyId = '__default__';
       } else {
-        const needsOwnKey = (agentConfig.provider?.auth_method ?? 'api_key') !== 'gcp_adc';
+        const needsOwnKey = (agentConfig.provider?.auth_method ?? 'api_key') === 'api_key';
         if (needsOwnKey) {
           const ownKey = await this.agentManager.getApiKey(agentId);
           if (!ownKey) {
             const def = await this.configManager.readDefaultProvider();
             if (def?.type) {
-              const defNeedsKey = (def.auth_method ?? 'api_key') !== 'gcp_adc';
+              const defNeedsKey = (def.auth_method ?? 'api_key') === 'api_key';
               const defKey = defNeedsKey ? await this.agentManager.getApiKey('__default__') : 'ok';
               if (defKey) { effectiveProvider = def; apiKeyId = '__default__'; }
             }
@@ -74,7 +74,7 @@ export class MeetingOrchestrator {
       }
 
       const apiKey = await this.agentManager.getApiKey(apiKeyId);
-      if (!apiKey && (effectiveProvider?.auth_method ?? 'api_key') !== 'gcp_adc') { continue; }
+      if (!apiKey && (effectiveProvider?.auth_method ?? 'api_key') === 'api_key') { continue; }
 
       const providerConfig = { ...agentConfig, provider: effectiveProvider };
       const provider = ProviderFactory.create(providerConfig, apiKey ?? '');

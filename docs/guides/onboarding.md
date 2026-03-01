@@ -28,9 +28,9 @@ This guide gets you from a fresh checkout to a fully working development environ
 | VS Code     | 1.85.0          | Extension host API surface |
 | Git         | any recent      | Source control |
 
-**API key (at least one):**
+**Provider credentials (at least one):**
 
-You need at least one AI provider API key to chat with agents. Supported providers:
+You need at least one provider credential to chat with agents (API key or OAuth identity, depending on provider). Supported options:
 
 | Provider  | Model examples | Where to get a key |
 |-----------|----------------|--------------------|
@@ -39,11 +39,14 @@ You need at least one AI provider API key to chat with agents. Supported provide
 | Google    | gemini-2.0-flash, gemini-1.5-pro | [aistudio.google.com](https://aistudio.google.com/app/apikey) |
 | DeepSeek  | deepseek-chat, deepseek-reasoner | [platform.deepseek.com](https://platform.deepseek.com/) |
 | Qwen      | qwen-plus, qwen-max | [bailian.console.aliyun.com](https://bailian.console.aliyun.com/) |
-| GCP (ADC) | gemini-* via Vertex | `gcloud auth application-default login` |
+| GCP Vertex AI (ADC/OAuth) | gemini-* via Vertex | `gcloud auth application-default login` |
 | Ollama (local) | llama3.2, mistral, phi4 | `ollama pull <model>` — no key required |
 | OpenRouter | any of 200+ models | [openrouter.ai/keys](https://openrouter.ai/keys) |
 
-The last two rows use the **Custom (OpenAI-compatible)** provider type — see [§5 below](#5-configure-a-workspace-default-provider) for setup, and the README for a full list of compatible base URLs.
+The last two rows use non-key auth patterns:
+- **GCP Vertex AI (ADC/OAuth)** uses the `gemini` provider with auth method `vertex_ai`.
+- **Ollama/OpenRouter** use the **Custom (OpenAI-compatible)** provider type.
+See [§5 below](#5-configure-a-workspace-default-provider) for setup steps.
 
 ---
 
@@ -117,6 +120,48 @@ Bormagi stores API keys securely in VS Code's `SecretStorage` (keyring). Keys ar
 5. Click **Save Default Provider**.
 6. Enter your API key when prompted.
 
+### Gemini auth modes (no project-specific secrets)
+
+When using `provider = gemini`, choose one auth method:
+
+1. `api_key`
+2. `oauth_proxy`
+3. `vertex_ai`
+
+#### A) Gemini `api_key`
+
+1. Create an API key in Google AI Studio.
+2. In Agent Settings, set:
+   - Provider: `gemini`
+   - Auth Method: `API Key`
+   - API Key: paste key
+
+#### B) Gemini `oauth_proxy` (OAuth via proxy, no API key)
+
+1. Sign in to Google Cloud CLI with ADC:
+   - `gcloud auth application-default login`
+2. In Agent Settings, set:
+   - Provider: `gemini`
+   - Auth Method: `OAuth Identity via Proxy (no API key)`
+   - API Key: leave blank
+   - Proxy URL: your proxy endpoint (optional if Base URL already points to proxy)
+   - Base URL: optional endpoint override
+
+#### C) Gemini `vertex_ai` (GCP Vertex AI + ADC/OAuth)
+
+1. Authenticate and configure project:
+   - `gcloud auth application-default login`
+   - `gcloud config set project YOUR_PROJECT_ID`
+   - `gcloud auth application-default set-quota-project YOUR_PROJECT_ID`
+2. Enable Vertex API:
+   - `gcloud services enable aiplatform.googleapis.com --project YOUR_PROJECT_ID`
+3. In Agent Settings, set:
+   - Provider: `gemini`
+   - Auth Method: `GCP Vertex AI (ADC/OAuth)`
+   - API Key: leave blank
+   - Base URL: optional (defaults to `https://<LOCATION>-aiplatform.googleapis.com/v1`)
+   - Proxy URL: optional (only if your org requires proxy routing)
+
 ### Step 2 — Apply to all agents
 
 In the Agent Settings panel:
@@ -149,6 +194,9 @@ If you see an error banner:
 
 - Check that the API key is saved (see [§9 Common errors](#9-common-first-run-errors)).
 - Check that the model name matches a model supported by your provider.
+- For Gemini `vertex_ai`, confirm ADC is active:
+  - `gcloud auth application-default print-access-token`
+- For Gemini `oauth_proxy`, confirm your proxy accepts OAuth Bearer tokens and forwards Gemini streaming responses.
 
 ---
 

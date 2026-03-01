@@ -77,6 +77,16 @@ export class AgentSettingsPanel {
     });
   }
 
+  private normaliseAuthMethod(provider: ProviderConfig): ProviderConfig {
+    if (provider.type !== 'gemini') {
+      return { ...provider, auth_method: 'api_key' };
+    }
+    if (provider.auth_method === 'gcp_adc') {
+      return { ...provider, auth_method: 'vertex_ai' };
+    }
+    return provider;
+  }
+
   private async handleMessage(msg: Record<string, unknown>): Promise<void> {
     switch (msg.type) {
       case 'get_agents':
@@ -85,6 +95,7 @@ export class AgentSettingsPanel {
 
       case 'save_agent': {
         const config = msg.config as AgentConfig;
+        config.provider = this.normaliseAuthMethod(config.provider);
         const apiKey = msg.apiKey as string | undefined;
 
         if (!config.id || !config.name) {
@@ -141,7 +152,7 @@ export class AgentSettingsPanel {
         break;
 
       case 'save_default_provider': {
-        const provider = msg.provider as ProviderConfig;
+        const provider = this.normaliseAuthMethod(msg.provider as ProviderConfig);
         const apiKey = msg.apiKey as string | undefined;
         if (!provider?.type || !provider?.model) {
           this.panel.webview.postMessage({ type: 'error', message: 'Provider type and model are required for the default provider.' });
@@ -287,10 +298,15 @@ export class AgentSettingsPanel {
     </div>
     <label for="dp-apikey">API Key</label>
     <input id="dp-apikey" type="password" placeholder="Leave blank to keep existing key"/>
+    <label for="dp-base-url">Custom Base URL (optional)</label>
+    <input id="dp-base-url" type="text" placeholder="https://api.example.com/v1beta"/>
+    <label for="dp-proxy-url">Proxy URL (optional)</label>
+    <input id="dp-proxy-url" type="text" placeholder="https://proxy.example.com"/>
     <label for="dp-auth">Auth Method (Gemini only)</label>
     <select id="dp-auth">
       <option value="api_key">API Key</option>
-      <option value="gcp_adc">GCP Application Default Credentials</option>
+      <option value="oauth_proxy">OAuth Identity via Proxy (no API key)</option>
+      <option value="vertex_ai">GCP Vertex AI (ADC/OAuth)</option>
     </select>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn" onclick="saveDefaultProvider()">Save Default Provider</button>
@@ -341,12 +357,13 @@ export class AgentSettingsPanel {
 
       <label for="f-apikey">API Key</label>
       <input id="f-apikey" type="password" placeholder="sk-… (stored in encrypted VS Code secret storage)"/>
-      <p class="hint">Leave blank to keep existing key. For Gemini with GCP SSO, set auth method to gcp_adc below.</p>
+      <p class="hint" id="f-auth-hint">Leave blank to keep existing key. For Gemini OAuth/Vertex modes, API key is not required.</p>
 
       <label for="f-auth-method">Auth Method (Gemini only)</label>
       <select id="f-auth-method">
         <option value="api_key">API Key</option>
-        <option value="gcp_adc">GCP Application Default Credentials (SSO)</option>
+        <option value="oauth_proxy">OAuth Identity via Proxy (no API key)</option>
+        <option value="vertex_ai">GCP Vertex AI (ADC/OAuth)</option>
       </select>
 
       <label for="f-base-url">Custom Base URL (optional)</label>
@@ -369,21 +386,50 @@ export class AgentSettingsPanel {
 
     const MODELS = ${JSON.stringify(getAppData().providerModels)};
 
+    function normaliseAuthMethod(raw) {
+      return raw === 'gcp_adc' ? 'vertex_ai' : raw;
+    }
+
+    function syncDefaultAuthControls() {
+      const provider = document.getElementById('dp-provider').value;
+      const isGemini = provider === 'gemini';
+      const authSel = document.getElementById('dp-auth');
+      authSel.disabled = !isGemini;
+      if (!isGemini) authSel.value = 'api_key';
+    }
+
+    function syncAgentAuthControls() {
+      const provider = document.getElementById('f-provider').value;
+      const isGemini = provider === 'gemini';
+      const authSel = document.getElementById('f-auth-method');
+      const hint = document.getElementById('f-auth-hint');
+      authSel.disabled = !isGemini;
+      if (!isGemini) authSel.value = 'api_key';
+      if (isGemini && authSel.value !== 'api_key') {
+        hint.textContent = 'OAuth/Vertex mode selected: API key is optional.';
+      } else {
+        hint.textContent = 'Leave blank to keep existing key. For Gemini OAuth/Vertex modes, API key is not required.';
+      }
+    }
+
     // ── Default provider section ───────────────────────────────────────────
     function onDefaultProviderChange() {
       const p = document.getElementById('dp-provider').value;
       const sel = document.getElementById('dp-model');
       sel.innerHTML = (MODELS[p] || []).map(m => '<option value="' + m + '">' + m + '</option>').join('');
+      syncDefaultAuthControls();
     }
 
     function saveDefaultProvider() {
       const type = document.getElementById('dp-provider').value;
       const model = document.getElementById('dp-model').value;
-      const authMethod = document.getElementById('dp-auth').value;
+      const authMethod = type === 'gemini' ? normaliseAuthMethod(document.getElementById('dp-auth').value) : 'api_key';
       const apiKey = document.getElementById('dp-apikey').value.trim();
+      const baseUrl = document.getElementById('dp-base-url').value.trim() || null;
+      const proxyUrl = document.getElementById('dp-proxy-url').value.trim() || null;
       vscode.postMessage({
         type: 'save_default_provider',
-        provider: { type, model, base_url: null, proxy_url: null, auth_method: authMethod },
+        provider: { type, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod },
         apiKey: apiKey || undefined
       });
     }
@@ -410,6 +456,7 @@ export class AgentSettingsPanel {
       const provider = document.getElementById('f-provider').value;
       const modelSel = document.getElementById('f-model');
       modelSel.innerHTML = (MODELS[provider] || []).map(m => '<option value="' + m + '">' + m + '</option>').join('');
+      syncAgentAuthControls();
     }
 
     // ── Agent list ─────────────────────────────────────────────────────────
@@ -457,10 +504,11 @@ export class AgentSettingsPanel {
           document.getElementById('f-provider').value = a.provider.type;
           onProviderChange();
           document.getElementById('f-model').value = a.provider.model;
-          document.getElementById('f-auth-method').value = a.provider.auth_method;
+          document.getElementById('f-auth-method').value = normaliseAuthMethod(a.provider.auth_method || 'api_key');
           document.getElementById('f-base-url').value = a.provider.base_url || '';
           document.getElementById('f-proxy-url').value = a.provider.proxy_url || '';
           document.getElementById('f-apikey').value = '';
+          syncAgentAuthControls();
           onUseDefaultChange();
         }
       } else {
@@ -476,6 +524,7 @@ export class AgentSettingsPanel {
         document.getElementById('f-base-url').value = '';
         document.getElementById('f-proxy-url').value = '';
         document.getElementById('f-apikey').value = '';
+        syncAgentAuthControls();
         onUseDefaultChange();
       }
       panel.scrollIntoView({ behavior: 'smooth' });
@@ -494,7 +543,9 @@ export class AgentSettingsPanel {
       const useDefaultProvider = document.getElementById('f-use-default').checked;
       const providerType = document.getElementById('f-provider').value;
       const model = document.getElementById('f-model').value;
-      const authMethod = document.getElementById('f-auth-method').value;
+      const authMethod = providerType === 'gemini'
+        ? normaliseAuthMethod(document.getElementById('f-auth-method').value)
+        : 'api_key';
       const baseUrl = document.getElementById('f-base-url').value.trim() || null;
       const proxyUrl = document.getElementById('f-proxy-url').value.trim() || null;
       const apiKey = document.getElementById('f-apikey').value;
@@ -541,7 +592,10 @@ export class AgentSettingsPanel {
           document.getElementById('dp-provider').value = msg.defaultProvider.type;
           onDefaultProviderChange();
           document.getElementById('dp-model').value = msg.defaultProvider.model;
-          document.getElementById('dp-auth').value = msg.defaultProvider.auth_method;
+          document.getElementById('dp-auth').value = normaliseAuthMethod(msg.defaultProvider.auth_method || 'api_key');
+          document.getElementById('dp-base-url').value = msg.defaultProvider.base_url || '';
+          document.getElementById('dp-proxy-url').value = msg.defaultProvider.proxy_url || '';
+          syncDefaultAuthControls();
         }
         document.getElementById('default-status').textContent =
           msg.hasDefaultKey ? '✓ Default API key is set' : 'No default API key set';
@@ -564,6 +618,7 @@ export class AgentSettingsPanel {
     // Initial load
     onDefaultProviderChange();
     onProviderChange();
+    document.getElementById('f-auth-method').addEventListener('change', syncAgentAuthControls);
     vscode.postMessage({ type: 'get_agents' });
   </script>
 </body>

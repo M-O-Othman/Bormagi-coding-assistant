@@ -1,6 +1,5 @@
 import {
   GoogleGenerativeAI,
-  GenerativeModel,
   Content,
   Tool as GeminiTool,
   FunctionDeclaration
@@ -10,10 +9,10 @@ import { ChatMessage, MCPToolDefinition, StreamEvent } from '../types';
 import * as childProcess from 'child_process';
 
 interface GeminiProviderOptions {
-  /** API key. Leave empty when using GCP ADC (auth_method = 'gcp_adc'). */
+  /** API key. Leave empty for OAuth / Vertex modes. */
   apiKey?: string;
   model: string;
-  authMethod: 'api_key' | 'gcp_adc';
+  authMethod: 'api_key' | 'oauth_proxy' | 'vertex_ai' | 'gcp_adc';
   baseUrl?: string;
   proxyUrl?: string;
 }
@@ -21,57 +20,208 @@ interface GeminiProviderOptions {
 export class GeminiProvider implements ILLMProvider {
   readonly providerType = 'gemini';
   readonly model: string;
-
-  private genAI: GoogleGenerativeAI;
-  private geminiModel: GenerativeModel;
+  private readonly authMethod: 'api_key' | 'oauth_proxy' | 'vertex_ai';
+  private readonly apiKey: string;
+  private readonly baseUrl?: string;
+  private readonly proxyUrl?: string;
+  private readonly apiClient: GoogleGenerativeAI | null;
 
   constructor(options: GeminiProviderOptions) {
     this.model = options.model;
+    this.authMethod = options.authMethod === 'gcp_adc' ? 'vertex_ai' : options.authMethod;
+    this.apiKey = options.apiKey?.trim() ?? '';
+    this.baseUrl = options.baseUrl?.trim() || undefined;
+    this.proxyUrl = options.proxyUrl?.trim() || undefined;
 
-    let effectiveApiKey = options.apiKey ?? '';
-
-    if (options.authMethod === 'gcp_adc' && !effectiveApiKey) {
-      // Attempt to get an access token from Application Default Credentials via gcloud CLI.
-      // This allows corporate SSO users to authenticate without a separate API key.
-      effectiveApiKey = this.getAdcAccessToken();
+    if (this.authMethod === 'api_key') {
+      if (!this.apiKey) {
+        throw new Error('Bormagi: Gemini API Key mode requires an API key.');
+      }
+      this.apiClient = new GoogleGenerativeAI(this.apiKey);
+      return;
     }
 
-    this.genAI = new GoogleGenerativeAI(effectiveApiKey);
-    this.geminiModel = this.genAI.getGenerativeModel({ model: options.model });
+    // OAuth-based modes use direct HTTPS calls with Bearer auth.
+    this.apiClient = null;
   }
 
-  private getAdcAccessToken(): string {
+  private tryPrintAccessToken(command: string): string | null {
+    try {
+      const result = childProcess.execSync(command, { encoding: 'utf8', timeout: 8000 });
+      const token = result.trim();
+      return token.length > 0 ? token : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private getAccessToken(): string {
+    // Prefer ADC for Vertex/enterprise flows, fallback to user login token.
+    const adcToken = this.tryPrintAccessToken('gcloud auth application-default print-access-token');
+    if (adcToken) {
+      return adcToken;
+    }
+
+    const userToken = this.tryPrintAccessToken('gcloud auth print-access-token');
+    if (userToken) {
+      return userToken;
+    }
+
+    throw new Error(
+      'Bormagi: Could not obtain a GCP access token. ' +
+      'Run "gcloud auth application-default login" (recommended) or "gcloud auth login".'
+    );
+  }
+
+  private getGcpProjectId(): string {
+    const fromEnv = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT;
+    if (fromEnv?.trim()) {
+      return fromEnv.trim();
+    }
+
     try {
       const result = childProcess.execSync(
-        'gcloud auth print-access-token',
+        'gcloud config get-value project',
         { encoding: 'utf8', timeout: 5000 }
       );
-      return result.trim();
+      const project = result.trim();
+      if (!project || project === '(unset)') {
+        throw new Error('No project configured');
+      }
+      return project;
     } catch {
       throw new Error(
-        'Bormagi: Could not obtain a GCP access token. ' +
-        'Run "gcloud auth application-default login" or provide an API key.'
+        'Bormagi: Could not resolve GCP project for Vertex AI. ' +
+        'Set GOOGLE_CLOUD_PROJECT or run "gcloud config set project YOUR_PROJECT_ID".'
       );
     }
   }
 
-  async *stream(
+  private getVertexLocation(): string {
+    return (process.env.GOOGLE_CLOUD_LOCATION || process.env.GCP_LOCATION || 'us-central1').trim();
+  }
+
+  private stripTrailingSlash(url: string): string {
+    return url.replace(/\/+$/, '');
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private parsePossibleJsonPayload(raw: string): unknown[] {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      return [];
+    }
+  }
+
+  private getDeveloperEndpointBase(): string {
+    const raw = this.proxyUrl || this.baseUrl || 'https://generativelanguage.googleapis.com/v1beta';
+    return this.stripTrailingSlash(raw);
+  }
+
+  private getDeveloperModelPath(): string {
+    return this.model.startsWith('models/') ? this.model : `models/${this.model}`;
+  }
+
+  private buildOAuthEndpointAndHeaders(): { url: string; headers: Record<string, string> } {
+    const token = this.getAccessToken();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`
+    };
+
+    if (this.authMethod === 'oauth_proxy') {
+      const base = this.getDeveloperEndpointBase();
+      const url = `${base}/${this.getDeveloperModelPath()}:streamGenerateContent?alt=sse`;
+      return { url, headers };
+    }
+
+    const projectId = this.getGcpProjectId();
+    const location = this.getVertexLocation();
+    headers['x-goog-user-project'] = projectId;
+    const base = this.stripTrailingSlash(this.proxyUrl || this.baseUrl || `https://${location}-aiplatform.googleapis.com/v1`);
+    const modelId = this.model.replace(/^models\//, '');
+    const url = `${base}/projects/${projectId}/locations/${location}/publishers/google/models/${modelId}:streamGenerateContent?alt=sse`;
+    return { url, headers };
+  }
+
+  private buildGeminiPayload(
     messages: ChatMessage[],
-    tools?: MCPToolDefinition[],
-    maxTokens = 4096
-  ): AsyncIterable<StreamEvent> {
-    // Build Gemini history (all but last user message)
+    tools: MCPToolDefinition[] | undefined,
+    maxTokens: number
+  ): Record<string, unknown> {
     const history: Content[] = [];
     let lastUserMessage = '';
 
-    for (const msg of messages) {
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
       if (msg.role === 'system') {
-        // Prepend system as a user/model pair (Gemini does not have a system role)
+        // Gemini API has no explicit system role in message history.
         history.push({ role: 'user', parts: [{ text: `[System instruction]\n${msg.content}` }] });
         history.push({ role: 'model', parts: [{ text: 'Understood.' }] });
       } else if (msg.role === 'user') {
         lastUserMessage = msg.content;
-        if (messages.indexOf(msg) < messages.length - 1) {
+        if (i < messages.length - 1) {
+          history.push({ role: 'user', parts: [{ text: msg.content }] });
+        }
+      } else if (msg.role === 'assistant') {
+        history.push({ role: 'model', parts: [{ text: msg.content }] });
+      }
+    }
+
+    const contents: Content[] = [...history];
+    if (lastUserMessage) {
+      contents.push({ role: 'user', parts: [{ text: lastUserMessage }] });
+    }
+
+    const payload: Record<string, unknown> = {
+      contents,
+      generationConfig: { maxOutputTokens: maxTokens }
+    };
+
+    if (tools && tools.length > 0) {
+      const geminiTools: GeminiTool[] = [
+        {
+          functionDeclarations: tools.map(
+            (t): FunctionDeclaration => ({
+              name: t.name,
+              description: t.description,
+              parameters: t.inputSchema as unknown as FunctionDeclaration['parameters']
+            })
+          )
+        }
+      ];
+      payload.tools = geminiTools;
+    }
+
+    return payload;
+  }
+
+  private async *streamViaApiKeySdk(
+    payloadMessages: ChatMessage[],
+    tools: MCPToolDefinition[] | undefined,
+    maxTokens: number
+  ): AsyncIterable<StreamEvent> {
+    const history: Content[] = [];
+    let lastUserMessage = '';
+
+    for (let i = 0; i < payloadMessages.length; i++) {
+      const msg = payloadMessages[i];
+      if (msg.role === 'system') {
+        history.push({ role: 'user', parts: [{ text: `[System instruction]\n${msg.content}` }] });
+        history.push({ role: 'model', parts: [{ text: 'Understood.' }] });
+      } else if (msg.role === 'user') {
+        lastUserMessage = msg.content;
+        if (i < payloadMessages.length - 1) {
           history.push({ role: 'user', parts: [{ text: msg.content }] });
         }
       } else if (msg.role === 'assistant') {
@@ -94,7 +244,15 @@ export class GeminiProvider implements ILLMProvider {
           ]
         : undefined;
 
-    const chat = this.geminiModel.startChat({
+    if (!this.apiClient) {
+      throw new Error('Bormagi: Gemini API client is not initialised for API key mode.');
+    }
+
+    const requestOptions = this.baseUrl
+      ? { baseUrl: this.stripTrailingSlash(this.baseUrl) }
+      : undefined;
+
+    const chat = this.apiClient.getGenerativeModel({ model: this.model }, requestOptions).startChat({
       history,
       generationConfig: { maxOutputTokens: maxTokens },
       tools: geminiTools
@@ -104,9 +262,10 @@ export class GeminiProvider implements ILLMProvider {
 
     let lastInputTokens = 0;
     let lastOutputTokens = 0;
+    let emittedOutput = false;
+    let emptyReason = '';
 
     for await (const chunk of result.stream) {
-      // Capture token usage from the metadata sent on each chunk (last value wins)
       if (chunk.usageMetadata) {
         lastInputTokens = chunk.usageMetadata.promptTokenCount ?? 0;
         lastOutputTokens = chunk.usageMetadata.candidatesTokenCount ?? 0;
@@ -118,9 +277,15 @@ export class GeminiProvider implements ILLMProvider {
       }
 
       for (const candidate of candidates) {
+        const finishReason = candidate.finishReason;
+        if (!emptyReason && typeof finishReason === 'string' && finishReason !== 'STOP') {
+          emptyReason = `finish reason: ${finishReason}`;
+        }
+
         for (const part of candidate.content?.parts ?? []) {
           if (part.text) {
             yield { type: 'text', delta: part.text };
+            emittedOutput = true;
           }
           if (part.functionCall) {
             yield {
@@ -129,9 +294,18 @@ export class GeminiProvider implements ILLMProvider {
               name: part.functionCall.name,
               input: (part.functionCall.args ?? {}) as Record<string, unknown>
             };
+            emittedOutput = true;
           }
         }
       }
+    }
+
+    if (!emittedOutput) {
+      const detail = emptyReason ? ` (${emptyReason})` : '';
+      yield {
+        type: 'text',
+        delta: `Gemini returned an empty response${detail}. Please try again or adjust the prompt/model settings.`
+      };
     }
 
     if (lastInputTokens > 0 || lastOutputTokens > 0) {
@@ -139,5 +313,196 @@ export class GeminiProvider implements ILLMProvider {
     }
 
     yield { type: 'done' };
+  }
+
+  private async *streamViaOAuthFetch(
+    messages: ChatMessage[],
+    tools: MCPToolDefinition[] | undefined,
+    maxTokens: number
+  ): AsyncIterable<StreamEvent> {
+    const { url, headers } = this.buildOAuthEndpointAndHeaders();
+    const payload = this.buildGeminiPayload(messages, tools, maxTokens);
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '');
+      throw new Error(`Gemini ${this.authMethod} request failed (${response.status} ${response.statusText}): ${errBody}`);
+    }
+
+    if (!response.body) {
+      throw new Error('Gemini response body is empty.');
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let lastInputTokens = 0;
+    let lastOutputTokens = 0;
+    let emittedOutput = false;
+    let emptyReason = '';
+    const isRecord = (value: unknown): value is Record<string, unknown> => this.isRecord(value);
+    type ParseCtx = {
+      lastInputTokens: number;
+      lastOutputTokens: number;
+      emittedOutput: boolean;
+      emptyReason: string;
+    };
+
+    const parsePayload = (payload: unknown, ctx: ParseCtx): StreamEvent[] => {
+      const out: StreamEvent[] = [];
+
+      if (Array.isArray(payload)) {
+        for (const item of payload) {
+          out.push(...parsePayload(item, ctx));
+        }
+        return out;
+      }
+
+      if (!isRecord(payload)) {
+        return out;
+      }
+
+      const usageMetadata = isRecord(payload.usageMetadata)
+        ? payload.usageMetadata
+        : undefined;
+      if (usageMetadata) {
+        if (typeof usageMetadata.promptTokenCount === 'number') {
+          ctx.lastInputTokens = usageMetadata.promptTokenCount;
+        }
+        if (typeof usageMetadata.candidatesTokenCount === 'number') {
+          ctx.lastOutputTokens = usageMetadata.candidatesTokenCount;
+        }
+      }
+
+      const promptFeedback = isRecord(payload.promptFeedback)
+        ? payload.promptFeedback
+        : undefined;
+      if (!ctx.emptyReason && promptFeedback && typeof promptFeedback.blockReason === 'string') {
+        ctx.emptyReason = `blocked: ${promptFeedback.blockReason}`;
+      }
+
+      const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+      for (const candidateRaw of candidates) {
+        if (!isRecord(candidateRaw)) {
+          continue;
+        }
+
+        const finishReason = candidateRaw.finishReason;
+        if (!ctx.emptyReason && typeof finishReason === 'string' && finishReason !== 'STOP') {
+          ctx.emptyReason = `finish reason: ${finishReason}`;
+        }
+
+        const content = isRecord(candidateRaw.content)
+          ? candidateRaw.content
+          : undefined;
+        const parts = Array.isArray(content?.parts) ? content.parts : [];
+
+        for (const partRaw of parts) {
+          if (!isRecord(partRaw)) {
+            continue;
+          }
+
+          if (typeof partRaw.text === 'string' && partRaw.text.length > 0) {
+            out.push({ type: 'text', delta: partRaw.text });
+            ctx.emittedOutput = true;
+          }
+
+          const functionCall = isRecord(partRaw.functionCall)
+            ? partRaw.functionCall
+            : undefined;
+          const name = functionCall?.name;
+          const args = isRecord(functionCall?.args) ? functionCall.args : {};
+          if (typeof name === 'string' && name.length > 0) {
+            out.push({
+              type: 'tool_use',
+              id: `gemini_fn_${Date.now()}`,
+              name,
+              input: args
+            });
+            ctx.emittedOutput = true;
+          }
+        }
+      }
+
+      return out;
+    };
+
+    for await (const chunk of response.body) {
+      buffer += decoder.decode(chunk, { stream: true }).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+      let separator = buffer.indexOf('\n\n');
+      while (separator !== -1) {
+        const block = buffer.slice(0, separator);
+        buffer = buffer.slice(separator + 2);
+        separator = buffer.indexOf('\n\n');
+
+        const dataLines = block
+          .split('\n')
+          .map(line => line.trim())
+          .filter(line => line.startsWith('data:'))
+          .map(line => line.slice(5).trim());
+
+        const payloads = dataLines.length > 0
+          ? this.parsePossibleJsonPayload(dataLines.join('\n'))
+          : this.parsePossibleJsonPayload(block);
+
+        for (const payload of payloads) {
+          const ctx: ParseCtx = { lastInputTokens, lastOutputTokens, emittedOutput, emptyReason };
+          const events = parsePayload(payload, ctx);
+          for (const event of events) {
+            yield event;
+          }
+          lastInputTokens = ctx.lastInputTokens;
+          lastOutputTokens = ctx.lastOutputTokens;
+          emittedOutput = ctx.emittedOutput;
+          emptyReason = ctx.emptyReason;
+        }
+      }
+    }
+
+    // Some proxy implementations return a single JSON object instead of SSE blocks.
+    const trailingPayloads = this.parsePossibleJsonPayload(buffer);
+    for (const payload of trailingPayloads) {
+      const ctx: ParseCtx = { lastInputTokens, lastOutputTokens, emittedOutput, emptyReason };
+      const events = parsePayload(payload, ctx);
+      for (const event of events) {
+        yield event;
+      }
+      lastInputTokens = ctx.lastInputTokens;
+      lastOutputTokens = ctx.lastOutputTokens;
+      emittedOutput = ctx.emittedOutput;
+      emptyReason = ctx.emptyReason;
+    }
+
+    if (!emittedOutput) {
+      const detail = emptyReason ? ` (${emptyReason})` : '';
+      yield {
+        type: 'text',
+        delta: `Gemini returned an empty response${detail}. Please try again or adjust the prompt/model settings.`
+      };
+    }
+
+    if (lastInputTokens > 0 || lastOutputTokens > 0) {
+      yield { type: 'token_usage', usage: { inputTokens: lastInputTokens, outputTokens: lastOutputTokens } };
+    }
+
+    yield { type: 'done' };
+  }
+
+  async *stream(
+    messages: ChatMessage[],
+    tools?: MCPToolDefinition[],
+    maxTokens = 4096
+  ): AsyncIterable<StreamEvent> {
+    if (this.authMethod === 'api_key') {
+      yield* this.streamViaApiKeySdk(messages, tools, maxTokens);
+      return;
+    }
+
+    yield* this.streamViaOAuthFetch(messages, tools, maxTokens);
   }
 }

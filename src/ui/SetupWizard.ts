@@ -23,7 +23,7 @@ import { getAppData } from '../data/DataStore';
 export interface SetupWizardResult {
   role: UserRole;
   provider: ProviderConfig;
-  apiKey: string | null;   // null for gcp_adc
+  apiKey: string | null;   // null for OAuth/Vertex modes
   installedAgents: string[];
 }
 
@@ -113,7 +113,7 @@ export class SetupWizard {
       auth_method: preset.authMethod,
     };
 
-    // ── Step 3: API key entry (skip for gcp_adc; optional for openai_compatible) ──
+    // ── Step 3: API key entry (skip for non-api_key auth; optional for openai_compatible) ──
 
     let apiKey: string | null = null;
 

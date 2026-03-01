@@ -186,13 +186,13 @@ export class ChatController {
       usingDefault = true;
     } else {
       // Auto-fallback: no own key + workspace default available
-      const needsOwnKey = (agent.provider?.auth_method ?? 'api_key') !== 'gcp_adc';
+      const needsOwnKey = (agent.provider?.auth_method ?? 'api_key') === 'api_key';
       if (needsOwnKey) {
         const ownKey = await this.agentManager.getApiKey(agent.id);
         if (!ownKey) {
           const def = await this.configManager.readDefaultProvider();
           if (def?.type) {
-            const defNeedsKey = (def.auth_method ?? 'api_key') !== 'gcp_adc';
+            const defNeedsKey = (def.auth_method ?? 'api_key') === 'api_key';
             const defKey = defNeedsKey ? await this.agentManager.getApiKey('__default__') : 'ok';
             if (defKey) { effectiveType = def.type; effectiveModel = def.model; usingDefault = true; }
           }
@@ -227,14 +227,17 @@ export class ChatController {
       if (explicitDefault) {
         effectiveType  = defaultProvider?.type  ?? a.provider.type;
         effectiveModel = defaultProvider?.model ?? a.provider.model;
-        const needsKey = (defaultProvider?.auth_method ?? 'api_key') !== 'gcp_adc';
+        const needsKey = (defaultProvider?.auth_method ?? 'api_key') === 'api_key';
         configured = !needsKey || (!!defaultProvider && defaultKeySet);
         usesDefault = true;
       } else {
-        const needsOwnKey = (a.provider?.auth_method ?? 'api_key') !== 'gcp_adc';
+        const needsOwnKey = (a.provider?.auth_method ?? 'api_key') === 'api_key';
         const ownKey = needsOwnKey ? await this.agentManager.getApiKey(a.id) : 'ok';
 
-        if (!ownKey && needsOwnKey && defaultProvider?.type && defaultKeySet) {
+        const defaultNeedsKey = (defaultProvider?.auth_method ?? 'api_key') === 'api_key';
+        const hasUsableDefault = !!defaultProvider?.type && (!defaultNeedsKey || defaultKeySet);
+
+        if (!ownKey && needsOwnKey && hasUsableDefault && defaultProvider) {
           // Auto-fallback: no own key but workspace default is available
           effectiveType  = defaultProvider.type;
           effectiveModel = defaultProvider.model;

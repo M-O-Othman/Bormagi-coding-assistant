@@ -21,6 +21,20 @@
     "keyPlaceholder": "AIza..."
   },
   {
+    "label": "Google Gemini via OAuth Proxy",
+    "type": "gemini",
+    "defaultModel": "gemini-2.0-flash",
+    "authMethod": "oauth_proxy",
+    "keyPlaceholder": ""
+  },
+  {
+    "label": "Google Vertex AI (ADC/OAuth)",
+    "type": "gemini",
+    "defaultModel": "gemini-2.0-flash",
+    "authMethod": "vertex_ai",
+    "keyPlaceholder": ""
+  },
+  {
     "label": "DeepSeek",
     "type": "deepseek",
     "defaultModel": "deepseek-chat",
@@ -33,13 +47,6 @@
     "defaultModel": "qwen-plus",
     "authMethod": "api_key",
     "keyPlaceholder": "sk-..."
-  },
-  {
-    "label": "GCP (ADC) \u2014 no API key needed",
-    "type": "gemini",
-    "defaultModel": "gemini-2.0-flash",
-    "authMethod": "gcp_adc",
-    "keyPlaceholder": ""
   },
   {
     "label": "Custom (OpenAI-compatible)",

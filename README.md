@@ -27,7 +27,8 @@ No admin permissions are required. Install from the VS Code Marketplace or from 
    - [OpenAI](#openai)
    - [Anthropic (Claude)](#anthropic-claude)
    - [Google Gemini — API Key](#google-gemini--api-key)
-   - [Google Gemini — GCP SSO (Corporate Identity)](#google-gemini--gcp-sso-corporate-identity)
+   - [Google Gemini — OAuth via Proxy (No API Key)](#google-gemini--oauth-via-proxy-no-api-key)
+   - [Google Gemini — GCP Vertex AI (ADC/OAuth)](#google-gemini--gcp-vertex-ai-adcoauth)
    - [Deepseek](#deepseek)
    - [Qwen (Alibaba Cloud)](#qwen-alibaba-cloud)
    - [Custom (OpenAI-compatible)](#custom-openai-compatible)
@@ -530,7 +531,28 @@ Any agent can have its own provider configured independently via Agent Settings.
 2. Set Provider to `gemini`, Auth Method to `API Key`, and select a model.
 3. Paste your API key.
 
-### Google Gemini — GCP SSO (Corporate Identity)
+### Google Gemini — OAuth via Proxy (No API Key)
+
+Use this mode when your organisation requires requests to pass through a proxy and identity is enforced via OAuth (Bearer token), not API keys.
+
+**Prerequisites:**
+
+```bash
+# Install Google Cloud CLI first:
+# https://cloud.google.com/sdk/docs/install
+
+gcloud auth application-default login
+```
+
+**In Agent Settings:**
+
+- Provider: `gemini`
+- Auth Method: `OAuth Identity via Proxy (no API key)`
+- API Key: leave blank
+- Proxy URL: set your proxy endpoint (optional if Base URL already points at your proxy)
+- Base URL: optional override for the Gemini endpoint your proxy exposes
+
+### Google Gemini — GCP Vertex AI (ADC/OAuth)
 
 This method allows you to authenticate using your corporate Google Workspace identity — no separate API key required.
 
@@ -545,6 +567,12 @@ gcloud auth application-default login
 
 # Set your GCP project
 gcloud config set project YOUR_PROJECT_ID
+
+# Bind ADC quota/billing to your project
+gcloud auth application-default set-quota-project YOUR_PROJECT_ID
+
+# Ensure Vertex AI API is enabled
+gcloud services enable aiplatform.googleapis.com --project YOUR_PROJECT_ID
 ```
 
 This creates a local credential file (`~/.config/gcloud/application_default_credentials.json`). Bormagi reads this automatically.
@@ -552,8 +580,10 @@ This creates a local credential file (`~/.config/gcloud/application_default_cred
 **In Agent Settings:**
 
 - Provider: `gemini`
-- Auth Method: `GCP Application Default Credentials (SSO)`
+- Auth Method: `GCP Vertex AI (ADC/OAuth)`
 - API Key: leave blank
+- Base URL: optional (defaults to `https://<LOCATION>-aiplatform.googleapis.com/v1`)
+- Proxy URL: optional (use only if your org routes Vertex through a proxy)
 
 ### Deepseek
 
@@ -795,7 +825,7 @@ Skills are automatically injected into every agent's context.
 | `provider.model` | string | Model identifier (e.g. `gpt-4o`, `claude-sonnet-4-6`) |
 | `provider.base_url` | string \| null | Override the default API endpoint |
 | `provider.proxy_url` | string \| null | Route all calls through this proxy |
-| `provider.auth_method` | string | `api_key` or `gcp_adc` (Gemini SSO) |
+| `provider.auth_method` | string | `api_key`, `oauth_proxy`, or `vertex_ai` (`gcp_adc` accepted as legacy alias) |
 | `system_prompt_files` | string[] | List of `.md` files to compose the system prompt |
 | `mcp_servers` | array | Custom MCP server configurations (optional) |
 | `context_filter.include_extensions` | string[] | File extensions to include in workspace context |
