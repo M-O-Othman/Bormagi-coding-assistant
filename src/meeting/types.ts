@@ -37,6 +37,8 @@ export interface AgendaItem {
   text: string;
   status: 'pending' | 'discussing' | 'resolved' | 'deferred';
   decision?: string;
+  /** Reason captured when the item was deferred. */
+  deferReason?: string;
   /** Set when a CLARIFICATION_FOR_HUMAN response is received — blocks further agent turns until human responds. */
   blockedByHuman?: boolean;
   /** Action gating policy for this item. Undefined = NORMAL (all tags allowed). */
@@ -49,12 +51,18 @@ export interface HumanDecision {
   notes?: string;
 }
 
-export type ActionPolicyMode = 'NORMAL' | 'BLOCK_ALL_ACTIONS' | 'ALLOW_ONLY';
+export type ActionPolicyMode =
+  | 'NORMAL'
+  | 'BLOCK_ALL_ACTIONS'
+  | 'ALLOW_ONLY_ACTIONS'   // Only specific agents may emit ACTION:; all other tags unrestricted
+  | 'ALLOW_ONLY_TAGS';     // All agents restricted to a specific set of output tags
 
 export interface ActionPolicy {
   mode: ActionPolicyMode;
-  /** Only for ALLOW_ONLY: whitelisted outputs by tag, optional agentId */
-  allowed?: { tag: OutputTag; agentId?: string }[];
+  /** For ALLOW_ONLY_ACTIONS: agent IDs permitted to emit ACTION: */
+  allowedAgentIds?: string[];
+  /** For ALLOW_ONLY_TAGS: the only output tags permitted (besides SKIP which is always allowed) */
+  allowedTags?: OutputTag[];
 }
 
 export interface MeetingRound {

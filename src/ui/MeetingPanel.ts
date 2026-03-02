@@ -284,19 +284,105 @@ export class MeetingPanel {
     return mentioned.length > 0 ? mentioned : undefined;
   }
 
+  /** Shared summary handler — called from both the normal onSummary callback and the defer closeout path. */
+  private handleSummaryRound(aid: string, summary: SummaryRound): void {
+    if (!this.activeMeeting) { return; }
+    this.post({ type: 'round_summary', agendaItemId: aid, summary });
+
+    // Auto-transition item based on machine-readable status from moderator
+    const summaryItem = this.activeMeeting.agenda.find(a => a.id === aid);
+    if (summaryItem && summary.itemStatus) {
+      if (summary.itemStatus === 'deferred') {
+        summaryItem.status = 'deferred';
+        if (summary.deferReason) { summaryItem.deferReason = summary.deferReason; }
+        this.post({ type: 'item_deferred', agendaItemId: aid, reason: summary.deferReason });
+        this.storage.saveMeeting(this.activeMeeting).catch(() => { /* ignore */ });
+      } else if (summary.itemStatus === 'resolved') {
+        summaryItem.status = 'resolved';
+        summaryItem.decision = summary.recommendation;
+        this.post({ type: 'item_resolved', agendaItemId: aid, decision: summary.recommendation });
+        this.storage.saveMeeting(this.activeMeeting).catch(() => { /* ignore */ });
+      }
+    }
+
+    // Auto-add ACTION items from summary — gated behind actionPolicy
+    const actionsBlocked = summaryItem?.actionPolicy &&
+      summaryItem.actionPolicy.mode !== 'NORMAL' &&
+      summaryItem.actionPolicy.mode !== 'ALLOW_ONLY_ACTIONS'; // ALLOW_ONLY_ACTIONS still allows them in summary
+    if (!actionsBlocked && summary.actions && summary.actions.length > 0) {
+      for (const actionText of summary.actions) {
+        if (!actionText.trim()) { continue; }
+        const ai: ActionItem = {
+          id: `ai-auto-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          text: actionText,
+          assignedTo: 'TBD'
+        };
+        this.activeMeeting.actionItems.push(ai);
+        this.post({ type: 'action_item_added', actionItem: ai });
+      }
+      this.storage.saveMeeting(this.activeMeeting).catch(() => { /* ignore */ });
+    }
+
+    // Append structured summary to inline minutes
+    const lines: string[] = ['### Moderator Summary'];
+    if (summary.problem) { lines.push(`Problem: ${summary.problem}`); }
+    if (summary.options?.length) {
+      lines.push('Options:');
+      summary.options.forEach(o => lines.push(`- ${o}`));
+    }
+    if (summary.recommendation) { lines.push(`Recommendation: ${summary.recommendation}`); }
+    if (summary.risks?.length) {
+      lines.push('Risks:');
+      summary.risks.forEach(r => lines.push(`- ${r}`));
+    }
+    if (summary.actions?.length) {
+      lines.push('Actions:');
+      summary.actions.forEach(a => lines.push(`- ${a}`));
+    }
+    if (summary.decisionPrompt) { lines.push(`\n**Decision for Human:** ${summary.decisionPrompt}`); }
+    if (summary.itemStatus) { lines.push(`Status: ${summary.itemStatus}`); }
+    if (summary.deferReason) { lines.push(`DeferReason: ${summary.deferReason}`); }
+    this.storage.appendMinutesLine(this.activeMeeting.id, lines.join('\n') + '\n').catch(() => { /* ignore */ });
+  }
+
   private async handleRunRound(agendaItemId: string, userMessage: string | undefined): Promise<void> {
     if (!this.activeMeeting || this.runningRound) { return; }
 
     const item = this.activeMeeting.agenda.find(a => a.id === agendaItemId);
     if (!item || item.status === 'resolved' || item.status === 'deferred') { return; }
 
-    // Detect "next / defer / proceed" intent — immediately defer this item without running agents
+    // Detect "next / defer / proceed" intent — run a moderator closeout summary instead of a full agent round
     const deferIntent = /\b(next agenda item|proceed to next|move on|defer(red)?|postpone|skip this item)\b/i.test(userMessage ?? '');
     if (deferIntent) {
-      item.status = 'deferred';
-      item.decision = userMessage;
-      await this.storage.saveMeeting(this.activeMeeting);
-      this.post({ type: 'item_deferred', agendaItemId, reason: userMessage });
+      item.blockedByHuman = false;
+      item.deferReason = userMessage;
+      // Don't skip the orchestrator — run a moderator-only closeout to get a proper summary entry
+      this.runningRound = true;
+      this.post({ type: 'round_started', agendaItemId, userMessage });
+      try {
+        const summary = await this.orchestrator.generateStructuredSummary(
+          this.activeMeeting, agendaItemId,
+          { status: 'deferred', reason: userMessage ?? 'Human deferred this item.' }
+        );
+        if (summary) { this.handleSummaryRound(agendaItemId, summary); }
+        // If summary didn't auto-fire item_deferred (e.g. status parse failed), fire it manually
+        // Re-look up item to get the post-handleSummaryRound status (avoids TS narrowing issue)
+        const itemAfter = this.activeMeeting.agenda.find(a => a.id === agendaItemId);
+        if (itemAfter && itemAfter.status !== 'deferred') {
+          itemAfter.status = 'deferred';
+          this.post({ type: 'item_deferred', agendaItemId, reason: userMessage });
+        }
+        this.post({ type: 'round_complete', agendaItemId });
+        await this.storage.saveMeeting(this.activeMeeting);
+      } catch (err) {
+        // If closeout summary fails, fall back to direct deferral
+        item.status = 'deferred';
+        this.post({ type: 'item_deferred', agendaItemId, reason: userMessage });
+        this.post({ type: 'round_error', agendaItemId, error: (err as Error).message });
+        await this.storage.saveMeeting(this.activeMeeting);
+      } finally {
+        this.runningRound = false;
+      }
       return;
     }
 
@@ -361,62 +447,8 @@ export class MeetingPanel {
             `↳ ${agentName} [${tag}] (interrupt responding to @${callerName})\n${fullResponse}\n`
           ).catch(() => { /* ignore */ });
         },
-        // onSummary
-        (aid, summary: SummaryRound) => {
-          this.post({ type: 'round_summary', agendaItemId: aid, summary });
-
-          // Auto-transition item based on machine-readable status from moderator
-          if (this.activeMeeting && summary.itemStatus) {
-            const summaryItem = this.activeMeeting.agenda.find(a => a.id === aid);
-            if (summaryItem) {
-              if (summary.itemStatus === 'deferred') {
-                summaryItem.status = 'deferred';
-                this.post({ type: 'item_deferred', agendaItemId: aid, reason: summary.deferReason });
-                this.storage.saveMeeting(this.activeMeeting!).catch(() => { /* ignore */ });
-              } else if (summary.itemStatus === 'resolved') {
-                summaryItem.status = 'resolved';
-                summaryItem.decision = summary.recommendation;
-                this.post({ type: 'item_resolved', agendaItemId: aid, decision: summary.recommendation });
-                this.storage.saveMeeting(this.activeMeeting!).catch(() => { /* ignore */ });
-              }
-            }
-          }
-
-          // Auto-add ACTION items from summary into the action items list
-          if (summary.actions && summary.actions.length > 0 && this.activeMeeting) {
-            for (const actionText of summary.actions) {
-              if (!actionText.trim()) { continue; }
-              const ai: ActionItem = {
-                id: `ai-auto-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                text: actionText,
-                assignedTo: 'TBD'
-              };
-              this.activeMeeting.actionItems.push(ai);
-              this.post({ type: 'action_item_added', actionItem: ai });
-            }
-            this.storage.saveMeeting(this.activeMeeting).catch(() => { /* ignore */ });
-          }
-
-          // Append structured summary to inline minutes
-          const lines: string[] = ['### Moderator Summary'];
-          if (summary.problem) { lines.push(`Problem: ${summary.problem}`); }
-          if (summary.options?.length) {
-            lines.push('Options:');
-            summary.options.forEach(o => lines.push(`- ${o}`));
-          }
-          if (summary.recommendation) { lines.push(`Recommendation: ${summary.recommendation}`); }
-          if (summary.risks?.length) {
-            lines.push('Risks:');
-            summary.risks.forEach(r => lines.push(`- ${r}`));
-          }
-          if (summary.actions?.length) {
-            lines.push('Actions:');
-            summary.actions.forEach(a => lines.push(`- ${a}`));
-          }
-          if (summary.decisionPrompt) { lines.push(`\n**Decision for Human:** ${summary.decisionPrompt}`); }
-          if (summary.itemStatus) { lines.push(`Status: ${summary.itemStatus}`); }
-          this.storage.appendMinutesLine(this.activeMeeting!.id, lines.join('\n') + '\n').catch(() => { /* ignore */ });
-        },
+        // onSummary — delegate to shared handler
+        (aid, summary: SummaryRound) => { this.handleSummaryRound(aid, summary); },
         // onOpenQuestion
         (aid, oqId, question, askedBy) => {
           const agentName = this.agentManager.getAgent(askedBy)?.name ?? askedBy;

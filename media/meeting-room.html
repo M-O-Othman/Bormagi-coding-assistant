@@ -1234,7 +1234,7 @@
       list.innerHTML = meeting.agenda.map(item => {
         const dotClass = item.status === 'resolved' ? 'dot-resolved' : item.status === 'deferred' ? 'dot-deferred' : item.status === 'discussing' ? 'dot-discussing' : 'dot-pending';
         const resolvedClass = (item.status === 'resolved' || item.status === 'deferred') ? ' resolved' : '';
-        const policyBadge = item.actionPolicy?.mode === 'BLOCK_ALL_ACTIONS' ? ' <span title="Actions blocked" style="font-size:10px;opacity:0.7">⛔</span>' : item.actionPolicy?.mode === 'ALLOW_ONLY' ? ' <span title="Limited actions" style="font-size:10px;opacity:0.7">⚠</span>' : '';
+        const policyBadge = item.actionPolicy?.mode === 'BLOCK_ALL_ACTIONS' ? ' <span title="Actions blocked" style="font-size:10px;opacity:0.7">⛔</span>' : (item.actionPolicy?.mode === 'ALLOW_ONLY_ACTIONS' || item.actionPolicy?.mode === 'ALLOW_ONLY_TAGS') ? ' <span title="Limited actions" style="font-size:10px;opacity:0.7">⚠</span>' : '';
         return `<button class="agenda-item-btn${activeItemId === item.id ? ' active' : ''}${resolvedClass}"
       onclick="setActiveItem('${esc(item.id)}')" id="abtn-${esc(item.id)}">
       <span class="item-status-dot ${dotClass}"></span>${esc(item.text)}${policyBadge}
@@ -1625,16 +1625,25 @@
 
     function updateActionPolicyBadge(agendaItemId, policy) {
       const badge = document.getElementById('action-policy-badge');
+      const btn = document.getElementById('block-actions-btn');
       if (!badge) { return; }
-      if (!policy || policy.mode === 'NORMAL') {
+      const mode = policy?.mode ?? 'NORMAL';
+      if (mode === 'NORMAL' || !policy) {
         badge.textContent = '';
         badge.style.display = 'none';
-      } else if (policy.mode === 'BLOCK_ALL_ACTIONS') {
+        if (btn) { btn.textContent = '⛔ Block actions'; }
+      } else if (mode === 'BLOCK_ALL_ACTIONS') {
         badge.textContent = '⛔ Actions blocked';
         badge.style.display = 'inline-block';
-      } else if (policy.mode === 'ALLOW_ONLY') {
-        badge.textContent = '⚠ Limited actions';
+        if (btn) { btn.textContent = '→ Allow moderator only'; }
+      } else if (mode === 'ALLOW_ONLY_ACTIONS') {
+        badge.textContent = '⚠ Moderator actions only';
         badge.style.display = 'inline-block';
+        if (btn) { btn.textContent = '✅ Unblock actions'; }
+      } else if (mode === 'ALLOW_ONLY_TAGS') {
+        badge.textContent = `⚠ Only: ${policy.allowedTags?.join(', ') ?? '?'}`;
+        badge.style.display = 'inline-block';
+        if (btn) { btn.textContent = '✅ Unblock actions'; }
       }
     }
 
@@ -1816,19 +1825,27 @@
       }
     });
 
-    // ── Block / unblock actions ───────────────────────────────
+    // ── Block / unblock actions (cycle: NORMAL → BLOCK_ALL → ALLOW_ONLY_ACTIONS → NORMAL) ──
     function toggleBlockActions() {
       if (!activeItemId || !meeting) { return; }
       const item = meeting.agenda.find(a => a.id === activeItemId);
       if (!item) { return; }
-      const isBlocked = item.actionPolicy?.mode === 'BLOCK_ALL_ACTIONS';
-      const newPolicy = isBlocked ? null : { mode: 'BLOCK_ALL_ACTIONS' };
+      const current = item.actionPolicy?.mode ?? 'NORMAL';
+      let newPolicy = null;
+      if (current === 'NORMAL') {
+        newPolicy = { mode: 'BLOCK_ALL_ACTIONS' };
+      } else if (current === 'BLOCK_ALL_ACTIONS') {
+        // Allow only the moderator to create actions
+        const modId = meeting.moderatorId ?? meeting.participants[0];
+        newPolicy = { mode: 'ALLOW_ONLY_ACTIONS', allowedAgentIds: [modId] };
+      } else {
+        // Back to NORMAL
+        newPolicy = null;
+      }
       vscode.postMessage({ type: 'set_action_policy', agendaItemId: activeItemId, policy: newPolicy });
-      // Optimistically update local state
       item.actionPolicy = newPolicy || undefined;
       updateActionPolicyBadge(activeItemId, newPolicy);
-      const btn = document.getElementById('block-actions-btn');
-      if (btn) { btn.textContent = isBlocked ? '⛔ Block actions' : '✅ Unblock actions'; }
+      renderAgendaSidebar();
     }
 
     // ── Resolve item (inline panel) ───────────────────────────

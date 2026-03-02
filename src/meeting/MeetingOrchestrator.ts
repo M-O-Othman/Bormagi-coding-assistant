@@ -341,11 +341,25 @@ export class MeetingOrchestrator {
     }
 
     // ACTION POLICY rule — injected when item has a non-NORMAL policy
-    if (item?.actionPolicy?.mode === 'BLOCK_ALL_ACTIONS') {
-      rules += '\n\nACTION POLICY (hard rule): ACTION tag is BLOCKED for this agenda item. Do NOT emit ACTION:. Use RISK:, VALIDATION:, OPEN_QUESTION:, or [SKIP]: only.';
-    } else if (item?.actionPolicy?.mode === 'ALLOW_ONLY') {
-      const allowed = item.actionPolicy.allowed?.map(a => a.agentId ? `${a.tag} (${a.agentId} only)` : a.tag).join(', ') ?? 'none';
-      rules += `\n\nACTION POLICY (hard rule): Only these outputs are allowed to create actions: ${allowed}. All other ACTION: outputs must be rewritten to [SKIP]: or RISK:.`;
+    if (item?.actionPolicy) {
+      const { mode, allowedAgentIds, allowedTags } = item.actionPolicy;
+      if (mode === 'BLOCK_ALL_ACTIONS') {
+        rules += '\n\nACTION POLICY (hard rule): ACTION tag is BLOCKED for this agenda item. Do NOT emit ACTION:. Use RISK:, VALIDATION:, OPEN_QUESTION:, or [SKIP]: only.';
+      } else if (mode === 'ALLOW_ONLY_ACTIONS') {
+        const who = allowedAgentIds?.join(', ') ?? 'none';
+        rules += `\n\nACTION POLICY (hard rule): Only these participants may emit ACTION:: ${who}. All others must use RISK:, VALIDATION:, OPEN_QUESTION:, or [SKIP]:.`;
+      } else if (mode === 'ALLOW_ONLY_TAGS') {
+        const tags = allowedTags?.join(' | ') ?? 'none';
+        rules += `\n\nACTION POLICY (hard rule): Only these output tags are permitted for this agenda item: ${tags} (or [SKIP]:). Any other tag will be rejected.`;
+      }
+    }
+
+    // INTERRUPT SUPPRESSION — disable INTERRUPT_REQUEST when item is blocked or action-restricted
+    const interruptsSuppressed = item?.blockedByHuman ||
+      item?.actionPolicy?.mode === 'BLOCK_ALL_ACTIONS' ||
+      item?.actionPolicy?.mode === 'ALLOW_ONLY_TAGS';
+    if (interruptsSuppressed) {
+      rules += '\n\nINTERRUPT POLICY: INTERRUPT_REQUEST is DISABLED for this round. Do NOT emit any INTERRUPT_REQUEST: lines.';
     }
 
     // TOPIC GUARD — keep agents focused on the current agenda item
@@ -444,7 +458,8 @@ export class MeetingOrchestrator {
     provider: ReturnType<typeof ProviderFactory.create>,
     systemPrompt: string,
     raw: string,
-    actionPolicy?: ActionPolicy
+    actionPolicy?: ActionPolicy,
+    currentAgentId?: string
   ): Promise<{ response: string; tag: OutputTag; violations: string[] }> {
     let tag = this.parseTag(raw);
     const hasBanned = this.containsBannedLanguage(raw);
@@ -452,12 +467,23 @@ export class MeetingOrchestrator {
 
     // ACTION POLICY enforcement — check before early return
     let actionPolicyViolation: string | null = null;
-    if (actionPolicy && tag === 'ACTION') {
-      if (actionPolicy.mode === 'BLOCK_ALL_ACTIONS') {
+    if (actionPolicy && tag && tag !== 'SKIP') {
+      if (actionPolicy.mode === 'BLOCK_ALL_ACTIONS' && tag === 'ACTION') {
         actionPolicyViolation = 'ACTION tag is blocked for this agenda item. Use RISK:, VALIDATION:, OPEN_QUESTION:, or [SKIP]: instead.';
-        tag = null; // force rewrite path
+        tag = null;
+      } else if (actionPolicy.mode === 'ALLOW_ONLY_ACTIONS' && tag === 'ACTION') {
+        const allowed = actionPolicy.allowedAgentIds ?? [];
+        if (currentAgentId && !allowed.includes(currentAgentId)) {
+          actionPolicyViolation = `ACTION is only permitted from: ${allowed.join(', ') || 'none'}. Use RISK:, VALIDATION:, OPEN_QUESTION:, or [SKIP]:.`;
+          tag = null;
+        }
+      } else if (actionPolicy.mode === 'ALLOW_ONLY_TAGS') {
+        const allowed = actionPolicy.allowedTags ?? [];
+        if (!allowed.includes(tag)) {
+          actionPolicyViolation = `Only these output tags are allowed: ${allowed.join(', ')}. Rewrite using one of them or output [SKIP]:.`;
+          tag = null;
+        }
       }
-      // ALLOW_ONLY: currently all ACTION outputs are allowed; agentId filtering would go here
     }
 
     if (tag && !hasBanned && !codeChangeClaim && !actionPolicyViolation) {
@@ -478,7 +504,7 @@ export class MeetingOrchestrator {
       );
     }
 
-    const defaultRewritePrompt = `REWRITE REQUIRED: {{ISSUES}}\n\nRewrite your message to comply with meeting rules:\n- Start with exactly one tag: RECOMMENDATION: | RISK: | OPEN_QUESTION: | ACTION: | VALIDATION: | CLARIFICATION_FOR_HUMAN: | [SKIP]:\n- No ACTION: if action policy is BLOCK_ALL_ACTIONS — use RISK:, VALIDATION:, OPEN_QUESTION:, or [SKIP]: instead.\n- No greetings, thanks, or filler language.\n- No past-tense completion claims — use future-tense plans.\n- Keep only impactful content. If you have nothing impactful, respond with [SKIP]: <reason>`;
+    const defaultRewritePrompt = `REWRITE REQUIRED: {{ISSUES}}\n\nRewrite your message to comply with meeting rules:\n- Start with exactly one tag: RECOMMENDATION: | RISK: | OPEN_QUESTION: | ACTION: | VALIDATION: | CLARIFICATION_FOR_HUMAN: | [SKIP]:\n- Respect action policy: if ACTION is blocked or restricted, use another allowed tag or [SKIP]:.\n- No greetings, thanks, or filler language.\n- No past-tense completion claims — use future-tense plans.\n- Keep only impactful content. If you have nothing impactful, respond with [SKIP]: <reason>`;
     const rewriteTemplate = this.loadConfig('rewrite-prompt.md', defaultRewritePrompt);
     const rewriteUserContent = rewriteTemplate.replace('{{ISSUES}}', issues.join('\n'));
 
@@ -489,26 +515,59 @@ export class MeetingOrchestrator {
     ];
 
     const rewritten = await this.streamResponse(provider, rewriteMessages);
-    tag = this.parseTag(rewritten);
-
-    // Check the rewritten response still doesn't sneak in a code-change claim or action policy violation
-    const rewrittenCodeClaim = this.containsCodeChangeClaim(rewritten);
     const rewrittenTag = this.parseTag(rewritten);
+
+    // Check the rewritten response still doesn't sneak in a code-change claim or repeat policy violation
+    const rewrittenCodeClaim = this.containsCodeChangeClaim(rewritten);
     const violations: string[] = [];
     if (codeChangeClaim) { violations.push(`PLANNING_MODE: ${codeChangeClaim}`); }
     if (rewrittenCodeClaim) { violations.push(`PLANNING_MODE_PERSISTS: ${rewrittenCodeClaim}`); }
     if (actionPolicyViolation) { violations.push(`ACTION_POLICY: ${actionPolicyViolation}`); }
-    // If rewrite still has ACTION when blocked, force SKIP
-    if (actionPolicy?.mode === 'BLOCK_ALL_ACTIONS' && rewrittenTag === 'ACTION') {
-      return { response: `[SKIP]: Action creation not allowed for this agenda item.`, tag: 'SKIP', violations };
+
+    // If rewrite still violates action policy, force SKIP
+    if (actionPolicy && rewrittenTag && rewrittenTag !== 'SKIP') {
+      const modeStillViolated =
+        (actionPolicy.mode === 'BLOCK_ALL_ACTIONS' && rewrittenTag === 'ACTION') ||
+        (actionPolicy.mode === 'ALLOW_ONLY_ACTIONS' && rewrittenTag === 'ACTION' &&
+          currentAgentId && !(actionPolicy.allowedAgentIds ?? []).includes(currentAgentId)) ||
+        (actionPolicy.mode === 'ALLOW_ONLY_TAGS' && !(actionPolicy.allowedTags ?? []).includes(rewrittenTag));
+      if (modeStillViolated) {
+        return { response: `[SKIP]: Action policy prevents this output.`, tag: 'SKIP', violations };
+      }
     }
 
-    if (tag) {
-      return { response: rewritten, tag, violations };
+    if (rewrittenTag) {
+      return { response: rewritten, tag: rewrittenTag, violations };
     }
 
     // Still invalid → force SKIP
     return { response: `[SKIP]: Could not produce compliant output.`, tag: 'SKIP', violations };
+  }
+
+  /**
+   * Heuristic off-topic check: returns a description if the response appears to discuss
+   * a different agenda item more than the current one.
+   */
+  private checkOffTopic(response: string, agendaItemId: string, meeting: Meeting): string | null {
+    const currentItem = meeting.agenda.find(a => a.id === agendaItemId);
+    if (!currentItem) { return null; }
+
+    const keywords = (text: string) =>
+      text.toLowerCase().split(/\W+/).filter(w => w.length > 4);
+
+    const responseLower = response.toLowerCase();
+    const currentKw = keywords(currentItem.text);
+    const hitsCurrent = currentKw.filter(k => responseLower.includes(k)).length;
+
+    for (const other of meeting.agenda) {
+      if (other.id === agendaItemId) { continue; }
+      const otherKw = keywords(other.text);
+      const hitsOther = otherKw.filter(k => responseLower.includes(k)).length;
+      if (hitsOther > hitsCurrent + 2) {
+        return `Your response appears to be about "${other.text}" (another agenda item), not the current one: "${currentItem.text}".`;
+      }
+    }
+    return null;
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -613,16 +672,34 @@ export class MeetingOrchestrator {
       });
 
       // Rewrite gate — enforces tags, bans talkshop language, blocks code-change claims, and enforces ActionPolicy
-      const { response: validated, tag } = await this.rewriteGate(provider, systemPrompt, fullResponse, item.actionPolicy);
+      const { response: validated, tag } = await this.rewriteGate(provider, systemPrompt, fullResponse, item.actionPolicy, agentId);
       if (validated !== fullResponse) {
         fullResponse = validated;
       }
 
-      const isSkip = tag === 'SKIP';
+      // Off-topic check — if response seems to address a different agenda item, reprompt once
+      if (tag !== 'SKIP') {
+        const offTopicReason = this.checkOffTopic(fullResponse, agendaItemId, meeting);
+        if (offTopicReason) {
+          const offTopicMessages: ChatMessage[] = [
+            { role: 'system', content: systemPrompt },
+            { role: 'assistant', content: fullResponse },
+            { role: 'user', content: `OFF-TOPIC VIOLATION: ${offTopicReason}\n\nRewrite focused on the current agenda item only, or output [SKIP]: off-topic.` }
+          ];
+          const rewritten = await this.streamResponse(provider, offTopicMessages);
+          const rewrittenTag = this.parseTag(rewritten);
+          if (rewrittenTag) { fullResponse = rewritten; }
+        }
+      }
+
+      const isSkip = tag === 'SKIP' || this.parseTag(fullResponse) === 'SKIP';
       const skipReason = isSkip ? fullResponse.replace(/^\[SKIP\][:\s]*/i, '').trim() : '';
 
-      // Parse interrupt requests (only from non-skip turns)
-      const interruptReqs = isSkip ? [] : this.extractInterruptRequests(fullResponse, meeting.participants, agentId);
+      // Parse interrupt requests — suppressed when item is blocked or interrupt policy is disabled
+      const interruptsAllowed = !item.blockedByHuman &&
+        item.actionPolicy?.mode !== 'BLOCK_ALL_ACTIONS' &&
+        item.actionPolicy?.mode !== 'ALLOW_ONLY_TAGS';
+      const interruptReqs = (isSkip || !interruptsAllowed) ? [] : this.extractInterruptRequests(fullResponse, meeting.participants, agentId);
 
       // Create round
       const round: MeetingRound = {
@@ -752,7 +829,7 @@ export class MeetingOrchestrator {
     });
 
     // Rewrite gate for interrupt too (interrupts respect the item's action policy)
-    const { response: validated, tag } = await this.rewriteGate(provider, systemPrompt, fullResponse, interruptItem?.actionPolicy);
+    const { response: validated, tag } = await this.rewriteGate(provider, systemPrompt, fullResponse, interruptItem?.actionPolicy, targetAgentId);
     if (validated !== fullResponse) { fullResponse = validated; }
 
     const round: MeetingRound = {
@@ -781,7 +858,9 @@ export class MeetingOrchestrator {
 
   async generateStructuredSummary(
     meeting: Meeting,
-    agendaItemId: string
+    agendaItemId: string,
+    /** When provided, biases the moderator to produce a closeout summary with the given status */
+    closeoutHint?: { status: 'deferred' | 'blocked'; reason: string }
   ): Promise<SummaryRound | null> {
     const moderatorId = meeting.moderatorId ?? meeting.participants[0];
     const setup = await this.setupProvider(moderatorId);
@@ -794,14 +873,17 @@ export class MeetingOrchestrator {
     const rounds = meeting.rounds.filter(r =>
       r.agendaItemId === agendaItemId && !r.skipped
     );
-    if (rounds.length === 0) { return null; }
+    // Allow closeout summaries even with zero agent rounds
+    if (rounds.length === 0 && !closeoutHint) { return null; }
 
-    const discussionText = rounds.map(r => {
-      const name = this.agentManager.getAgent(r.agentId)?.name ?? r.agentId;
-      const tagLabel = r.tag ? `[${r.tag}]` : '';
-      const prefix = r.isInterrupt ? `↳ ${name} ${tagLabel} (interrupt)` : `${name} ${tagLabel}`;
-      return `${prefix}: ${r.response}`;
-    }).join('\n\n');
+    const discussionText = rounds.length > 0
+      ? rounds.map(r => {
+          const name = this.agentManager.getAgent(r.agentId)?.name ?? r.agentId;
+          const tagLabel = r.tag ? `[${r.tag}]` : '';
+          const prefix = r.isInterrupt ? `↳ ${name} ${tagLabel} (interrupt)` : `${name} ${tagLabel}`;
+          return `${prefix}: ${r.response}`;
+        }).join('\n\n')
+      : '(No agent discussion — item closed by human.)';
 
     // Collect OQ IDs created during this item
     const itemOqIds = (meeting.openQuestionsCreated ?? []).filter(id =>
@@ -811,9 +893,17 @@ export class MeetingOrchestrator {
 
     const defaultSummary = `You are {{MODERATOR_NAME}}, the meeting moderator.\nProduce a structured summary. No filler language. No code blocks. No repeated lines.\nYou MUST use this EXACT format:\n\nMODERATOR_SUMMARY:\nProblem: <1 line>\nOptions:\n- A: ...\n- B: ...\nRecommendation: <summarized recommendation, if any>\nRisks:\n- ...\nActions:\n- ...\nOpenQuestions:\n- {{OPEN_QUESTION_IDS}}\nDecisionPromptForHuman: <explicit choice request>\nStatus: open | ready_for_human_decision | blocked | deferred | resolved\nDeferReason: <only if Status is deferred — brief reason>\nBlocker: <only if Status is blocked — what is missing>\n\nStatus guide: "open" = more discussion needed; "ready_for_human_decision" = clear options exist, human must choose; "blocked" = key info missing; "deferred" = postponed to another meeting; "resolved" = human has decided.`;
     const template = this.loadConfig('summary-prompt.md', defaultSummary);
-    const systemContent = template
+    let systemContent = template
       .replace(/\{\{MODERATOR_NAME\}\}/g, agentConfig.name)
       .replace(/\{\{OPEN_QUESTION_IDS\}\}/g, oqList);
+
+    // Inject closeout hint to force correct status
+    if (closeoutHint) {
+      const directive = closeoutHint.status === 'deferred'
+        ? `\n\nCLOSEOUT DIRECTIVE: The human has explicitly deferred this item. Your Status MUST be "deferred". DeferReason: ${closeoutHint.reason}`
+        : `\n\nCLOSEOUT DIRECTIVE: The human has blocked this item. Your Status MUST be "blocked". Blocker: ${closeoutHint.reason}`;
+      systemContent += directive;
+    }
 
     const messages: ChatMessage[] = [
       { role: 'system', content: systemContent },
@@ -821,6 +911,7 @@ export class MeetingOrchestrator {
         role: 'user', content:
           `Agenda item: "${item.text}"\n\n` +
           `Discussion:\n${discussionText}\n\n` +
+          (closeoutHint ? `The human has signaled: "${closeoutHint.reason}"\n\n` : '') +
           `Produce your MODERATOR_SUMMARY now.`
       }
     ];
