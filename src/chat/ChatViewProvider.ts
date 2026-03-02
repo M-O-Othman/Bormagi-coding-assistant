@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { ChatController, MessageToWebview } from './ChatController';
 import { getAppData } from '../data/DataStore';
+import { getMarkedFallbackSource } from './markedFallback';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
@@ -64,13 +65,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       );
       // Inject the marked.js Markdown parser library inline so it works
       // within the webview's strict CSP (no external scripts allowed).
+      let markedInjected = false;
       try {
-        const markedPath = path.join(this.extensionUri.fsPath, 'node_modules', 'marked', 'lib', 'marked.umd.js');
-        const markedSrc = fs.readFileSync(markedPath, 'utf8');
-        raw = raw.replace('/*__MARKED_LIB__*/', markedSrc);
+        // Try primary location (development): node_modules
+        // Fallback (packaged extension): media/vendor/marked.umd.js
+        const candidatePaths = [
+          path.join(this.extensionUri.fsPath, 'node_modules', 'marked', 'lib', 'marked.umd.js'),
+          path.join(this.extensionUri.fsPath, 'media', 'vendor', 'marked.umd.js')
+        ];
+
+        for (const markedPath of candidatePaths) {
+          if (fs.existsSync(markedPath)) {
+            const markedSrc = fs.readFileSync(markedPath, 'utf8');
+            raw = raw.replace('/*__MARKED_LIB__*/', markedSrc);
+            markedInjected = true;
+            break;
+          }
+        }
       } catch {
-        // If marked.js can't be loaded, the fallback in chat.html will
-        // render messages as escaped plain text (no Markdown formatting).
+        // Intentionally swallow and fall back below.
+      }
+
+      if (!markedInjected) {
+        // Hard fallback: inline a baked-in copy so Markdown still renders
+        // even if the vendor file was accidentally omitted from the package.
+        raw = raw.replace('/*__MARKED_LIB__*/', getMarkedFallbackSource());
       }
       return raw;
     } catch {

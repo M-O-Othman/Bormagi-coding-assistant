@@ -47,5 +47,15 @@ describe('Meeting guardrails config', () => {
     expect(cfg.topicGuard.defaultAllowedDimensions).toEqual(['content', 'automation']);
     expect(cfg.humanIntent.deferPatterns).toEqual(['\\bmove on\\b']);
   });
-});
 
+  test('defaults include robust defer/final-decision intent patterns', () => {
+    root = mkTmpRoot();
+    const cfg = loadMeetingGuardrails(root);
+
+    const isDefer = cfg.humanIntent.deferPatterns.some(p => new RegExp(p, 'i').test('proceed'));
+    const isFinalDecision = cfg.humanIntent.finalDecisionPatterns.some(p => new RegExp(p, 'i').test('i already decided to use rag'));
+
+    expect(isDefer).toBe(true);
+    expect(isFinalDecision).toBe(true);
+  });
+});

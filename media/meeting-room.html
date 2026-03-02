@@ -48,7 +48,7 @@
       display: flex;
       flex-direction: column;
       gap: 32px;
-      max-width: 1000px;
+      max-width: 1400px;
       margin: 0 auto;
       width: 100%;
     }
@@ -200,19 +200,19 @@
     .meeting-layout {
       display: flex;
       gap: 16px;
-      align-items: flex-start;
+      align-items: stretch;
+      min-height: calc(100vh - 110px);
+      height: calc(100vh - 110px);
     }
 
     .agenda-sidebar {
-      width: 180px;
+      width: 280px;
       flex-shrink: 0;
       border: 1px solid var(--border);
       background: var(--secondary-bg);
       border-radius: 4px;
       padding: 8px;
-      position: sticky;
-      top: 24px;
-      max-height: calc(100vh - 48px);
+      height: 100%;
       overflow-y: auto;
     }
 
@@ -305,6 +305,8 @@
       background: var(--secondary-bg);
       border: 1px solid var(--border);
       border-radius: 4px;
+      min-height: 0;
+      height: 100%;
     }
 
     .chat-feed {
@@ -312,7 +314,9 @@
       display: flex;
       flex-direction: column;
       gap: 12px;
-      min-height: 200px;
+      min-height: 0;
+      flex: 1;
+      overflow-y: auto;
     }
 
     .item-header {
@@ -376,6 +380,17 @@
       line-height: 1.5;
       white-space: pre-wrap;
       word-break: break-word;
+    }
+
+    /* Compact, indented bullets inside agent responses */
+    .agent-body ul,
+    .agent-body ol {
+      margin: 0 0 0 16px;
+      padding-left: 12px;
+    }
+    .agent-body li {
+      margin: 0;
+      padding: 0;
     }
 
     .user-msg {
@@ -453,11 +468,25 @@
       color: var(--success);
     }
 
-    /* ── Action Items Section ─────────────────────────────── */
-    #tab-actions {
+    /* ── Sidebar Sections (actions + minutes controls) ─────── */
+    .sidebar-divider {
+      border-top: 1px solid var(--border);
+      margin: 10px 0;
+    }
+
+    .sidebar-section {
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 8px;
+    }
+
+    .sidebar-section h4 {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--muted);
+      margin: 0;
+      padding: 0 2px;
     }
 
     .action-list {
@@ -468,6 +497,7 @@
 
     .action-card {
       background: var(--secondary-bg);
+      border: 1px solid var(--border);
       border-radius: 4px;
       padding: 8px 12px;
       display: flex;
@@ -491,39 +521,18 @@
 
     .add-action-form {
       display: flex;
+      flex-direction: column;
       gap: 8px;
-      align-items: flex-end;
+      align-items: stretch;
     }
 
     .add-action-form input {
-      flex: 2;
-    }
-
-    .add-action-form select {
-      flex: 1;
-    }
-
-    /* ── Minutes Section ──────────────────────────────────── */
-    #tab-minutes {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    #minutes-output {
-      min-height: 150px;
-      background: var(--secondary-bg);
-      border-radius: 4px;
-      padding: 12px;
-      font-size: 13px;
-      line-height: 1.6;
-      white-space: pre-wrap;
-      word-break: break-word;
-      border: 1px solid var(--border);
+      width: 100%;
     }
 
     .minutes-controls {
       display: flex;
+      flex-direction: column;
       gap: 8px;
     }
 
@@ -692,6 +701,19 @@
       text-transform: uppercase;
       letter-spacing: 0.3px;
       vertical-align: middle;
+    }
+
+    .owner-badge {
+      font-size: 9px;
+      background: var(--tag-bg);
+      color: var(--tag-fg);
+      padding: 1px 6px;
+      border-radius: 8px;
+      margin-left: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      vertical-align: middle;
+      white-space: nowrap;
     }
 
     /* ── Output tag badges ─────────────────────────────── */
@@ -895,6 +917,25 @@
       padding: 0;
     }
 
+    @media (max-width: 1080px) {
+      .meeting-layout {
+        flex-direction: column;
+        height: auto;
+        min-height: 0;
+      }
+
+      .agenda-sidebar {
+        width: 100%;
+        height: auto;
+        max-height: 42vh;
+      }
+
+      .chat-area {
+        min-height: 52vh;
+        height: 52vh;
+      }
+    }
+
     /* ── Inline panels (resolve / quick-action) ──────── */
     .inline-panel {
       padding: 8px 10px;
@@ -1023,6 +1064,32 @@
             </span>
           </div>
           <div id="agenda-list"><span class="empty">No agenda yet.</span></div>
+
+          <div class="sidebar-divider"></div>
+
+          <div class="sidebar-section">
+            <h4>Action Items</h4>
+            <div class="action-list" id="action-list">
+              <span class="empty">No action items yet.</span>
+            </div>
+            <label style="display:block;margin-bottom:0;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">Add
+              Action Item</label>
+            <div class="add-action-form">
+              <input type="text" id="new-action-text" placeholder="Action item description" />
+              <input type="text" id="new-action-assignee" list="agents-datalist" placeholder="Assigned to (any name)" />
+              <button class="btn btn-sm" onclick="addActionItem()">Add</button>
+            </div>
+          </div>
+
+          <div class="sidebar-divider"></div>
+
+          <div class="sidebar-section">
+            <h4>Meeting Minutes</h4>
+            <div class="minutes-controls">
+              <button class="btn" onclick="generateMinutes()">Generate Minutes</button>
+              <button class="btn btn-outline" onclick="saveMinutes()">Save to File</button>
+            </div>
+          </div>
         </div>
 
         <!-- Chat area -->
@@ -1084,38 +1151,6 @@
       </div>
     </div>
 
-    <!-- ══════════════════════════════════════════════════
-     TAB 3 — ACTION ITEMS
-═══════════════════════════════════════════════════ -->
-    <div class="section-content" id="tab-actions">
-      <h2 style="margin-bottom:8px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">Action Items</h2>
-      <div class="action-list" id="action-list">
-        <span class="empty">No action items yet.</span>
-      </div>
-      <div style="margin-top:16px">
-        <label
-          style="display:block;margin-bottom:6px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">Add
-          Action Item</label>
-        <div class="add-action-form">
-          <input type="text" id="new-action-text" placeholder="Action item description" />
-          <input type="text" id="new-action-assignee" list="agents-datalist" placeholder="Assigned to (any name)" />
-          <button class="btn btn-sm" onclick="addActionItem()">Add</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ══════════════════════════════════════════════════
-     MINUTES
-═══════════════════════════════════════════════════ -->
-    <h2 style="margin-bottom:8px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">Meeting Minutes</h2>
-    <div class="section-content" id="tab-minutes">
-      <div class="minutes-controls">
-        <button class="btn" onclick="generateMinutes()">Generate Minutes</button>
-        <button class="btn btn-outline" onclick="saveMinutes()">Save to File</button>
-      </div>
-      <div id="minutes-output" class="empty">Click "Generate Minutes" to create meeting minutes.</div>
-    </div>
-
   </div>
 
   <!-- ── @mention autocomplete dropdown (global, positioned by JS) -->
@@ -1140,6 +1175,7 @@
     let roundRunning = false;
     let meetingEnded = false;
     let preActionItems = [];   // { text, assignedTo }[] — collected before meeting starts
+    let lastGeneratedMinutes = ''; // latest generated minutes payload for save-to-file
 
     // @mention autocomplete state
     let mentionStartPos = -1;
@@ -1398,47 +1434,54 @@
       if (wasNearBottom) { scrollToBottom(feed); }
     }
 
-    function onAgentRoundDone(agendaItemId, agentId, fullResponse, skipped, tag) {
-      if (activeItemId !== agendaItemId) { return; }
-      const el = document.getElementById(`stream-${agendaItemId}-${agentId}`);
-      if (el) {
-        if (skipped) {
-          const card = el.closest('.agent-msg');
-          if (card) {
-            const agent = allAgents.find(a => a.id === agentId);
-            const name = agent ? agent.name : agentId;
-            const reason = fullResponse.replace(/^\[SKIP\][:\s]*/i, '').trim();
-            const skipDiv = document.createElement('div');
-            skipDiv.className = 'agent-skip';
-            skipDiv.textContent = `${name} — skipped: ${reason || 'nothing material to add'}`;
-            card.replaceWith(skipDiv);
-          }
-        } else {
-          const card = el.closest('.agent-msg');
-          const spinner = card && card.querySelector('.spinner');
-          if (spinner) { spinner.parentElement.textContent = new Date().toLocaleTimeString(); }
-          // Add tag badge to header
-          if (tag && card) {
-            const nameEl = card.querySelector('.agent-name');
-            if (nameEl && !nameEl.querySelector('.tag-badge')) {
-              const badge = document.createElement('span');
-              badge.className = `tag-badge tag-${tag}`;
-              badge.textContent = tag.replace(/_/g, ' ');
-              nameEl.appendChild(badge);
-            }
-          }
-          // The 'fullResponse' is already parsed markdown.
-          // We just need to render @mentions on top of the HTML.
-          el.innerHTML = renderWithMentions(fullResponse);
-        }
-        el.removeAttribute('id');
-      }
+  function onAgentRoundDone(agendaItemId, agentId, fullResponse, skipped, tag) {
+    if (activeItemId !== agendaItemId) { return; }
+    const el = document.getElementById(`stream-${agendaItemId}-${agentId}`);
+    if (!el) { return; }
 
-      if (meeting) {
-        meeting.rounds = meeting.rounds || [];
-        meeting.rounds.push({ agendaItemId, agentId, response: fullResponse, timestamp: new Date().toISOString(), skipped: skipped || undefined, tag });
+    if (skipped) {
+      const card = el.closest('.agent-msg');
+      if (card) {
+        const agent = allAgents.find(a => a.id === agentId);
+        const name = agent ? agent.name : agentId;
+        const reason = fullResponse.replace(/^\[SKIP\][:\s]*/i, '').trim();
+        const skipDiv = document.createElement('div');
+        skipDiv.className = 'agent-skip';
+        skipDiv.textContent = `${name} — skipped: ${reason || 'nothing material to add'}`;
+        card.replaceWith(skipDiv);
       }
+      return;
     }
+
+    const card = el.closest('.agent-msg');
+    const spinner = card && card.querySelector('.spinner');
+    if (spinner) { spinner.parentElement.textContent = new Date().toLocaleTimeString(); }
+
+    const nameEl = card ? card.querySelector('.agent-name') : null;
+    if (tag && nameEl && !nameEl.querySelector('.tag-badge')) {
+      const badge = document.createElement('span');
+      badge.className = `tag-badge tag-${tag}`;
+      badge.textContent = tag.replace(/_/g, ' ');
+      nameEl.appendChild(badge);
+    }
+
+    const { ownerRole, html: cleaned } = extractOwnerRoleAndClean(fullResponse);
+    if (ownerRole && nameEl && !nameEl.querySelector('.owner-badge')) {
+      const ob = document.createElement('span');
+      ob.className = 'owner-badge';
+      ob.textContent = ownerRole;
+      ob.title = 'Owner role';
+      nameEl.appendChild(ob);
+    }
+
+    el.innerHTML = renderWithMentions(ownerRole ? cleaned : fullResponse);
+    el.removeAttribute('id');
+
+    if (meeting) {
+      meeting.rounds = meeting.rounds || [];
+      meeting.rounds.push({ agendaItemId, agentId, response: fullResponse, timestamp: new Date().toISOString(), skipped: skipped || undefined, tag });
+    }
+  }
 
     // ── Skip handler ───────────────────────────────────────────
     function onAgentSkipped(agendaItemId, agentId) {
@@ -1486,19 +1529,25 @@
         const card = el.closest('.agent-msg');
         const spinner = card && card.querySelector('.spinner');
         if (spinner) { spinner.parentElement.textContent = new Date().toLocaleTimeString(); }
-        // Add tag badge if tag provided
-        if (tag && card) {
-          const nameEl = card.querySelector('.agent-name');
-          if (nameEl && !nameEl.querySelector('.tag-badge')) {
-            const badge = document.createElement('span');
-            badge.className = `tag-badge tag-${tag}`;
-            badge.textContent = tag.replace(/_/g, ' ');
-            nameEl.appendChild(badge);
-          }
+
+        const nameEl = card ? card.querySelector('.agent-name') : null;
+        if (tag && nameEl && !nameEl.querySelector('.tag-badge')) {
+          const badge = document.createElement('span');
+          badge.className = `tag-badge tag-${tag}`;
+          badge.textContent = tag.replace(/_/g, ' ');
+          nameEl.appendChild(badge);
         }
-        // The 'fullResponse' is already parsed markdown.
-        // We just need to render @mentions on top of the HTML.
-        el.innerHTML = renderWithMentions(fullResponse);
+
+        const { ownerRole, html: cleaned } = extractOwnerRoleAndClean(fullResponse);
+        if (ownerRole && nameEl && !nameEl.querySelector('.owner-badge')) {
+          const ob = document.createElement('span');
+          ob.className = 'owner-badge';
+          ob.textContent = ownerRole;
+          ob.title = 'Owner role';
+          nameEl.appendChild(ob);
+        }
+
+        el.innerHTML = renderWithMentions(ownerRole ? cleaned : fullResponse);
         el.removeAttribute('id');
       }
 
@@ -2071,22 +2120,29 @@
     }
 
     function onMinutesReady(markdown) {
-      document.getElementById('minutes-output').textContent = markdown;
+      lastGeneratedMinutes = String(markdown || '');
+      setStatus('Minutes generated. Click "Save to File" to persist.', 'idle', 5000);
     }
 
     function saveMinutes() {
-      const markdown = document.getElementById('minutes-output').textContent;
-      if (!markdown || markdown.includes('Click "Generate Minutes"')) { alert('Generate minutes first.'); return; }
-      vscode.postMessage({ type: 'save_minutes', markdown });
+      if (!lastGeneratedMinutes.trim()) { alert('Generate minutes first.'); return; }
+      vscode.postMessage({ type: 'save_minutes', markdown: lastGeneratedMinutes });
     }
 
     // ── Scroll helpers ─────────────────────────────────────────
     // Returns true when the user is already near the bottom — so auto-scroll is safe.
     // If the user has scrolled up to read, we leave them in place.
     function isNearBottom(el, threshold = 80) {
+      if (el && typeof el.scrollHeight === 'number') {
+        return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+      }
       return document.documentElement.scrollHeight - window.scrollY - window.innerHeight <= threshold;
     }
     function scrollToBottom(el) {
+      if (el && typeof el.scrollHeight === 'number') {
+        el.scrollTop = el.scrollHeight;
+        return;
+      }
       window.scrollTo(0, document.documentElement.scrollHeight);
     }
 
@@ -2095,15 +2151,17 @@
       const agent = allAgents.find(a => a.id === agentId);
       const name = agent ? agent.name : agentId;
       const isModerator = meeting && meeting.moderatorId === agentId;
+      const { ownerRole, html: cleaned } = extractOwnerRoleAndClean(text);
+      const ownerBadge = ownerRole ? ` <span class=\"owner-badge\" title=\"Owner role\">${esc(ownerRole)}</span>` : '';
       const div = document.createElement('div');
       div.className = 'agent-msg';
       div.innerHTML = `
     <div class="agent-msg-header">
       <div class="agent-avatar">${name.charAt(0).toUpperCase()}</div>
-      <span class="agent-name">${esc(name)}${isModerator ? '<span class="moderator-badge">moderator</span>' : ''}</span>
+      <span class="agent-name">${esc(name)}${isModerator ? '<span class="moderator-badge">moderator</span>' : ''}${ownerBadge}</span>
       <span class="agent-timestamp">${timestamp ? new Date(timestamp).toLocaleTimeString() : ''}</span>
     </div>
-    <div class="agent-body">${text}</div>`;
+    <div class="agent-body">${renderWithMentions(cleaned)}</div>`;
       feed.appendChild(div);
     }
 
@@ -2113,6 +2171,34 @@
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;');
+    }
+
+    /**
+     * Extract \"Owner role\" line from rendered HTML, return cleaned HTML + role.
+     * Removes the element whose text begins with \"Owner role\".
+     */
+    function extractOwnerRoleAndClean(html) {
+      let ownerRole = '';
+      try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT, null);
+        const toRemove = [];
+        while (walker.nextNode()) {
+          const el = walker.currentNode;
+          if (!(el instanceof HTMLElement)) { continue; }
+          const text = (el.textContent || '').trim();
+          const match = text.match(/^Owner role[:\-\s]*\s*(.+)$/i);
+          if (match) {
+            ownerRole = match[1].trim();
+            toRemove.push(el);
+          }
+        }
+        toRemove.forEach(el => el.remove());
+        return { ownerRole, html: doc.body.innerHTML || html };
+      } catch {
+        return { ownerRole: '', html };
+      }
     }
 
     /**
@@ -2162,9 +2248,7 @@
       feed.appendChild(banner);
       scrollToBottom(feed);
 
-      if (minutes) {
-        document.getElementById('minutes-output').textContent = minutes;
-      }
+      if (minutes) { lastGeneratedMinutes = String(minutes); }
     }
 
     function startNewMeeting() {
@@ -2178,9 +2262,7 @@
       document.getElementById('chat-feed').innerHTML = '<span class="empty">Start the meeting to begin the discussion.</span>';
       document.getElementById('agenda-list').innerHTML = '<span class="empty">No agenda yet.</span>';
       document.getElementById('action-list').innerHTML = '<span class="empty">No action items yet.</span>';
-      document.getElementById('minutes-output').textContent = '';
-      document.getElementById('minutes-output').className = 'empty';
-      document.getElementById('minutes-output').textContent = 'Click "Generate Minutes" to create meeting minutes.';
+      lastGeneratedMinutes = '';
       window.scrollTo(0, 0);
     }
 

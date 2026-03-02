@@ -168,6 +168,75 @@ export class MeetingOrchestrator {
     return null;
   }
 
+  private findForbiddenPatternViolation(response: string): string | null {
+    for (const pattern of this.guardrails.responseValidation.forbiddenPatterns) {
+      try {
+        const re = new RegExp(pattern, 'i');
+        const match = response.match(re);
+        if (match?.[0]) {
+          return match[0];
+        }
+      } catch {
+        // Ignore malformed user-configured patterns
+      }
+    }
+    return null;
+  }
+
+  private isNullLikeSummaryValue(text: string | undefined): boolean {
+    if (!text) { return true; }
+    const trimmed = text.trim();
+    if (!trimmed) { return true; }
+    return this.guardrails.summary.nullLikePatterns.some(pattern => {
+      try {
+        return new RegExp(pattern, 'i').test(trimmed);
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  private normalizeActionText(text: string): string {
+    return text
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .replace(/[.!?]+$/g, '')
+      .trim();
+  }
+
+  private normalizeFreeText(text: string): string {
+    return text
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private isIgnorableActionText(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed) { return true; }
+    return this.guardrails.actionItems.ignorePatterns.some(pattern => {
+      try {
+        return new RegExp(pattern, 'i').test(trimmed);
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  private dedupeActions(actions: string[]): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of actions) {
+      const actionText = raw.trim();
+      if (this.isIgnorableActionText(actionText)) { continue; }
+      const key = this.normalizeActionText(actionText);
+      if (this.guardrails.actionItems.dedupe && seen.has(key)) { continue; }
+      seen.add(key);
+      out.push(actionText);
+    }
+    return out;
+  }
+
   /**
    * Parse INTERRUPT_REQUEST lines from a response.
    * Format: INTERRUPT_REQUEST: @AgentName — <question> — Context: <text>
@@ -292,25 +361,70 @@ export class MeetingOrchestrator {
 
   /** Parse moderator summary into structured SummaryRound fields. */
   static parseSummaryFields(raw: string, agendaItemId: string): SummaryRound {
-    const extractSection = (label: string): string | undefined => {
-      const re = new RegExp(`${label}[:\\s]*([\\s\\S]*?)(?=\\n(?:Problem|Options|Recommendation|Risks|Actions|OpenQuestions|DecisionPromptForHuman|Status|DeferReason|Blocker|$))`, 'i');
-      const m = raw.match(re);
-      return m?.[1]?.trim() || undefined;
+    const labels = [
+      'Problem',
+      'Options',
+      'Recommendation',
+      'Risks',
+      'Actions',
+      'OpenQuestions',
+      'DecisionPromptForHuman',
+      'Decision',
+      'Status',
+      'DeferReason',
+      'Blocker'
+    ] as const;
+    type Label = typeof labels[number];
+
+    const sections = labels.reduce<Record<Label, string[]>>((acc, label) => {
+      acc[label] = [];
+      return acc;
+    }, {} as Record<Label, string[]>);
+
+    const labelPattern = labels
+      .map(label => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('|');
+    const sectionStart = new RegExp(
+      `^\\s*(?:\\*\\*\\s*)?(${labelPattern})(?:\\s*\\*\\*)?\\s*:\\s*(.*)$`,
+      'i'
+    );
+
+    let current: Label | null = null;
+    for (const line of raw.split(/\r?\n/)) {
+      const m = line.match(sectionStart);
+      if (m?.[1]) {
+        const matched = labels.find(label => label.toLowerCase() === m[1].toLowerCase());
+        current = matched ?? null;
+        if (current && m[2]?.trim()) {
+          sections[current].push(m[2].trim());
+        }
+        continue;
+      }
+
+      if (current) {
+        sections[current].push(line);
+      }
+    }
+
+    const extractSection = (label: Label): string | undefined => {
+      const text = sections[label].join('\n').trim();
+      return text || undefined;
     };
 
-    const extractBullets = (label: string): string[] => {
+    const extractBullets = (label: Label): string[] => {
       const section = extractSection(label);
       if (!section) { return []; }
-      return section.split('\n')
-        .map(l => l.replace(/^[-*•]\s*/, '').trim())
+      return section
+        .split('\n')
+        .map(line => line.replace(/^[-*•]\s*/, '').trim())
         .filter(Boolean);
     };
 
     const extractStatus = (): SummaryRound['itemStatus'] => {
-      const m = raw.match(/^Status:\s*(open|ready_for_human_decision|blocked|deferred|resolved)/im);
-      const val = m?.[1]?.toLowerCase();
-      if (val === 'open' || val === 'ready_for_human_decision' || val === 'blocked' || val === 'deferred' || val === 'resolved') {
-        return val;
+      const rawStatus = extractSection('Status');
+      const token = rawStatus?.match(/\b(open|ready_for_human_decision|blocked|deferred|resolved)\b/i)?.[1]?.toLowerCase();
+      if (token === 'open' || token === 'ready_for_human_decision' || token === 'blocked' || token === 'deferred' || token === 'resolved') {
+        return token;
       }
       return 'open';
     };
@@ -574,6 +688,7 @@ export class MeetingOrchestrator {
     let tag = this.parseTag(raw);
     const hasBanned = this.containsBannedLanguage(raw);
     const codeChangeClaim = this.containsCodeChangeClaim(raw);
+    const forbiddenPatternViolation = this.findForbiddenPatternViolation(raw);
     const skipExclusivityViolation = this.findSkipExclusivityViolation(raw);
     const decisionReopenViolation = decisionLocked && this.guardrails.decisionLock.recommendationMarkers.some(marker =>
       raw.toLowerCase().includes(marker.toLowerCase())
@@ -609,7 +724,7 @@ export class MeetingOrchestrator {
       tag = null;
     }
 
-    if (tag && !hasBanned && !codeChangeClaim && !actionPolicyViolation && !decisionReopenViolation && !skipExclusivityViolation) {
+    if (tag && !hasBanned && !codeChangeClaim && !forbiddenPatternViolation && !actionPolicyViolation && !decisionReopenViolation && !skipExclusivityViolation) {
       return { response: raw, tag, violations: [] };
     }
 
@@ -622,6 +737,12 @@ export class MeetingOrchestrator {
       issues.push('DECISION LOCK VIOLATION: Human decision is final for this item. Do not include options/recommendation language.');
     }
     if (hasBanned) { issues.push('Your response contains banned filler language (greetings, thanks, paraphrasing).'); }
+    if (forbiddenPatternViolation) {
+      issues.push(
+        `FORMAT VIOLATION: Response contains unresolved template placeholder text ("${forbiddenPatternViolation}"). ` +
+        'Replace placeholders with concrete values or remove them.'
+      );
+    }
     if (codeChangeClaim) {
       issues.push(
         `PLANNING MODE VIOLATION: Your response contains a past-tense code/work completion claim ("${codeChangeClaim}"). ` +
@@ -646,6 +767,7 @@ export class MeetingOrchestrator {
 
     // Check the rewritten response still doesn't sneak in a code-change claim or repeat policy violation
     const rewrittenCodeClaim = this.containsCodeChangeClaim(rewritten);
+    const rewrittenForbiddenPatternViolation = this.findForbiddenPatternViolation(rewritten);
     const rewrittenSkipExclusivityViolation = this.findSkipExclusivityViolation(rewritten);
     const rewrittenDecisionReopenViolation = decisionLocked && this.guardrails.decisionLock.recommendationMarkers.some(marker =>
       rewritten.toLowerCase().includes(marker.toLowerCase())
@@ -653,6 +775,8 @@ export class MeetingOrchestrator {
     const violations: string[] = [];
     if (codeChangeClaim) { violations.push(`PLANNING_MODE: ${codeChangeClaim}`); }
     if (rewrittenCodeClaim) { violations.push(`PLANNING_MODE_PERSISTS: ${rewrittenCodeClaim}`); }
+    if (forbiddenPatternViolation) { violations.push(`FORBIDDEN_PATTERN: ${forbiddenPatternViolation}`); }
+    if (rewrittenForbiddenPatternViolation) { violations.push(`FORBIDDEN_PATTERN_PERSISTS: ${rewrittenForbiddenPatternViolation}`); }
     if (actionPolicyViolation) { violations.push(`ACTION_POLICY: ${actionPolicyViolation}`); }
     if (skipExclusivityViolation) { violations.push(`SKIP_EXCLUSIVE: ${skipExclusivityViolation}`); }
     if (decisionReopenViolation) { violations.push('DECISION_REOPEN: recommendation language after final decision'); }
@@ -671,7 +795,7 @@ export class MeetingOrchestrator {
       }
     }
 
-    if (rewrittenTag && !rewrittenSkipExclusivityViolation && !rewrittenDecisionReopenViolation) {
+    if (rewrittenTag && !rewrittenForbiddenPatternViolation && !rewrittenSkipExclusivityViolation && !rewrittenDecisionReopenViolation) {
       return { response: rewritten, tag: rewrittenTag, violations };
     }
 
@@ -1130,6 +1254,17 @@ export class MeetingOrchestrator {
       summary = MeetingOrchestrator.parseSummaryFields(raw, agendaItemId);
     }
 
+    summary.actions = this.dedupeActions(summary.actions ?? []);
+    if (this.isNullLikeSummaryValue(summary.decisionPrompt)) {
+      summary.decisionPrompt = undefined;
+    }
+    if (this.isNullLikeSummaryValue(summary.deferReason)) {
+      summary.deferReason = undefined;
+    }
+    if (this.isNullLikeSummaryValue(summary.blocker)) {
+      summary.blocker = undefined;
+    }
+
     if (this.isDecisionLocked(meeting, agendaItemId)) {
       summary.itemStatus = 'resolved';
       summary.decisionPrompt = undefined;
@@ -1176,6 +1311,7 @@ export class MeetingOrchestrator {
         const tb = b.kind === 'human' ? b.timestamp : b.round.timestamp;
         return ta < tb ? -1 : ta > tb ? 1 : 0;
       });
+      const emittedRoundSignatures = new Set<string>();
 
       for (const entry of entries) {
         if (entry.kind === 'human') {
@@ -1190,6 +1326,14 @@ export class MeetingOrchestrator {
         if (round.skipped) {
           lines.push(`- ${agentName} skipped: ${round.response.replace(/^\[SKIP\][:\s]*/i, '').trim()}`);
           continue;
+        }
+
+        if (this.guardrails.minutes.dedupeExactRoundResponses) {
+          const signature = `${round.tag ?? ''}|${round.isInterrupt ? 'interrupt' : 'normal'}|${this.normalizeFreeText(round.response)}`;
+          if (emittedRoundSignatures.has(signature)) {
+            continue;
+          }
+          emittedRoundSignatures.add(signature);
         }
 
         if (round.isInterrupt) {
@@ -1217,19 +1361,35 @@ export class MeetingOrchestrator {
           lines.push('Risks:');
           s.risks.forEach(r => lines.push(`- ${r}`));
         }
-        if (s.actions?.length) {
+        const summaryActions = this.dedupeActions(s.actions ?? []);
+        if (summaryActions.length) {
           lines.push('Actions:');
-          s.actions.forEach(a => lines.push(`- ${a}`));
+          summaryActions.forEach(a => lines.push(`- ${a}`));
         }
-        if (s.decisionPrompt) { lines.push(`\n**Decision for Human:** ${s.decisionPrompt}`); }
+        if (!this.isNullLikeSummaryValue(s.decisionPrompt)) {
+          lines.push(`\n**Decision for Human:** ${s.decisionPrompt}`);
+        }
         lines.push('');
       }
     }
 
     // Action items
-    if (meeting.actionItems.length > 0) {
-      lines.push('## Action Items');
+    const finalActionItems = (() => {
+      const out: typeof meeting.actionItems = [];
+      const seen = new Set<string>();
       for (const ai of meeting.actionItems) {
+        if (this.isIgnorableActionText(ai.text)) { continue; }
+        const key = this.normalizeActionText(ai.text);
+        if (this.guardrails.actionItems.dedupe && seen.has(key)) { continue; }
+        seen.add(key);
+        out.push(ai);
+      }
+      return out;
+    })();
+
+    if (finalActionItems.length > 0) {
+      lines.push('## Action Items');
+      for (const ai of finalActionItems) {
         lines.push(`- **${ai.assignedTo}:** ${ai.text}`);
       }
       lines.push('');

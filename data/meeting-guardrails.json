@@ -92,6 +92,7 @@
     "deferPatterns": [
       "\\bnext agenda item\\b",
       "\\bproceed to next\\b",
+      "^\\s*proceed\\s*[.!?]*\\s*$",
       "\\bmove on\\b",
       "\\bdefer(red)?\\b",
       "\\bpostpone\\b",
@@ -100,7 +101,10 @@
     "finalDecisionPatterns": [
       "\\bthis is my decision\\b",
       "\\bi decide\\b",
+      "\\bi (?:already )?decided\\b",
+      "\\bis my decision\\b",
       "\\bdecision is\\b",
+      "\\bmy decision is\\b",
       "\\bwe choose\\b",
       "\\boption\\s+[a-z0-9]+\\b",
       "\\bproceed with option\\s+[a-z0-9]+\\b",
@@ -110,6 +114,31 @@
     "optionExtractPatterns": [
       "\\boption\\s+([a-z0-9]+)\\b",
       "\\bchoose\\s+([a-z0-9]+)\\b"
+    ]
+  },
+  "actionItems": {
+    "dedupe": true,
+    "ignorePatterns": [
+      "^\\s*none\\s*[.!?]*\\s*$",
+      "^\\s*n/?a\\s*[.!?]*\\s*$",
+      "^\\s*no action(?:s)?\\s*[.!?]*\\s*$",
+      "^\\s*not applicable\\s*[.!?]*\\s*$",
+      "^\\s*tbd\\s*[.!?]*\\s*$"
+    ]
+  },
+  "summary": {
+    "nullLikePatterns": [
+      "^\\s*none\\s*[.!?]*\\s*$",
+      "^\\s*n/?a\\s*[.!?]*\\s*$",
+      "^\\s*not applicable\\s*[.!?]*\\s*$"
+    ]
+  },
+  "minutes": {
+    "dedupeExactRoundResponses": true
+  },
+  "responseValidation": {
+    "forbiddenPatterns": [
+      "\\{\\{[^}]+\\}\\}"
     ]
   }
 }

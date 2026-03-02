@@ -23,6 +23,19 @@ export interface MeetingGuardrailsConfig {
     finalDecisionPatterns: string[];
     optionExtractPatterns: string[];
   };
+  actionItems: {
+    dedupe: boolean;
+    ignorePatterns: string[];
+  };
+  summary: {
+    nullLikePatterns: string[];
+  };
+  minutes: {
+    dedupeExactRoundResponses: boolean;
+  };
+  responseValidation: {
+    forbiddenPatterns: string[];
+  };
 }
 
 const DEFAULT_GUARDRAILS: MeetingGuardrailsConfig = {
@@ -119,6 +132,7 @@ const DEFAULT_GUARDRAILS: MeetingGuardrailsConfig = {
     deferPatterns: [
       '\\bnext agenda item\\b',
       '\\bproceed to next\\b',
+      '^\\s*proceed\\s*[.!?]*\\s*$',
       '\\bmove on\\b',
       '\\bdefer(red)?\\b',
       '\\bpostpone\\b',
@@ -127,7 +141,10 @@ const DEFAULT_GUARDRAILS: MeetingGuardrailsConfig = {
     finalDecisionPatterns: [
       '\\bthis is my decision\\b',
       '\\bi decide\\b',
+      '\\bi (?:already )?decided\\b',
+      '\\bis my decision\\b',
       '\\bdecision is\\b',
+      '\\bmy decision is\\b',
       '\\bwe choose\\b',
       '\\boption\\s+[a-z0-9]+\\b',
       '\\bproceed with option\\s+[a-z0-9]+\\b',
@@ -137,6 +154,31 @@ const DEFAULT_GUARDRAILS: MeetingGuardrailsConfig = {
     optionExtractPatterns: [
       '\\boption\\s+([a-z0-9]+)\\b',
       '\\bchoose\\s+([a-z0-9]+)\\b'
+    ]
+  },
+  actionItems: {
+    dedupe: true,
+    ignorePatterns: [
+      '^\\s*none\\s*[.!?]*\\s*$',
+      '^\\s*n/?a\\s*[.!?]*\\s*$',
+      '^\\s*no action(?:s)?\\s*[.!?]*\\s*$',
+      '^\\s*not applicable\\s*[.!?]*\\s*$',
+      '^\\s*tbd\\s*[.!?]*\\s*$'
+    ]
+  },
+  summary: {
+    nullLikePatterns: [
+      '^\\s*none\\s*[.!?]*\\s*$',
+      '^\\s*n/?a\\s*[.!?]*\\s*$',
+      '^\\s*not applicable\\s*[.!?]*\\s*$'
+    ]
+  },
+  minutes: {
+    dedupeExactRoundResponses: true
+  },
+  responseValidation: {
+    forbiddenPatterns: [
+      '\\{\\{[^}]+\\}\\}'
     ]
   }
 };

@@ -273,7 +273,7 @@ For each agenda item you can:
 
 Type any of the following phrases in the meeting chat to immediately defer the current agenda item without running another agent round:
 
-> "next agenda item" · "proceed to next" · "move on" · "defer" · "deferred" · "postpone" · "skip this item"
+> "next agenda item" · "proceed to next" · "proceed" · "move on" · "defer" · "deferred" · "postpone" · "skip this item"
 
 The moderator generates a brief closeout summary with a `DeferReason:` note, the item status changes to `deferred`, and the meeting automatically advances to the next pending item. Deferred items appear with a grey dot in the agenda sidebar and are included in the minutes with their reason.
 
@@ -845,7 +845,7 @@ The following improvements were delivered as the Meeting Productivity batch, add
 | **Agent availability check** | Bormagi pings all selected agents before creating the meeting. Offline agents trigger an inline dialog: remove them and proceed, or cancel to reconfigure |
 | **Moderator auto-assignment** | The first available online participant is automatically set as moderator. If the originally-intended moderator is offline the next available agent takes the role |
 | **Silent introduction round** | All attending agents introduce themselves at meeting start. Introductions are stored internally but not shown in the conversation view — the UI shows a `(introduction — N/M)` counter only |
-| **Deferred agenda items** | Agenda items now have a `deferred` status. Typing "next agenda item", "proceed to next", "move on", "defer", "postpone", or "skip this item" in chat immediately defers the current item (after a moderator closeout summary) and advances to the next pending item |
+| **Deferred agenda items** | Agenda items now have a `deferred` status. Typing "next agenda item", "proceed to next", "proceed", "move on", "defer", "postpone", or "skip this item" in chat immediately defers the current item (after a moderator closeout summary) and advances to the next pending item |
 | **Action Policy** | A per-agenda-item action policy can be toggled via the ⛔ button: Normal → Block all actions → Allow moderator actions only. Enforced both in agent system prompts and in the response validator |
 | **Moderator summary Status field** | Moderator summaries now include a machine-readable `Status:` field (`open` / `ready_for_human_decision` / `blocked` / `deferred` / `resolved`) that drives automatic item transitions |
 | **Off-topic guard** | Each agent's system prompt includes a topic guard anchored to the current agenda item. Off-topic responses are flagged and the agent is reprompted to stay on topic or skip |

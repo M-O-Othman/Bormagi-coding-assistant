@@ -454,6 +454,57 @@ export class MeetingPanel {
     return this.matchesAnyPattern(text, this.guardrails.humanIntent.deferPatterns);
   }
 
+  private isNullLikeSummaryValue(text: string | undefined): boolean {
+    if (!text) { return true; }
+    const trimmed = text.trim();
+    if (!trimmed) { return true; }
+    return this.matchesAnyPattern(trimmed, this.guardrails.summary.nullLikePatterns);
+  }
+
+  private normalizeActionText(text: string): string {
+    return text
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .replace(/[.!?]+$/g, '')
+      .trim();
+  }
+
+  private isIgnorableActionText(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed) { return true; }
+    if (this.matchesAnyPattern(trimmed, this.guardrails.actionItems.ignorePatterns)) { return true; }
+    return false;
+  }
+
+  private dedupeActions(actions: string[]): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of actions) {
+      const actionText = raw.trim();
+      if (this.isIgnorableActionText(actionText)) { continue; }
+      const key = this.normalizeActionText(actionText);
+      if (this.guardrails.actionItems.dedupe && seen.has(key)) { continue; }
+      seen.add(key);
+      out.push(actionText);
+    }
+    return out;
+  }
+
+  private addAutoActionItem(actionText: string): void {
+    if (!this.activeMeeting) { return; }
+    const normalized = this.normalizeActionText(actionText);
+    const exists = this.activeMeeting.actionItems.some(ai => this.normalizeActionText(ai.text) === normalized);
+    if (exists) { return; }
+
+    const ai: ActionItem = {
+      id: `ai-auto-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      text: actionText,
+      assignedTo: 'TBD'
+    };
+    this.activeMeeting.actionItems.push(ai);
+    this.post({ type: 'action_item_added', actionItem: ai });
+  }
+
   private recordFinalDecision(agendaItemId: string, decisionText: string): void {
     if (!this.activeMeeting) { return; }
     if (!this.activeMeeting.decisions) { this.activeMeeting.decisions = {}; }
@@ -503,16 +554,10 @@ export class MeetingPanel {
     const actionsBlocked = summaryItem?.actionPolicy &&
       summaryItem.actionPolicy.mode !== 'NORMAL' &&
       summaryItem.actionPolicy.mode !== 'ALLOW_ONLY_ACTIONS'; // ALLOW_ONLY_ACTIONS still allows them in summary
-    if (!actionsBlocked && summary.actions && summary.actions.length > 0) {
-      for (const actionText of summary.actions) {
-        if (!actionText.trim()) { continue; }
-        const ai: ActionItem = {
-          id: `ai-auto-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          text: actionText,
-          assignedTo: 'TBD'
-        };
-        this.activeMeeting.actionItems.push(ai);
-        this.post({ type: 'action_item_added', actionItem: ai });
+    const summaryActions = this.dedupeActions(summary.actions ?? []);
+    if (!actionsBlocked && summaryActions.length > 0) {
+      for (const actionText of summaryActions) {
+        this.addAutoActionItem(actionText);
       }
       this.storage.saveMeeting(this.activeMeeting).catch(() => { /* ignore */ });
     }
@@ -529,11 +574,11 @@ export class MeetingPanel {
       lines.push('Risks:');
       summary.risks.forEach(r => lines.push(`- ${r}`));
     }
-    if (summary.actions?.length) {
+    if (summaryActions.length) {
       lines.push('Actions:');
-      summary.actions.forEach(a => lines.push(`- ${a}`));
+      summaryActions.forEach(a => lines.push(`- ${a}`));
     }
-    if (summary.decisionPrompt) { lines.push(`\n**Decision for Human:** ${summary.decisionPrompt}`); }
+    if (!this.isNullLikeSummaryValue(summary.decisionPrompt)) { lines.push(`\n**Decision for Human:** ${summary.decisionPrompt}`); }
     if (summary.itemStatus) { lines.push(`Status: ${summary.itemStatus}`); }
     if (summary.deferReason) { lines.push(`DeferReason: ${summary.deferReason}`); }
     this.storage.appendMinutesLine(this.activeMeeting.id, lines.join('\n') + '\n').catch(() => { /* ignore */ });
