@@ -6,7 +6,7 @@ import { ConfigManager } from '../config/ConfigManager';
 import { SecretsManager } from '../config/SecretsManager';
 import { MeetingStorage } from '../meeting/MeetingStorage';
 import { MeetingOrchestrator } from '../meeting/MeetingOrchestrator';
-import { Meeting, AgendaItem, ActionItem, SummaryRound } from '../meeting/types';
+import { Meeting, AgendaItem, ActionItem, SummaryRound, ActionPolicy } from '../meeting/types';
 import type { AgentConfig } from '../types';
 
 export class MeetingPanel {
@@ -146,6 +146,19 @@ export class MeetingPanel {
         }
         break;
       }
+      case 'set_action_policy': {
+        // Human sets the action gating policy for an agenda item
+        const { agendaItemId, policy } = msg as { agendaItemId: string; policy: ActionPolicy | null };
+        if (this.activeMeeting) {
+          const item = this.activeMeeting.agenda.find(a => a.id === agendaItemId);
+          if (item) {
+            item.actionPolicy = policy ?? undefined;
+            await this.storage.saveMeeting(this.activeMeeting);
+            this.post({ type: 'action_policy_set', agendaItemId, policy });
+          }
+        }
+        break;
+      }
       case 'add_action_item': {
         const { text, assignedTo } = msg as { text: string; assignedTo: string };
         if (this.activeMeeting) {
@@ -275,7 +288,17 @@ export class MeetingPanel {
     if (!this.activeMeeting || this.runningRound) { return; }
 
     const item = this.activeMeeting.agenda.find(a => a.id === agendaItemId);
-    if (!item || item.status === 'resolved') { return; }
+    if (!item || item.status === 'resolved' || item.status === 'deferred') { return; }
+
+    // Detect "next / defer / proceed" intent — immediately defer this item without running agents
+    const deferIntent = /\b(next agenda item|proceed to next|move on|defer(red)?|postpone|skip this item)\b/i.test(userMessage ?? '');
+    if (deferIntent) {
+      item.status = 'deferred';
+      item.decision = userMessage;
+      await this.storage.saveMeeting(this.activeMeeting);
+      this.post({ type: 'item_deferred', agendaItemId, reason: userMessage });
+      return;
+    }
 
     // Parse @mentions to route question to specific agent(s)
     const targetAgentIds = userMessage ? this.parseUserMentions(userMessage) : undefined;
@@ -342,6 +365,23 @@ export class MeetingPanel {
         (aid, summary: SummaryRound) => {
           this.post({ type: 'round_summary', agendaItemId: aid, summary });
 
+          // Auto-transition item based on machine-readable status from moderator
+          if (this.activeMeeting && summary.itemStatus) {
+            const summaryItem = this.activeMeeting.agenda.find(a => a.id === aid);
+            if (summaryItem) {
+              if (summary.itemStatus === 'deferred') {
+                summaryItem.status = 'deferred';
+                this.post({ type: 'item_deferred', agendaItemId: aid, reason: summary.deferReason });
+                this.storage.saveMeeting(this.activeMeeting!).catch(() => { /* ignore */ });
+              } else if (summary.itemStatus === 'resolved') {
+                summaryItem.status = 'resolved';
+                summaryItem.decision = summary.recommendation;
+                this.post({ type: 'item_resolved', agendaItemId: aid, decision: summary.recommendation });
+                this.storage.saveMeeting(this.activeMeeting!).catch(() => { /* ignore */ });
+              }
+            }
+          }
+
           // Auto-add ACTION items from summary into the action items list
           if (summary.actions && summary.actions.length > 0 && this.activeMeeting) {
             for (const actionText of summary.actions) {
@@ -374,6 +414,7 @@ export class MeetingPanel {
             summary.actions.forEach(a => lines.push(`- ${a}`));
           }
           if (summary.decisionPrompt) { lines.push(`\n**Decision for Human:** ${summary.decisionPrompt}`); }
+          if (summary.itemStatus) { lines.push(`Status: ${summary.itemStatus}`); }
           this.storage.appendMinutesLine(this.activeMeeting!.id, lines.join('\n') + '\n').catch(() => { /* ignore */ });
         },
         // onOpenQuestion

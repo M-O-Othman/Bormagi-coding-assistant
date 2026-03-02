@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Meeting, MeetingRound, SummaryRound, OutputTag, InterruptRequest } from './types';
+import { Meeting, AgendaItem, MeetingRound, SummaryRound, OutputTag, InterruptRequest, ActionPolicy } from './types';
 import { MeetingStorage } from './MeetingStorage';
 import { AgentManager } from '../agents/AgentManager';
 import { ConfigManager } from '../config/ConfigManager';
@@ -194,7 +194,7 @@ export class MeetingOrchestrator {
   /** Parse moderator summary into structured SummaryRound fields. */
   static parseSummaryFields(raw: string, agendaItemId: string): SummaryRound {
     const extractSection = (label: string): string | undefined => {
-      const re = new RegExp(`${label}[:\\s]*([\\s\\S]*?)(?=\\n(?:Problem|Options|Recommendation|Risks|Actions|OpenQuestions|DecisionPromptForHuman|$))`, 'i');
+      const re = new RegExp(`${label}[:\\s]*([\\s\\S]*?)(?=\\n(?:Problem|Options|Recommendation|Risks|Actions|OpenQuestions|DecisionPromptForHuman|Status|DeferReason|Blocker|$))`, 'i');
       const m = raw.match(re);
       return m?.[1]?.trim() || undefined;
     };
@@ -207,6 +207,15 @@ export class MeetingOrchestrator {
         .filter(Boolean);
     };
 
+    const extractStatus = (): SummaryRound['itemStatus'] => {
+      const m = raw.match(/^Status:\s*(open|ready_for_human_decision|blocked|deferred|resolved)/im);
+      const val = m?.[1]?.toLowerCase();
+      if (val === 'open' || val === 'ready_for_human_decision' || val === 'blocked' || val === 'deferred' || val === 'resolved') {
+        return val;
+      }
+      return 'open';
+    };
+
     return {
       agendaItemId,
       summary: raw,
@@ -217,6 +226,9 @@ export class MeetingOrchestrator {
       actions: extractBullets('Actions'),
       openQuestionIds: extractBullets('OpenQuestions'),
       decisionPrompt: extractSection('DecisionPromptForHuman') ?? extractSection('Decision'),
+      itemStatus: extractStatus(),
+      deferReason: extractSection('DeferReason'),
+      blocker: extractSection('Blocker'),
       timestamp: new Date().toISOString()
     };
   }
@@ -262,7 +274,7 @@ export class MeetingOrchestrator {
     return lines.join('\n');
   }
 
-  private buildStrictMeetingRules(agentId: string, meeting: Meeting): string {
+  private buildStrictMeetingRules(agentId: string, meeting: Meeting, item?: AgendaItem): string {
     const isModerator = agentId === (meeting.moderatorId ?? meeting.participants[0]);
 
     const defaultRules = `MEETING RULES (mandatory — violations will be rejected):
@@ -320,14 +332,33 @@ export class MeetingOrchestrator {
   OpenQuestions:
   - OQ-xxxxx: ...
   DecisionPromptForHuman: <explicit choice request for the human>
+  Status: open | ready_for_human_decision | blocked | deferred | resolved
+  DeferReason: <only if Status is deferred>
+  Blocker: <only if Status is blocked>
+- Status values: "open" = more discussion needed; "ready_for_human_decision" = enough info, human must choose; "blocked" = missing info blocks progress; "deferred" = postponed; "resolved" = decided.
 - If discussion is looping, stop it: push unknowns to open questions and produce the decision prompt.`;
       rules += '\n\n' + this.loadConfig('moderator-instructions.md', defaultMod);
+    }
+
+    // ACTION POLICY rule — injected when item has a non-NORMAL policy
+    if (item?.actionPolicy?.mode === 'BLOCK_ALL_ACTIONS') {
+      rules += '\n\nACTION POLICY (hard rule): ACTION tag is BLOCKED for this agenda item. Do NOT emit ACTION:. Use RISK:, VALIDATION:, OPEN_QUESTION:, or [SKIP]: only.';
+    } else if (item?.actionPolicy?.mode === 'ALLOW_ONLY') {
+      const allowed = item.actionPolicy.allowed?.map(a => a.agentId ? `${a.tag} (${a.agentId} only)` : a.tag).join(', ') ?? 'none';
+      rules += `\n\nACTION POLICY (hard rule): Only these outputs are allowed to create actions: ${allowed}. All other ACTION: outputs must be rewritten to [SKIP]: or RISK:.`;
+    }
+
+    // TOPIC GUARD — keep agents focused on the current agenda item
+    if (item) {
+      rules += `\n\nTOPIC GUARD: You are discussing ONLY agenda item: "${item.text}". ` +
+        `If your response is primarily about a different agenda item or a previously deferred topic, output:\n` +
+        `[SKIP]: off-topic — not relevant to the current agenda item.`;
     }
 
     return rules;
   }
 
-  private buildSystemPrompt(agentConfig: AgentConfig, meeting: Meeting): string {
+  private buildSystemPrompt(agentConfig: AgentConfig, meeting: Meeting, item?: AgendaItem): string {
     const systemPromptFiles = agentConfig.system_prompt_files ?? [];
     let systemPrompt = `You are ${agentConfig.name}. You are participating in a strict round-robin meeting titled: "${meeting.title}".\n`;
     for (const spFile of systemPromptFiles) {
@@ -338,7 +369,7 @@ export class MeetingOrchestrator {
     }
 
     systemPrompt += '\n\n' + this.buildAgentAwarenessContext(meeting);
-    systemPrompt += this.buildStrictMeetingRules(agentConfig.id, meeting);
+    systemPrompt += this.buildStrictMeetingRules(agentConfig.id, meeting, item);
 
     return systemPrompt;
   }
@@ -405,26 +436,38 @@ export class MeetingOrchestrator {
   }
 
   /**
-   * Rewrite gate: if response has no valid tag, contains banned language, or contains
-   * code-change claims (forbidden in planning mode), reprompt once.
-   * If still invalid after one reprompt, force to [SKIP].
+   * Rewrite gate: if response has no valid tag, contains banned language, contains
+   * code-change claims (forbidden in planning mode), or violates the item's ActionPolicy,
+   * reprompt once. If still invalid after one reprompt, force to [SKIP].
    */
   private async rewriteGate(
     provider: ReturnType<typeof ProviderFactory.create>,
     systemPrompt: string,
-    raw: string
+    raw: string,
+    actionPolicy?: ActionPolicy
   ): Promise<{ response: string; tag: OutputTag; violations: string[] }> {
     let tag = this.parseTag(raw);
     const hasBanned = this.containsBannedLanguage(raw);
     const codeChangeClaim = this.containsCodeChangeClaim(raw);
 
-    if (tag && !hasBanned && !codeChangeClaim) {
+    // ACTION POLICY enforcement — check before early return
+    let actionPolicyViolation: string | null = null;
+    if (actionPolicy && tag === 'ACTION') {
+      if (actionPolicy.mode === 'BLOCK_ALL_ACTIONS') {
+        actionPolicyViolation = 'ACTION tag is blocked for this agenda item. Use RISK:, VALIDATION:, OPEN_QUESTION:, or [SKIP]: instead.';
+        tag = null; // force rewrite path
+      }
+      // ALLOW_ONLY: currently all ACTION outputs are allowed; agentId filtering would go here
+    }
+
+    if (tag && !hasBanned && !codeChangeClaim && !actionPolicyViolation) {
       return { response: raw, tag, violations: [] };
     }
 
     // Build the list of issues to report in the rewrite prompt
     const issues: string[] = [];
-    if (!tag) { issues.push('Your response does not start with a valid tag.'); }
+    if (!tag && !actionPolicyViolation) { issues.push('Your response does not start with a valid tag.'); }
+    if (actionPolicyViolation) { issues.push(`ACTION POLICY VIOLATION: ${actionPolicyViolation}`); }
     if (hasBanned) { issues.push('Your response contains banned filler language (greetings, thanks, paraphrasing).'); }
     if (codeChangeClaim) {
       issues.push(
@@ -435,7 +478,7 @@ export class MeetingOrchestrator {
       );
     }
 
-    const defaultRewritePrompt = `REWRITE REQUIRED: {{ISSUES}}\n\nRewrite your message to comply with meeting rules:\n- Start with exactly one tag: RECOMMENDATION: | RISK: | OPEN_QUESTION: | ACTION: | VALIDATION: | CLARIFICATION_FOR_HUMAN: | [SKIP]:\n- No greetings, thanks, or filler language.\n- No past-tense completion claims — use future-tense plans.\n- Keep only impactful content. If you have nothing impactful, respond with [SKIP]: <reason>`;
+    const defaultRewritePrompt = `REWRITE REQUIRED: {{ISSUES}}\n\nRewrite your message to comply with meeting rules:\n- Start with exactly one tag: RECOMMENDATION: | RISK: | OPEN_QUESTION: | ACTION: | VALIDATION: | CLARIFICATION_FOR_HUMAN: | [SKIP]:\n- No ACTION: if action policy is BLOCK_ALL_ACTIONS — use RISK:, VALIDATION:, OPEN_QUESTION:, or [SKIP]: instead.\n- No greetings, thanks, or filler language.\n- No past-tense completion claims — use future-tense plans.\n- Keep only impactful content. If you have nothing impactful, respond with [SKIP]: <reason>`;
     const rewriteTemplate = this.loadConfig('rewrite-prompt.md', defaultRewritePrompt);
     const rewriteUserContent = rewriteTemplate.replace('{{ISSUES}}', issues.join('\n'));
 
@@ -448,11 +491,17 @@ export class MeetingOrchestrator {
     const rewritten = await this.streamResponse(provider, rewriteMessages);
     tag = this.parseTag(rewritten);
 
-    // Check the rewritten response still doesn't sneak in a code-change claim
+    // Check the rewritten response still doesn't sneak in a code-change claim or action policy violation
     const rewrittenCodeClaim = this.containsCodeChangeClaim(rewritten);
+    const rewrittenTag = this.parseTag(rewritten);
     const violations: string[] = [];
     if (codeChangeClaim) { violations.push(`PLANNING_MODE: ${codeChangeClaim}`); }
     if (rewrittenCodeClaim) { violations.push(`PLANNING_MODE_PERSISTS: ${rewrittenCodeClaim}`); }
+    if (actionPolicyViolation) { violations.push(`ACTION_POLICY: ${actionPolicyViolation}`); }
+    // If rewrite still has ACTION when blocked, force SKIP
+    if (actionPolicy?.mode === 'BLOCK_ALL_ACTIONS' && rewrittenTag === 'ACTION') {
+      return { response: `[SKIP]: Action creation not allowed for this agenda item.`, tag: 'SKIP', violations };
+    }
 
     if (tag) {
       return { response: rewritten, tag, violations };
@@ -511,7 +560,7 @@ export class MeetingOrchestrator {
       if (!setup) { continue; }
       const { provider, agentConfig } = setup;
 
-      const systemPrompt = this.buildSystemPrompt(agentConfig, meeting);
+      const systemPrompt = this.buildSystemPrompt(agentConfig, meeting, item);
 
       // Build conversation
       const messages: ChatMessage[] = [
@@ -563,8 +612,8 @@ export class MeetingOrchestrator {
         onDelta(agendaItemId, agentId, delta);
       });
 
-      // Rewrite gate — enforces tags, bans talkshop language, and blocks code-change claims (planning mode)
-      const { response: validated, tag } = await this.rewriteGate(provider, systemPrompt, fullResponse);
+      // Rewrite gate — enforces tags, bans talkshop language, blocks code-change claims, and enforces ActionPolicy
+      const { response: validated, tag } = await this.rewriteGate(provider, systemPrompt, fullResponse, item.actionPolicy);
       if (validated !== fullResponse) {
         fullResponse = validated;
       }
@@ -682,7 +731,8 @@ export class MeetingOrchestrator {
     if (!setup) { return; }
     const { provider, agentConfig } = setup;
 
-    const systemPrompt = this.buildSystemPrompt(agentConfig, meeting);
+    const interruptItem = meeting.agenda.find(a => a.id === agendaItemId);
+    const systemPrompt = this.buildSystemPrompt(agentConfig, meeting, interruptItem);
     const callerName = this.agentManager.getAgent(callerAgentId)?.name ?? callerAgentId;
 
     const defaultInterrupt = `{{CALLER_NAME}} has directed a question to you via INTERRUPT_REQUEST.\n\nQuestion: {{QUESTION}}\n{{CONTEXT_LINE}}\n\nRespond with exactly ONE tag (VALIDATION: | RECOMMENDATION: | OPEN_QUESTION: | [SKIP]:).\nAnswer ONLY the asked question. Be short and decisive. Do NOT introduce new topics.`;
@@ -701,8 +751,8 @@ export class MeetingOrchestrator {
       onInterruptDelta?.(agendaItemId, targetAgentId, callerAgentId, delta);
     });
 
-    // Rewrite gate for interrupt too
-    const { response: validated, tag } = await this.rewriteGate(provider, systemPrompt, fullResponse);
+    // Rewrite gate for interrupt too (interrupts respect the item's action policy)
+    const { response: validated, tag } = await this.rewriteGate(provider, systemPrompt, fullResponse, interruptItem?.actionPolicy);
     if (validated !== fullResponse) { fullResponse = validated; }
 
     const round: MeetingRound = {
@@ -759,7 +809,7 @@ export class MeetingOrchestrator {
     );
     const oqList = itemOqIds.length > 0 ? itemOqIds.join(', ') : 'None';
 
-    const defaultSummary = `You are {{MODERATOR_NAME}}, the meeting moderator.\nProduce a structured summary. No filler language. No code blocks.\nYou MUST use this EXACT format:\n\nMODERATOR_SUMMARY:\nProblem: <1 line>\nOptions:\n- A: ...\n- B: ...\nRecommendation: <summarized recommendation, if any>\nRisks:\n- ...\nActions:\n- ...\nOpenQuestions:\n- {{OPEN_QUESTION_IDS}}\nDecisionPromptForHuman: <explicit choice request>`;
+    const defaultSummary = `You are {{MODERATOR_NAME}}, the meeting moderator.\nProduce a structured summary. No filler language. No code blocks. No repeated lines.\nYou MUST use this EXACT format:\n\nMODERATOR_SUMMARY:\nProblem: <1 line>\nOptions:\n- A: ...\n- B: ...\nRecommendation: <summarized recommendation, if any>\nRisks:\n- ...\nActions:\n- ...\nOpenQuestions:\n- {{OPEN_QUESTION_IDS}}\nDecisionPromptForHuman: <explicit choice request>\nStatus: open | ready_for_human_decision | blocked | deferred | resolved\nDeferReason: <only if Status is deferred — brief reason>\nBlocker: <only if Status is blocked — what is missing>\n\nStatus guide: "open" = more discussion needed; "ready_for_human_decision" = clear options exist, human must choose; "blocked" = key info missing; "deferred" = postponed to another meeting; "resolved" = human has decided.`;
     const template = this.loadConfig('summary-prompt.md', defaultSummary);
     const systemContent = template
       .replace(/\{\{MODERATOR_NAME\}\}/g, agentConfig.name)
@@ -775,7 +825,23 @@ export class MeetingOrchestrator {
       }
     ];
 
-    const raw = await this.streamResponse(provider, messages);
+    let raw = await this.streamResponse(provider, messages);
+
+    // Duplicate-line validator: if summary repeats long lines, reprompt once
+    const hasDuplicateLines = (text: string): boolean => {
+      const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 40);
+      return lines.length !== new Set(lines).size;
+    };
+
+    if (hasDuplicateLines(raw)) {
+      const repromptMessages: ChatMessage[] = [
+        ...messages,
+        { role: 'assistant', content: raw },
+        { role: 'user', content: 'REGENERATE: Your summary contains repeated lines. Produce a clean summary with no duplicate content.' }
+      ];
+      raw = await this.streamResponse(provider, repromptMessages);
+    }
+
     const summary = MeetingOrchestrator.parseSummaryFields(raw, agendaItemId);
 
     if (!meeting.summaryRounds) { meeting.summaryRounds = []; }

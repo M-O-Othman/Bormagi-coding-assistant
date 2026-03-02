@@ -276,6 +276,10 @@
       background: var(--success);
     }
 
+    .dot-deferred {
+      background: var(--vscode-descriptionForeground, #888);
+    }
+
     /* chat feed */
     .chat-area {
       flex: 1;
@@ -1024,6 +1028,8 @@
               <select class="agenda-sel" id="active-item-sel" title="Switch agenda item"></select>
               <button class="btn btn-outline btn-sm" onclick="toggleResolvePanel()" id="resolve-btn">✓ Resolve</button>
               <button class="btn btn-outline btn-sm" onclick="toggleQuickActionPanel()" id="quick-action-btn">+ Action</button>
+              <button class="btn btn-outline btn-sm" onclick="toggleBlockActions()" id="block-actions-btn" title="Block/unblock agents from creating new actions">⛔ Block actions</button>
+              <span id="action-policy-badge" style="display:none;font-size:11px;padding:2px 6px;background:var(--warn);border-radius:3px;"></span>
               <button class="btn btn-danger btn-sm" onclick="endMeeting()" id="end-meeting-btn">■ End</button>
             </div>
           </div>
@@ -1137,7 +1143,9 @@
         case 'round_complete': onRoundComplete(msg.agendaItemId); break;
         case 'round_error': onRoundError(msg.agendaItemId, msg.error); break;
         case 'item_resolved': onItemResolved(msg.agendaItemId, msg.decision); break;
+        case 'item_deferred': onItemDeferred(msg.agendaItemId, msg.reason); break;
         case 'item_blocked_for_human': onItemBlockedForHuman(msg.agendaItemId); break;
+        case 'action_policy_set': onActionPolicySet(msg.agendaItemId, msg.policy); break;
         case 'action_item_added': onActionItemAdded(msg.actionItem); break;
         case 'minutes_ready': onMinutesReady(msg.markdown); break;
         case 'meeting_stopped': onMeetingStopped(msg.minutes); break;
@@ -1224,10 +1232,12 @@
       if (!meeting) { return; }
       const list = document.getElementById('agenda-list');
       list.innerHTML = meeting.agenda.map(item => {
-        const dotClass = item.status === 'resolved' ? 'dot-resolved' : item.status === 'discussing' ? 'dot-discussing' : 'dot-pending';
-        return `<button class="agenda-item-btn${activeItemId === item.id ? ' active' : ''}${item.status === 'resolved' ? ' resolved' : ''}"
+        const dotClass = item.status === 'resolved' ? 'dot-resolved' : item.status === 'deferred' ? 'dot-deferred' : item.status === 'discussing' ? 'dot-discussing' : 'dot-pending';
+        const resolvedClass = (item.status === 'resolved' || item.status === 'deferred') ? ' resolved' : '';
+        const policyBadge = item.actionPolicy?.mode === 'BLOCK_ALL_ACTIONS' ? ' <span title="Actions blocked" style="font-size:10px;opacity:0.7">⛔</span>' : item.actionPolicy?.mode === 'ALLOW_ONLY' ? ' <span title="Limited actions" style="font-size:10px;opacity:0.7">⚠</span>' : '';
+        return `<button class="agenda-item-btn${activeItemId === item.id ? ' active' : ''}${resolvedClass}"
       onclick="setActiveItem('${esc(item.id)}')" id="abtn-${esc(item.id)}">
-      <span class="item-status-dot ${dotClass}"></span>${esc(item.text)}
+      <span class="item-status-dot ${dotClass}"></span>${esc(item.text)}${policyBadge}
     </button>`;
       }).join('');
     }
@@ -1250,11 +1260,17 @@
       header.textContent = item.text;
       feed.appendChild(header);
 
-      // Show resolved notice if applicable
+      // Show resolved/deferred notice if applicable
       if (item.status === 'resolved' && item.decision) {
         const notice = document.createElement('div');
         notice.className = 'resolved-notice';
         notice.innerHTML = `<strong>Resolved.</strong> ${esc(item.decision)}`;
+        feed.appendChild(notice);
+      } else if (item.status === 'deferred') {
+        const notice = document.createElement('div');
+        notice.className = 'resolved-notice';
+        notice.style.borderLeftColor = 'var(--vscode-descriptionForeground, #888)';
+        notice.innerHTML = `<strong>Deferred.</strong> ${item.decision ? esc(item.decision) : 'Postponed to a later meeting.'}`;
         feed.appendChild(notice);
       }
 
@@ -1520,7 +1536,7 @@
       // Update agenda item status to 'discussing' (still active)
       if (meeting) {
         const item = meeting.agenda.find(a => a.id === agendaItemId);
-        if (item && item.status !== 'resolved') { item.status = 'discussing'; }
+        if (item && item.status !== 'resolved' && item.status !== 'deferred') { item.status = 'discussing'; }
       }
       renderAgendaSidebar();
     }
@@ -1551,9 +1567,9 @@
       }
       renderAgendaSidebar();
 
-      // Auto-advance to the next unresolved agenda item
+      // Auto-advance to the next pending/discussing agenda item (skip resolved and deferred)
       if (!meetingEnded && meeting) {
-        const next = meeting.agenda.find(a => a.id !== agendaItemId && a.status !== 'resolved');
+        const next = meeting.agenda.find(a => a.id !== agendaItemId && (a.status === 'pending' || a.status === 'discussing'));
         if (next) {
           setTimeout(() => {
             setActiveItem(next.id);
@@ -1563,6 +1579,62 @@
             }
           }, 700);
         }
+      }
+    }
+
+    // ── Item deferred handler ──────────────────────────────────
+    function onItemDeferred(agendaItemId, reason) {
+      if (!meeting) { return; }
+      const item = meeting.agenda.find(a => a.id === agendaItemId);
+      if (item) { item.status = 'deferred'; item.blockedByHuman = false; }
+
+      if (activeItemId === agendaItemId) {
+        const feed = document.getElementById('chat-feed');
+        const notice = document.createElement('div');
+        notice.className = 'resolved-notice';
+        notice.style.borderLeftColor = 'var(--vscode-descriptionForeground, #888)';
+        notice.innerHTML = `<strong>Deferred.</strong> ${reason ? esc(reason) : 'Postponed to a later meeting.'}`;
+        feed.appendChild(notice);
+        scrollToBottom(feed);
+      }
+      renderAgendaSidebar();
+
+      // Auto-advance to the next pending/discussing item
+      if (!meetingEnded && meeting) {
+        const next = meeting.agenda.find(a => a.id !== agendaItemId && (a.status === 'pending' || a.status === 'discussing'));
+        if (next) {
+          setTimeout(() => {
+            setActiveItem(next.id);
+            if (next.status === 'pending') {
+              vscode.postMessage({ type: 'run_round', agendaItemId: next.id });
+            }
+          }, 700);
+        }
+      }
+    }
+
+    // ── Action policy set handler ──────────────────────────────
+    function onActionPolicySet(agendaItemId, policy) {
+      if (!meeting) { return; }
+      const item = meeting.agenda.find(a => a.id === agendaItemId);
+      if (item) { item.actionPolicy = policy; }
+      renderAgendaSidebar();
+      // Update badge in the controls area if this is the active item
+      updateActionPolicyBadge(agendaItemId, policy);
+    }
+
+    function updateActionPolicyBadge(agendaItemId, policy) {
+      const badge = document.getElementById('action-policy-badge');
+      if (!badge) { return; }
+      if (!policy || policy.mode === 'NORMAL') {
+        badge.textContent = '';
+        badge.style.display = 'none';
+      } else if (policy.mode === 'BLOCK_ALL_ACTIONS') {
+        badge.textContent = '⛔ Actions blocked';
+        badge.style.display = 'inline-block';
+      } else if (policy.mode === 'ALLOW_ONLY') {
+        badge.textContent = '⚠ Limited actions';
+        badge.style.display = 'inline-block';
       }
     }
 
@@ -1743,6 +1815,21 @@
         hideMentionDropdown();
       }
     });
+
+    // ── Block / unblock actions ───────────────────────────────
+    function toggleBlockActions() {
+      if (!activeItemId || !meeting) { return; }
+      const item = meeting.agenda.find(a => a.id === activeItemId);
+      if (!item) { return; }
+      const isBlocked = item.actionPolicy?.mode === 'BLOCK_ALL_ACTIONS';
+      const newPolicy = isBlocked ? null : { mode: 'BLOCK_ALL_ACTIONS' };
+      vscode.postMessage({ type: 'set_action_policy', agendaItemId: activeItemId, policy: newPolicy });
+      // Optimistically update local state
+      item.actionPolicy = newPolicy || undefined;
+      updateActionPolicyBadge(activeItemId, newPolicy);
+      const btn = document.getElementById('block-actions-btn');
+      if (btn) { btn.textContent = isBlocked ? '⛔ Block actions' : '✅ Unblock actions'; }
+    }
 
     // ── Resolve item (inline panel) ───────────────────────────
     function toggleResolvePanel() {

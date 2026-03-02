@@ -35,16 +35,26 @@ export interface Meeting {
 export interface AgendaItem {
   id: string;
   text: string;
-  status: 'pending' | 'discussing' | 'resolved';
+  status: 'pending' | 'discussing' | 'resolved' | 'deferred';
   decision?: string;
   /** Set when a CLARIFICATION_FOR_HUMAN response is received — blocks further agent turns until human responds. */
   blockedByHuman?: boolean;
+  /** Action gating policy for this item. Undefined = NORMAL (all tags allowed). */
+  actionPolicy?: ActionPolicy;
 }
 
 export interface HumanDecision {
   option: string;
   decidedByHumanAt: string;
   notes?: string;
+}
+
+export type ActionPolicyMode = 'NORMAL' | 'BLOCK_ALL_ACTIONS' | 'ALLOW_ONLY';
+
+export interface ActionPolicy {
+  mode: ActionPolicyMode;
+  /** Only for ALLOW_ONLY: whitelisted outputs by tag, optional agentId */
+  allowed?: { tag: OutputTag; agentId?: string }[];
 }
 
 export interface MeetingRound {
@@ -82,6 +92,10 @@ export interface SummaryRound {
   actions?: string[];
   openQuestionIds?: string[];
   decisionPrompt?: string;
+  /** Machine-readable status emitted by the moderator for this round. */
+  itemStatus?: 'open' | 'ready_for_human_decision' | 'blocked' | 'deferred' | 'resolved';
+  deferReason?: string;
+  blocker?: string;
   timestamp: string;
 }
 
