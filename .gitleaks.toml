@@ -8,12 +8,14 @@ title = "Bormagi Gitleaks Config"
 useDefault = true
 
 [allowlist]
-description = "Allowlist for known false positives in test fixtures and documentation"
+description = "Allowlist for known false positives in test fixtures, documentation, and vendored assets"
 
-# Ignore test fixture files that contain intentionally fake keys for testing
+# Ignore test fixture files that contain intentionally fake keys for testing,
+# and vendored/base64-encoded library fallbacks (e.g. marked.js UMD bundle)
 paths = [
   '''src/workflow/tests/''',
   '''src/audit/tests/''',
+  '''src/chat/markedFallback\.ts''',
   '''docs/''',
   '''PUBLISHING\.md''',
 ]
@@ -22,4 +24,5 @@ paths = [
 regexes = [
   '''sk-\.\.\.|your-api-key-here|INSERT_API_KEY|placeholder|EXAMPLE_KEY|<your.*key>''',
   '''AIzaSyExample|ghp_ExampleToken''',
+  '''MARKED_B64''',
 ]
