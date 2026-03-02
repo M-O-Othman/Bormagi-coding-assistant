@@ -1,0 +1,115 @@
+{
+  "decisionLock": {
+    "enabled": true,
+    "allowedTagsAfterFinalDecision": ["ACTION", "VALIDATION", "SKIP"],
+    "recommendationMarkers": [
+      "Options:",
+      "Recommended option",
+      "What the human must decide",
+      "DecisionPromptForHuman",
+      "Tradeoffs"
+    ]
+  },
+  "skip": {
+    "enforceExclusive": true,
+    "forbiddenSubTags": [
+      "RECOMMENDATION",
+      "RISK",
+      "OPEN_QUESTION",
+      "ACTION",
+      "VALIDATION",
+      "CLARIFICATION_FOR_HUMAN"
+    ]
+  },
+  "topicGuard": {
+    "minKeywordLength": 5,
+    "offTopicMargin": 2,
+    "minOtherHits": 2,
+    "defaultAllowedDimensions": ["content", "process", "automation", "quality"],
+    "dimensionKeywords": {
+      "content": [
+        "requirement",
+        "feature",
+        "interface",
+        "module",
+        "component",
+        "service",
+        "api",
+        "schema",
+        "architecture",
+        "design",
+        "bug",
+        "documentation",
+        "specification"
+      ],
+      "process": [
+        "workflow",
+        "process",
+        "step",
+        "owner",
+        "responsibility",
+        "plan",
+        "timeline",
+        "milestone",
+        "dependency",
+        "approval",
+        "review",
+        "acceptance",
+        "handoff",
+        "blocker"
+      ],
+      "automation": [
+        "automate",
+        "automation",
+        "script",
+        "pipeline",
+        "ci",
+        "cd",
+        "job",
+        "runner",
+        "playwright",
+        "cypress",
+        "integration",
+        "scheduled"
+      ],
+      "quality": [
+        "quality",
+        "accuracy",
+        "consistency",
+        "coverage",
+        "validation",
+        "verification",
+        "regression",
+        "testability",
+        "reliability",
+        "performance",
+        "security",
+        "usability"
+      ]
+    }
+  },
+  "humanIntent": {
+    "deferPatterns": [
+      "\\bnext agenda item\\b",
+      "\\bproceed to next\\b",
+      "\\bmove on\\b",
+      "\\bdefer(red)?\\b",
+      "\\bpostpone\\b",
+      "\\bskip this item\\b"
+    ],
+    "finalDecisionPatterns": [
+      "\\bthis is my decision\\b",
+      "\\bi decide\\b",
+      "\\bdecision is\\b",
+      "\\bwe choose\\b",
+      "\\boption\\s+[a-z0-9]+\\b",
+      "\\bproceed with option\\s+[a-z0-9]+\\b",
+      "\\bdo\\s+not\\s+suggest\\s+(?:these|those|the)?\\s*options?\\s+anymore\\b",
+      "\\bdecision\\s+is\\s+final\\b"
+    ],
+    "optionExtractPatterns": [
+      "\\boption\\s+([a-z0-9]+)\\b",
+      "\\bchoose\\s+([a-z0-9]+)\\b"
+    ]
+  }
+}

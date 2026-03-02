@@ -24,6 +24,8 @@ export interface Meeting {
   oqCounter?: number;
   /** Human decisions keyed by agendaItemId — required before agents can mark anything Accepted/Approved. */
   decisions?: Record<string, HumanDecision>;
+  /** Human chat messages sent during the meeting, in order. */
+  humanTurns?: HumanTurn[];
   /**
    * Execution mode for this meeting.
    * "planning" (default): agents produce plans/recommendations only — no code changes allowed.
@@ -37,6 +39,8 @@ export interface AgendaItem {
   text: string;
   status: 'pending' | 'discussing' | 'resolved' | 'deferred';
   decision?: string;
+  /** Optional topic dimensions allowed for this item (e.g. content/process/automation/quality). */
+  allowedDimensions?: string[];
   /** Reason captured when the item was deferred. */
   deferReason?: string;
   /** Set when a CLARIFICATION_FOR_HUMAN response is received — blocks further agent turns until human responds. */
@@ -47,7 +51,9 @@ export interface AgendaItem {
 
 export interface HumanDecision {
   option: string;
+  chosenOption?: string;
   decidedByHumanAt: string;
+  isFinal?: boolean;
   notes?: string;
 }
 
@@ -80,6 +86,8 @@ export interface MeetingRound {
   triggeredBy?: string;
   /** Interrupt requests parsed from this turn's response. */
   interruptRequests?: InterruptRequest[];
+  /** True for the silent self-introduction round at meeting start. */
+  isIntroduction?: boolean;
 }
 
 export interface InterruptRequest {
@@ -111,4 +119,10 @@ export interface ActionItem {
   id: string;
   text: string;
   assignedTo: string;              // agent ID
+}
+
+export interface HumanTurn {
+  agendaItemId: string;
+  message: string;
+  timestamp: string;
 }

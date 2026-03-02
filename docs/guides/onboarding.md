@@ -250,6 +250,7 @@ bormagi-extension/
 │   ├── config/          ConfigManager (reads/writes .bormagi/ config files)
 │   ├── mcp/             MCPHost, built-in MCP servers (filesystem, git, terminal, gcp)
 │   ├── meeting/         MeetingOrchestrator, MeetingStorage, types
+│   │                    See "Meeting module" note below
 │   ├── providers/       ProviderFactory, OpenAI / Anthropic / Gemini / DeepSeek / Qwen adapters
 │   ├── skills/          SkillManager (loads .claude/skills/)
 │   ├── ui/              MeetingPanel, AgentSettingsPanel
@@ -349,6 +350,44 @@ bormagi-extension/
 5. **Lint** — run `npm run lint`.
 6. **Commit** with a descriptive message.
 7. **Open a PR** — CI runs automatically. All gates must pass before review.
+
+### Meeting module architecture
+
+The meeting module (`src/meeting/`) consists of three files:
+
+| File | Responsibility |
+|---|---|
+| `types.ts` | All shared interfaces: `Meeting`, `AgendaItem`, `MeetingRound`, `SummaryRound`, `ActionPolicy`, `InterruptRequest` |
+| `MeetingStorage.ts` | Read/write meeting JSON to `.bormagi/virtual-meetings/<id>/meeting.json` |
+| `MeetingOrchestrator.ts` | All meeting runtime logic |
+
+**Key orchestrator methods:**
+
+| Method | What it does |
+|---|---|
+| `checkAgentsAvailability(ids)` | Calls `setupProvider()` per agent and returns `{ online, offline }` arrays |
+| `runIntroductionRound(meeting, cb)` | Silent intro loop; stores rounds with `isIntroduction: true` |
+| `runRound(meeting, agendaItemId, opts)` | One full round-robin turn for a given agenda item. Calls `rewriteGate` and `checkOffTopic` per agent |
+| `rewriteGate(provider, systemPrompt, raw, policy?, agentId?)` | Validates the raw agent response for banned tags, code-change claims, and `ActionPolicy` violations; reprompts once if needed |
+| `checkOffTopic(response, agendaItemId, meeting)` | Keyword heuristic that returns a violation string if the response is more about a different agenda item |
+| `buildStrictMeetingRules(agentId, meeting, item?)` | Generates the rules section of the system prompt. Injects TOPIC GUARD, ACTION POLICY, and INTERRUPT POLICY when `item` is provided |
+| `generateStructuredSummary(meeting, agendaItemId, closeoutHint?)` | Runs the moderator to produce a structured summary. `closeoutHint` forces a `deferred` status with a reason (used for human defer-intent) |
+| `parseSummaryFields(raw)` | Regex-extracts all structured fields from a moderator summary including `itemStatus`, `deferReason`, and `blocker` |
+
+**ActionPolicy modes** (`src/meeting/types.ts`):
+
+| Mode | Behaviour |
+|---|---|
+| `NORMAL` | No restriction |
+| `BLOCK_ALL_ACTIONS` | All agents blocked from emitting `ACTION:` |
+| `ALLOW_ONLY_ACTIONS` | Only whitelisted agent IDs may emit `ACTION:` |
+| `ALLOW_ONLY_TAGS` | All agents restricted to a specific set of output tags |
+
+**SummaryRound.itemStatus values** (machine-readable, drives UI transitions):
+
+`open` · `ready_for_human_decision` · `blocked` · `deferred` · `resolved`
+
+---
 
 ### Adding a new agent
 
@@ -486,4 +525,4 @@ The TypeScript exhaustive-check in `ProviderFactory` (`const exhaustiveCheck: ne
 
 ---
 
-*Last updated: 2026-03-01*
+*Last updated: 2026-03-02*

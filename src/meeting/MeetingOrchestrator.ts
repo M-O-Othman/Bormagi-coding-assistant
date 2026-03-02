@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Meeting, AgendaItem, MeetingRound, SummaryRound, OutputTag, InterruptRequest, ActionPolicy } from './types';
 import { MeetingStorage } from './MeetingStorage';
+import { loadMeetingGuardrails, MeetingGuardrailsConfig } from './MeetingGuardrails';
 import { AgentManager } from '../agents/AgentManager';
 import { ConfigManager } from '../config/ConfigManager';
 import { ProviderFactory } from '../providers/ProviderFactory';
@@ -40,7 +41,7 @@ const DEFAULT_BANNED_PHRASES = [
 const CODE_CHANGE_CLAIM_PATTERNS: RegExp[] = [
   // Direct first-person completion claims
   /\bi(?:'ve| have) created (?:the |a )?(?:file|class|function|method|module|component|service|test|migration|schema|config|script)/i,
-  /\bi(?:'ve| have) (?:updated|modified|changed|edited) (?:the |a )?(?:file|class|function|requirement|adr|doc|readme|config|schema|code|implementation)/i,
+  /\bi(?:'ve| have) (?:updated|modified|changed|edited) (?:the |a )?(?:file|class|function|requirement|adr|doc|config|schema|code|implementation)/i,
   /\bi(?:'ve| have) implemented/i,
   /\bi(?:'ve| have) written (?:the |a )?(?:code|function|class|test|script|file)/i,
   /\bi(?:'ve| have) committed/i,
@@ -65,6 +66,7 @@ const CODE_CHANGE_CLAIM_PATTERNS: RegExp[] = [
 export class MeetingOrchestrator {
   private aborted = false;
   private readonly configDir: string;
+  private readonly guardrails: MeetingGuardrailsConfig;
 
   constructor(
     private readonly agentManager: AgentManager,
@@ -73,6 +75,7 @@ export class MeetingOrchestrator {
     private readonly storage: MeetingStorage
   ) {
     this.configDir = path.join(this.workspaceRoot, '.bormagi', 'meeting-config');
+    this.guardrails = loadMeetingGuardrails(this.workspaceRoot);
   }
 
   abort(): void { this.aborted = true; }
@@ -133,6 +136,38 @@ export class MeetingOrchestrator {
     return null;
   }
 
+  private isDecisionLocked(meeting: Meeting, agendaItemId: string): boolean {
+    if (!this.guardrails.decisionLock.enabled) { return false; }
+    const decision = meeting.decisions?.[agendaItemId];
+    return Boolean(decision?.isFinal);
+  }
+
+  private getEffectiveActionPolicy(meeting: Meeting, item: AgendaItem): ActionPolicy | undefined {
+    if (!this.isDecisionLocked(meeting, item.id)) {
+      return item.actionPolicy;
+    }
+    return {
+      mode: 'ALLOW_ONLY_TAGS',
+      allowedTags: this.guardrails.decisionLock.allowedTagsAfterFinalDecision
+    };
+  }
+
+  private findSkipExclusivityViolation(response: string): string | null {
+    if (!this.guardrails.skip.enforceExclusive) { return null; }
+    const trimmed = response.trimStart();
+    if (!/^\[SKIP\]/i.test(trimmed)) { return null; }
+
+    const lines = trimmed.split('\n').slice(1).join('\n');
+    const forbidden = this.guardrails.skip.forbiddenSubTags.map(t => t.toUpperCase());
+    for (const tag of forbidden) {
+      const re = new RegExp(`(^|\\n)\\s*${tag}\\s*:`, 'i');
+      if (re.test(lines)) {
+        return `SKIP must be exclusive. Found additional tagged content (${tag}:) after [SKIP].`;
+      }
+    }
+    return null;
+  }
+
   /**
    * Parse INTERRUPT_REQUEST lines from a response.
    * Format: INTERRUPT_REQUEST: @AgentName — <question> — Context: <text>
@@ -163,6 +198,70 @@ export class MeetingOrchestrator {
       });
     }
     return results;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  AVAILABILITY + INTRODUCTION
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Check which agents in agentIds are reachable (provider + key resolves).
+   * Returns two arrays: online and offline agent IDs.
+   */
+  async checkAgentsAvailability(agentIds: string[]): Promise<{ online: string[]; offline: string[] }> {
+    const online: string[] = [];
+    const offline: string[] = [];
+    for (const agentId of agentIds) {
+      const setup = await this.setupProvider(agentId);
+      if (setup) { online.push(agentId); } else { offline.push(agentId); }
+    }
+    return { online, offline };
+  }
+
+  /**
+   * Silent introduction round: each participant introduces themselves to the group.
+   * Responses are stored in meeting.rounds with isIntroduction = true.
+   * The caller receives per-agent callbacks but should NOT stream them to the main UI.
+   */
+  async runIntroductionRound(
+    meeting: Meeting,
+    onAgentIntroduced: (agentId: string, agentName: string) => void
+  ): Promise<void> {
+    this.resetAbort();
+    const participantList = meeting.participants
+      .map(p => this.agentManager.getAgent(p)?.name ?? p)
+      .join(', ');
+
+    for (const agentId of meeting.participants) {
+      if (this.aborted) { break; }
+      const setup = await this.setupProvider(agentId);
+      if (!setup) { continue; }
+      const { provider, agentConfig } = setup;
+
+      const messages: ChatMessage[] = [
+        {
+          role: 'system',
+          content: `You are ${agentConfig.name}. You are joining a meeting titled: "${meeting.title}".`
+        },
+        {
+          role: 'user',
+          content:
+            `The attendees are: ${participantList}.\n\n` +
+            `Introduce yourself to the group in 2–3 sentences: your name, your role, and the key perspective you bring to this meeting. Be concise.`
+        }
+      ];
+
+      const response = await this.streamResponse(provider, messages);
+      const round: MeetingRound = {
+        agendaItemId: '__intro__',
+        agentId,
+        response,
+        timestamp: new Date().toISOString(),
+        isIntroduction: true,
+      };
+      meeting.rounds.push(round);
+      onAgentIntroduced(agentId, agentConfig.name);
+    }
   }
 
   /** Parse OPEN_QUESTION structured fields from a response. */
@@ -293,7 +392,7 @@ export class MeetingOrchestrator {
    - Generic best practices not tied to a concrete output
    - Filler language or pleasantries of any kind
 4. STRUCTURE: Use bullets. Be concise and decisive.
-   - If RECOMMENDATION: include Options (A/B/C), Recommended option, Tradeoffs, What the human must decide
+   - If RECOMMENDATION: include Options (at least 2), Recommended option, Tradeoffs, What the human must decide
    - If OPEN_QUESTION: include **Question**, **Why it matters**, **Example acceptable answer**
    - If ACTION: include **Owner role**, **Definition of Done (acceptance criteria)**
 5. INTERRUPTS: To request input from another agent mid-turn, add on a separate line:
@@ -309,7 +408,7 @@ export class MeetingOrchestrator {
 8. DECISION GATE (hard rule — no exceptions):
    - You CANNOT mark anything as Accepted, Approved, Resolved, Done, or Finalized.
    - You CANNOT update requirements, ADRs, or docs "to reflect the approved X" — nothing is approved until the human decides.
-   - If you want to advance a decision: use RECOMMENDATION: with clear A/B/C options.
+   - If you want to advance a decision: use RECOMMENDATION: with clear options.
    - If a clarification is missing: use CLARIFICATION_FOR_HUMAN: or OPEN_QUESTION:
    - Past decisions do NOT exist unless the human has explicitly stated them in this meeting.`;
 
@@ -322,8 +421,8 @@ export class MeetingOrchestrator {
   MODERATOR_SUMMARY:
   Problem: <1 line>
   Options:
-  - A: ...
-  - B: ...
+  - <Option 1>: ...
+  - <Option 2>: ...
   Recommendation: <summarized agent recommendation, if any>
   Risks:
   - ...
@@ -354,6 +453,12 @@ export class MeetingOrchestrator {
       }
     }
 
+    if (item && this.isDecisionLocked(meeting, item.id)) {
+      const allowed = this.guardrails.decisionLock.allowedTagsAfterFinalDecision.join(' | ');
+      rules += `\n\nDECISION LOCK (hard rule): The human has finalized a decision for this agenda item. ` +
+        `Do NOT emit RECOMMENDATION or reopen options. Allowed tags now: ${allowed} (or [SKIP]:).`;
+    }
+
     // INTERRUPT SUPPRESSION — disable INTERRUPT_REQUEST when item is blocked or action-restricted
     const interruptsSuppressed = item?.blockedByHuman ||
       item?.actionPolicy?.mode === 'BLOCK_ALL_ACTIONS' ||
@@ -364,8 +469,12 @@ export class MeetingOrchestrator {
 
     // TOPIC GUARD — keep agents focused on the current agenda item
     if (item) {
-      rules += `\n\nTOPIC GUARD: You are discussing ONLY agenda item: "${item.text}". ` +
-        `If your response is primarily about a different agenda item or a previously deferred topic, output:\n` +
+      const allowedDimensions = (item.allowedDimensions && item.allowedDimensions.length > 0)
+        ? item.allowedDimensions
+        : this.guardrails.topicGuard.defaultAllowedDimensions;
+      rules += `\n\nTOPIC GUARD: Stay focused on agenda item: "${item.text}". ` +
+        `You may discuss these dimensions for this item: ${allowedDimensions.join(', ')}. ` +
+        `If your response is primarily about a different agenda item or previously deferred topic, output:\n` +
         `[SKIP]: off-topic — not relevant to the current agenda item.`;
     }
 
@@ -459,11 +568,16 @@ export class MeetingOrchestrator {
     systemPrompt: string,
     raw: string,
     actionPolicy?: ActionPolicy,
-    currentAgentId?: string
+    currentAgentId?: string,
+    decisionLocked = false
   ): Promise<{ response: string; tag: OutputTag; violations: string[] }> {
     let tag = this.parseTag(raw);
     const hasBanned = this.containsBannedLanguage(raw);
     const codeChangeClaim = this.containsCodeChangeClaim(raw);
+    const skipExclusivityViolation = this.findSkipExclusivityViolation(raw);
+    const decisionReopenViolation = decisionLocked && this.guardrails.decisionLock.recommendationMarkers.some(marker =>
+      raw.toLowerCase().includes(marker.toLowerCase())
+    );
 
     // ACTION POLICY enforcement — check before early return
     let actionPolicyViolation: string | null = null;
@@ -486,7 +600,16 @@ export class MeetingOrchestrator {
       }
     }
 
-    if (tag && !hasBanned && !codeChangeClaim && !actionPolicyViolation) {
+    if (decisionLocked && tag === 'RECOMMENDATION') {
+      actionPolicyViolation = 'RECOMMENDATION is blocked after final human decision. Use ACTION:, VALIDATION:, or [SKIP]:.';
+      tag = null;
+    }
+
+    if (skipExclusivityViolation) {
+      tag = null;
+    }
+
+    if (tag && !hasBanned && !codeChangeClaim && !actionPolicyViolation && !decisionReopenViolation && !skipExclusivityViolation) {
       return { response: raw, tag, violations: [] };
     }
 
@@ -494,6 +617,10 @@ export class MeetingOrchestrator {
     const issues: string[] = [];
     if (!tag && !actionPolicyViolation) { issues.push('Your response does not start with a valid tag.'); }
     if (actionPolicyViolation) { issues.push(`ACTION POLICY VIOLATION: ${actionPolicyViolation}`); }
+    if (skipExclusivityViolation) { issues.push(`FORMAT VIOLATION: ${skipExclusivityViolation}`); }
+    if (decisionReopenViolation) {
+      issues.push('DECISION LOCK VIOLATION: Human decision is final for this item. Do not include options/recommendation language.');
+    }
     if (hasBanned) { issues.push('Your response contains banned filler language (greetings, thanks, paraphrasing).'); }
     if (codeChangeClaim) {
       issues.push(
@@ -519,10 +646,18 @@ export class MeetingOrchestrator {
 
     // Check the rewritten response still doesn't sneak in a code-change claim or repeat policy violation
     const rewrittenCodeClaim = this.containsCodeChangeClaim(rewritten);
+    const rewrittenSkipExclusivityViolation = this.findSkipExclusivityViolation(rewritten);
+    const rewrittenDecisionReopenViolation = decisionLocked && this.guardrails.decisionLock.recommendationMarkers.some(marker =>
+      rewritten.toLowerCase().includes(marker.toLowerCase())
+    );
     const violations: string[] = [];
     if (codeChangeClaim) { violations.push(`PLANNING_MODE: ${codeChangeClaim}`); }
     if (rewrittenCodeClaim) { violations.push(`PLANNING_MODE_PERSISTS: ${rewrittenCodeClaim}`); }
     if (actionPolicyViolation) { violations.push(`ACTION_POLICY: ${actionPolicyViolation}`); }
+    if (skipExclusivityViolation) { violations.push(`SKIP_EXCLUSIVE: ${skipExclusivityViolation}`); }
+    if (decisionReopenViolation) { violations.push('DECISION_REOPEN: recommendation language after final decision'); }
+    if (rewrittenSkipExclusivityViolation) { violations.push(`SKIP_EXCLUSIVE_PERSISTS: ${rewrittenSkipExclusivityViolation}`); }
+    if (rewrittenDecisionReopenViolation) { violations.push('DECISION_REOPEN_PERSISTS: recommendation language after final decision'); }
 
     // If rewrite still violates action policy, force SKIP
     if (actionPolicy && rewrittenTag && rewrittenTag !== 'SKIP') {
@@ -536,7 +671,7 @@ export class MeetingOrchestrator {
       }
     }
 
-    if (rewrittenTag) {
+    if (rewrittenTag && !rewrittenSkipExclusivityViolation && !rewrittenDecisionReopenViolation) {
       return { response: rewritten, tag: rewrittenTag, violations };
     }
 
@@ -552,18 +687,34 @@ export class MeetingOrchestrator {
     const currentItem = meeting.agenda.find(a => a.id === agendaItemId);
     if (!currentItem) { return null; }
 
+    const minLen = this.guardrails.topicGuard.minKeywordLength;
     const keywords = (text: string) =>
-      text.toLowerCase().split(/\W+/).filter(w => w.length > 4);
+      text.toLowerCase().split(/\W+/).filter(w => w.length >= minLen);
 
     const responseLower = response.toLowerCase();
     const currentKw = keywords(currentItem.text);
     const hitsCurrent = currentKw.filter(k => responseLower.includes(k)).length;
 
+    const allowedDimensions = (currentItem.allowedDimensions && currentItem.allowedDimensions.length > 0)
+      ? currentItem.allowedDimensions
+      : this.guardrails.topicGuard.defaultAllowedDimensions;
+    const dimKeywords = allowedDimensions
+      .flatMap(d => this.guardrails.topicGuard.dimensionKeywords[d] ?? [])
+      .map(k => k.toLowerCase());
+    const hasAllowedDimensionContext = dimKeywords.some(k => responseLower.includes(k));
+
+    const offTopicMargin = this.guardrails.topicGuard.offTopicMargin;
+    const minOtherHits = this.guardrails.topicGuard.minOtherHits;
+
     for (const other of meeting.agenda) {
       if (other.id === agendaItemId) { continue; }
       const otherKw = keywords(other.text);
       const hitsOther = otherKw.filter(k => responseLower.includes(k)).length;
-      if (hitsOther > hitsCurrent + 2) {
+      if (
+        hitsOther >= minOtherHits &&
+        hitsOther > hitsCurrent + offTopicMargin &&
+        !hasAllowedDimensionContext
+      ) {
         return `Your response appears to be about "${other.text}" (another agenda item), not the current one: "${currentItem.text}".`;
       }
     }
@@ -593,6 +744,11 @@ export class MeetingOrchestrator {
     this.resetAbort();
     const item = meeting.agenda.find(a => a.id === agendaItemId);
     if (!item) { return; }
+    const decisionLocked = this.isDecisionLocked(meeting, agendaItemId);
+    const effectiveActionPolicy = this.getEffectiveActionPolicy(meeting, item);
+    const effectiveItem: AgendaItem = effectiveActionPolicy
+      ? { ...item, actionPolicy: effectiveActionPolicy }
+      : { ...item, actionPolicy: undefined };
 
     // If human provided input, unblock the item
     if (item.blockedByHuman && userMessage) {
@@ -619,7 +775,7 @@ export class MeetingOrchestrator {
       if (!setup) { continue; }
       const { provider, agentConfig } = setup;
 
-      const systemPrompt = this.buildSystemPrompt(agentConfig, meeting, item);
+      const systemPrompt = this.buildSystemPrompt(agentConfig, meeting, effectiveItem);
 
       // Build conversation
       const messages: ChatMessage[] = [
@@ -672,7 +828,14 @@ export class MeetingOrchestrator {
       });
 
       // Rewrite gate — enforces tags, bans talkshop language, blocks code-change claims, and enforces ActionPolicy
-      const { response: validated, tag } = await this.rewriteGate(provider, systemPrompt, fullResponse, item.actionPolicy, agentId);
+      const { response: validated, tag } = await this.rewriteGate(
+        provider,
+        systemPrompt,
+        fullResponse,
+        effectiveActionPolicy,
+        agentId,
+        decisionLocked
+      );
       if (validated !== fullResponse) {
         fullResponse = validated;
       }
@@ -692,13 +855,14 @@ export class MeetingOrchestrator {
         }
       }
 
-      const isSkip = tag === 'SKIP' || this.parseTag(fullResponse) === 'SKIP';
+      const finalTag = this.parseTag(fullResponse) ?? tag;
+      const isSkip = finalTag === 'SKIP';
       const skipReason = isSkip ? fullResponse.replace(/^\[SKIP\][:\s]*/i, '').trim() : '';
 
       // Parse interrupt requests — suppressed when item is blocked or interrupt policy is disabled
       const interruptsAllowed = !item.blockedByHuman &&
-        item.actionPolicy?.mode !== 'BLOCK_ALL_ACTIONS' &&
-        item.actionPolicy?.mode !== 'ALLOW_ONLY_TAGS';
+        effectiveActionPolicy?.mode !== 'BLOCK_ALL_ACTIONS' &&
+        effectiveActionPolicy?.mode !== 'ALLOW_ONLY_TAGS';
       const interruptReqs = (isSkip || !interruptsAllowed) ? [] : this.extractInterruptRequests(fullResponse, meeting.participants, agentId);
 
       // Create round
@@ -707,7 +871,7 @@ export class MeetingOrchestrator {
         agentId,
         response: fullResponse,
         timestamp: new Date().toISOString(),
-        tag,
+        tag: finalTag,
         skipped: isSkip || undefined,
         interruptRequests: interruptReqs.length > 0 ? interruptReqs : undefined,
       };
@@ -717,17 +881,17 @@ export class MeetingOrchestrator {
       if (isSkip) {
         onSkip?.(agendaItemId, agentId, skipReason);
       }
-      onDone(agendaItemId, agentId, fullResponse, tag);
+      onDone(agendaItemId, agentId, fullResponse, finalTag);
 
       // CLARIFICATION_FOR_HUMAN: block item and stop remaining agents — wait for human
-      if (tag === 'CLARIFICATION_FOR_HUMAN' && !this.aborted) {
+      if (finalTag === 'CLARIFICATION_FOR_HUMAN' && !this.aborted) {
         item.blockedByHuman = true;
         onBlockedForHuman?.(agendaItemId);
         break; // Do not call remaining agents — they must wait for the human's answer
       }
 
       // Handle OPEN_QUESTION: append to OQ file
-      if (tag === 'OPEN_QUESTION' && !this.aborted) {
+      if (finalTag === 'OPEN_QUESTION' && !this.aborted) {
         await this.handleOpenQuestion(meeting, agendaItemId, agentId, fullResponse, onOpenQuestion);
       }
 
@@ -809,7 +973,12 @@ export class MeetingOrchestrator {
     const { provider, agentConfig } = setup;
 
     const interruptItem = meeting.agenda.find(a => a.id === agendaItemId);
-    const systemPrompt = this.buildSystemPrompt(agentConfig, meeting, interruptItem);
+    const decisionLocked = this.isDecisionLocked(meeting, agendaItemId);
+    const effectiveActionPolicy = interruptItem ? this.getEffectiveActionPolicy(meeting, interruptItem) : undefined;
+    const effectiveInterruptItem = interruptItem
+      ? { ...interruptItem, actionPolicy: effectiveActionPolicy }
+      : undefined;
+    const systemPrompt = this.buildSystemPrompt(agentConfig, meeting, effectiveInterruptItem);
     const callerName = this.agentManager.getAgent(callerAgentId)?.name ?? callerAgentId;
 
     const defaultInterrupt = `{{CALLER_NAME}} has directed a question to you via INTERRUPT_REQUEST.\n\nQuestion: {{QUESTION}}\n{{CONTEXT_LINE}}\n\nRespond with exactly ONE tag (VALIDATION: | RECOMMENDATION: | OPEN_QUESTION: | [SKIP]:).\nAnswer ONLY the asked question. Be short and decisive. Do NOT introduce new topics.`;
@@ -829,7 +998,14 @@ export class MeetingOrchestrator {
     });
 
     // Rewrite gate for interrupt too (interrupts respect the item's action policy)
-    const { response: validated, tag } = await this.rewriteGate(provider, systemPrompt, fullResponse, interruptItem?.actionPolicy, targetAgentId);
+    const { response: validated, tag } = await this.rewriteGate(
+      provider,
+      systemPrompt,
+      fullResponse,
+      effectiveActionPolicy,
+      targetAgentId,
+      decisionLocked
+    );
     if (validated !== fullResponse) { fullResponse = validated; }
 
     const round: MeetingRound = {
@@ -860,7 +1036,7 @@ export class MeetingOrchestrator {
     meeting: Meeting,
     agendaItemId: string,
     /** When provided, biases the moderator to produce a closeout summary with the given status */
-    closeoutHint?: { status: 'deferred' | 'blocked'; reason: string }
+    closeoutHint?: { status: 'deferred' | 'blocked' | 'resolved'; reason: string }
   ): Promise<SummaryRound | null> {
     const moderatorId = meeting.moderatorId ?? meeting.participants[0];
     const setup = await this.setupProvider(moderatorId);
@@ -886,12 +1062,12 @@ export class MeetingOrchestrator {
       : '(No agent discussion — item closed by human.)';
 
     // Collect OQ IDs created during this item
-    const itemOqIds = (meeting.openQuestionsCreated ?? []).filter(id =>
+    const itemOqIds = (meeting.openQuestionsCreated ?? []).filter(_id =>
       meeting.rounds.some(r => r.agendaItemId === agendaItemId && r.tag === 'OPEN_QUESTION')
     );
     const oqList = itemOqIds.length > 0 ? itemOqIds.join(', ') : 'None';
 
-    const defaultSummary = `You are {{MODERATOR_NAME}}, the meeting moderator.\nProduce a structured summary. No filler language. No code blocks. No repeated lines.\nYou MUST use this EXACT format:\n\nMODERATOR_SUMMARY:\nProblem: <1 line>\nOptions:\n- A: ...\n- B: ...\nRecommendation: <summarized recommendation, if any>\nRisks:\n- ...\nActions:\n- ...\nOpenQuestions:\n- {{OPEN_QUESTION_IDS}}\nDecisionPromptForHuman: <explicit choice request>\nStatus: open | ready_for_human_decision | blocked | deferred | resolved\nDeferReason: <only if Status is deferred — brief reason>\nBlocker: <only if Status is blocked — what is missing>\n\nStatus guide: "open" = more discussion needed; "ready_for_human_decision" = clear options exist, human must choose; "blocked" = key info missing; "deferred" = postponed to another meeting; "resolved" = human has decided.`;
+    const defaultSummary = `You are {{MODERATOR_NAME}}, the meeting moderator.\nProduce a structured summary. No filler language. No code blocks. No repeated lines.\nYou MUST use this EXACT format:\n\nMODERATOR_SUMMARY:\nProblem: <1 line>\nOptions:\n- <Option 1>: ...\n- <Option 2>: ...\nRecommendation: <summarized recommendation, if any>\nRisks:\n- ...\nActions:\n- ...\nOpenQuestions:\n- {{OPEN_QUESTION_IDS}}\nDecisionPromptForHuman: <explicit choice request>\nStatus: open | ready_for_human_decision | blocked | deferred | resolved\nDeferReason: <only if Status is deferred — brief reason>\nBlocker: <only if Status is blocked — what is missing>\n\nStatus guide: "open" = more discussion needed; "ready_for_human_decision" = clear options exist, human must choose; "blocked" = key info missing; "deferred" = postponed to another meeting; "resolved" = human has decided.`;
     const template = this.loadConfig('summary-prompt.md', defaultSummary);
     let systemContent = template
       .replace(/\{\{MODERATOR_NAME\}\}/g, agentConfig.name)
@@ -901,8 +1077,15 @@ export class MeetingOrchestrator {
     if (closeoutHint) {
       const directive = closeoutHint.status === 'deferred'
         ? `\n\nCLOSEOUT DIRECTIVE: The human has explicitly deferred this item. Your Status MUST be "deferred". DeferReason: ${closeoutHint.reason}`
-        : `\n\nCLOSEOUT DIRECTIVE: The human has blocked this item. Your Status MUST be "blocked". Blocker: ${closeoutHint.reason}`;
+        : closeoutHint.status === 'blocked'
+          ? `\n\nCLOSEOUT DIRECTIVE: The human has blocked this item. Your Status MUST be "blocked". Blocker: ${closeoutHint.reason}`
+          : `\n\nCLOSEOUT DIRECTIVE: The human has finalized a decision. Your Status MUST be "resolved". Recommendation should restate the human decision only. DecisionPromptForHuman must be "None".`;
       systemContent += directive;
+    }
+
+    if (this.isDecisionLocked(meeting, agendaItemId)) {
+      systemContent += `\n\nDECISION LOCK: The human has already made a final decision for this item. ` +
+        `Do not reopen options or ask for another decision. Status MUST be "resolved".`;
     }
 
     const messages: ChatMessage[] = [
@@ -933,7 +1116,24 @@ export class MeetingOrchestrator {
       raw = await this.streamResponse(provider, repromptMessages);
     }
 
-    const summary = MeetingOrchestrator.parseSummaryFields(raw, agendaItemId);
+    let summary = MeetingOrchestrator.parseSummaryFields(raw, agendaItemId);
+
+    // Minimal schema validation/repair for moderator output.
+    const missingCoreFields = !summary.problem || !summary.itemStatus;
+    if (missingCoreFields) {
+      const regenMessages: ChatMessage[] = [
+        ...messages,
+        { role: 'assistant', content: raw },
+        { role: 'user', content: 'REGENERATE: Missing required fields (Problem and/or Status). Return the exact MODERATOR_SUMMARY structure with all fields.' }
+      ];
+      raw = await this.streamResponse(provider, regenMessages);
+      summary = MeetingOrchestrator.parseSummaryFields(raw, agendaItemId);
+    }
+
+    if (this.isDecisionLocked(meeting, agendaItemId)) {
+      summary.itemStatus = 'resolved';
+      summary.decisionPrompt = undefined;
+    }
 
     if (!meeting.summaryRounds) { meeting.summaryRounds = []; }
     meeting.summaryRounds.push(summary);
@@ -960,8 +1160,30 @@ export class MeetingOrchestrator {
       if (item.decision) { lines.push(`**Decision:** ${item.decision}`); }
       lines.push('');
 
-      const rounds = meeting.rounds.filter(r => r.agendaItemId === item.id);
-      for (const round of rounds) {
+      // Merge human turns and agent rounds for this item, sorted by timestamp
+      type HumanEntry = { kind: 'human'; message: string; timestamp: string };
+      type AgentEntry = { kind: 'agent'; round: typeof meeting.rounds[number] };
+      const entries: (HumanEntry | AgentEntry)[] = [
+        ...(meeting.humanTurns ?? [])
+          .filter(t => t.agendaItemId === item.id)
+          .map((t): HumanEntry => ({ kind: 'human', message: t.message, timestamp: t.timestamp })),
+        ...meeting.rounds
+          .filter(r => r.agendaItemId === item.id && !r.isIntroduction)
+          .map((r): AgentEntry => ({ kind: 'agent', round: r }))
+      ];
+      entries.sort((a, b) => {
+        const ta = a.kind === 'human' ? a.timestamp : a.round.timestamp;
+        const tb = b.kind === 'human' ? b.timestamp : b.round.timestamp;
+        return ta < tb ? -1 : ta > tb ? 1 : 0;
+      });
+
+      for (const entry of entries) {
+        if (entry.kind === 'human') {
+          lines.push(`**[Human]:** ${entry.message}`);
+          lines.push('');
+          continue;
+        }
+        const round = entry.round;
         const agentName = this.agentManager.getAgent(round.agentId)?.name ?? round.agentId;
         const tagLabel = round.tag ? `[${round.tag}]` : '';
 

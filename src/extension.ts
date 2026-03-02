@@ -124,12 +124,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       MainPanel.createOrShow();
     }),
 
-    vscode.commands.registerCommand('bormagi.startMeeting', () => {
+    vscode.commands.registerCommand('bormagi.startMeeting', async () => {
       if (!workspaceRoot || !agentManager || !configManager || !secretsManager) {
         vscode.window.showWarningMessage('Bormagi: Initialise the workspace first.');
         return;
       }
-      MeetingPanel.createOrShow(context.extensionUri, agentManager, configManager, workspaceRoot, secretsManager);
+      await MeetingPanel.createOrShow(context.extensionUri, agentManager, configManager, workspaceRoot, secretsManager);
     }),
 
     vscode.commands.registerCommand('bormagi.showAuditLog', async () => {

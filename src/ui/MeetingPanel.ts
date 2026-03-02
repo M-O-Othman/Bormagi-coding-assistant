@@ -6,8 +6,19 @@ import { ConfigManager } from '../config/ConfigManager';
 import { SecretsManager } from '../config/SecretsManager';
 import { MeetingStorage } from '../meeting/MeetingStorage';
 import { MeetingOrchestrator } from '../meeting/MeetingOrchestrator';
-import { Meeting, AgendaItem, ActionItem, SummaryRound, ActionPolicy } from '../meeting/types';
+import { Meeting, AgendaItem, ActionItem, SummaryRound, ActionPolicy, HumanTurn } from '../meeting/types';
+import { loadMeetingGuardrails, MeetingGuardrailsConfig } from '../meeting/MeetingGuardrails';
 import type { AgentConfig } from '../types';
+
+/** Stored while waiting for the user's offline-agent decision before creating the meeting. */
+interface PendingMeetingSetup {
+  title: string;
+  agendaLines: string[];
+  participants: string[];
+  resourceFiles: string[];
+  initialActionItems?: Array<{ text: string; assignedTo: string }>;
+  offlineAgentIds: string[];
+}
 
 export class MeetingPanel {
   private static current: MeetingPanel | undefined;
@@ -16,7 +27,11 @@ export class MeetingPanel {
   private activeMeeting: Meeting | null = null;
   private storage: MeetingStorage;
   private orchestrator: MeetingOrchestrator;
+  private guardrails: MeetingGuardrailsConfig;
   private runningRound = false;
+  /** Non-null while waiting for user to decide what to do with offline agents. */
+  private pendingMeetingSetup: PendingMeetingSetup | null = null;
+  private marked: any;
 
   private constructor(
     panel: vscode.WebviewPanel,
@@ -31,6 +46,7 @@ export class MeetingPanel {
     const bormagiDir = path.join(workspaceRoot, '.bormagi');
     this.storage = new MeetingStorage(bormagiDir);
     this.orchestrator = new MeetingOrchestrator(agentManager, configManager, workspaceRoot, this.storage);
+    this.guardrails = loadMeetingGuardrails(workspaceRoot);
 
     this.panel.webview.html = this.getHtml();
     this.panel.webview.onDidReceiveMessage(
@@ -44,13 +60,13 @@ export class MeetingPanel {
     setTimeout(() => this.sendInitialData(), 300);
   }
 
-  static createOrShow(
+  static async createOrShow(
     extensionUri: vscode.Uri,
     agentManager: AgentManager,
     configManager: ConfigManager,
     workspaceRoot: string,
     secretsManager: SecretsManager
-  ): void {
+  ): Promise<void> {
     if (MeetingPanel.current) {
       MeetingPanel.current.panel.reveal(vscode.ViewColumn.Active);
       return;
@@ -68,7 +84,14 @@ export class MeetingPanel {
     );
     panel.iconPath = vscode.Uri.joinPath(extensionUri, 'media', 'icon.png');
 
-    MeetingPanel.current = new MeetingPanel(panel, extensionUri, agentManager, configManager, workspaceRoot, secretsManager);
+    const meetingPanel = new MeetingPanel(panel, extensionUri, agentManager, configManager, workspaceRoot, secretsManager);
+    await meetingPanel.initialize();
+    MeetingPanel.current = meetingPanel;
+  }
+
+  private async initialize() {
+    const { marked } = await import('marked');
+    this.marked = marked;
   }
 
   private post(msg: Record<string, unknown>): void {
@@ -128,20 +151,25 @@ export class MeetingPanel {
         if (this.activeMeeting) {
           const item = this.activeMeeting.agenda.find(a => a.id === agendaItemId);
           if (item) {
+            const trimmedDecision = (decision ?? '').trim();
             item.status = 'resolved';
-            item.decision = decision || undefined;
+            item.decision = trimmedDecision || undefined;
+            item.blockedByHuman = false;
+            if (trimmedDecision) {
+              this.recordFinalDecision(agendaItemId, trimmedDecision);
+            }
             // Auto-create an action item from the human decision text
-            if (decision && decision.trim()) {
+            if (trimmedDecision) {
               const ai: ActionItem = {
                 id: `ai-decision-${Date.now()}`,
-                text: `[Decision] ${decision.trim()}`,
+                text: `[Decision] ${trimmedDecision}`,
                 assignedTo: 'Human'
               };
               this.activeMeeting.actionItems.push(ai);
               this.post({ type: 'action_item_added', actionItem: ai });
             }
             await this.storage.saveMeeting(this.activeMeeting);
-            this.post({ type: 'item_resolved', agendaItemId, decision });
+            this.post({ type: 'item_resolved', agendaItemId, decision: trimmedDecision });
           }
         }
         break;
@@ -166,6 +194,21 @@ export class MeetingPanel {
           this.activeMeeting.actionItems.push(ai);
           await this.storage.saveMeeting(this.activeMeeting);
           this.post({ type: 'action_item_added', actionItem: ai });
+        }
+        break;
+      }
+      case 'offline_agent_decision': {
+        // User chose how to handle offline agents: 'proceed' removes them, 'reconfigure' cancels setup
+        const { action } = msg as { action: 'proceed' | 'reconfigure' };
+        await this.handleOfflineAgentDecision(action);
+        break;
+      }
+      case 'retry_availability_check': {
+        // User fixed an agent and wants to recheck before starting
+        if (this.pendingMeetingSetup) {
+          const setup = this.pendingMeetingSetup;
+          this.pendingMeetingSetup = null;
+          await this.handleStartMeetingWithParams(setup);
         }
         break;
       }
@@ -206,13 +249,81 @@ export class MeetingPanel {
   }
 
   private async handleStartMeeting(msg: Record<string, unknown>): Promise<void> {
-    const { title, agendaLines, participants, resourceFiles, initialActionItems } = msg as {
+    const params = msg as {
       title: string;
       agendaLines: string[];
       participants: string[];
       resourceFiles: string[];
       initialActionItems?: Array<{ text: string; assignedTo: string }>;
     };
+    await this.handleStartMeetingWithParams(params);
+  }
+
+  private async handleStartMeetingWithParams(params: {
+    title: string;
+    agendaLines: string[];
+    participants: string[];
+    resourceFiles: string[];
+    initialActionItems?: Array<{ text: string; assignedTo: string }>;
+  }): Promise<void> {
+    const { title, agendaLines, participants, resourceFiles, initialActionItems } = params;
+
+    // ── 1. Availability check ──────────────────────────────────────────────
+    this.post({ type: 'availability_checking' });
+    const { online, offline } = await this.orchestrator.checkAgentsAvailability(participants);
+
+    if (offline.length > 0) {
+      const offlineNames = offline.map(id => this.agentManager.getAgent(id)?.name ?? id);
+      this.pendingMeetingSetup = { title, agendaLines, participants, resourceFiles, initialActionItems, offlineAgentIds: offline };
+      this.post({ type: 'agents_availability_check', offlineAgentIds: offline, offlineAgentNames: offlineNames });
+      return; // wait for offline_agent_decision message
+    }
+
+    if (online.length === 0) {
+      this.post({ type: 'meeting_ended_no_agents' });
+      return;
+    }
+
+    await this.launchMeeting({ title, agendaLines, participants: online, resourceFiles, initialActionItems });
+  }
+
+  private async handleOfflineAgentDecision(action: 'proceed' | 'reconfigure'): Promise<void> {
+    if (!this.pendingMeetingSetup) { return; }
+
+    if (action === 'reconfigure') {
+      // Return to setup screen without clearing the form — user will fix and resubmit
+      this.pendingMeetingSetup = null;
+      this.post({ type: 'meeting_setup_cancelled' });
+      return;
+    }
+
+    // proceed — remove offline agents and start with whoever is left
+    const setup = this.pendingMeetingSetup;
+    this.pendingMeetingSetup = null;
+    const validParticipants = setup.participants.filter(id => !setup.offlineAgentIds.includes(id));
+
+    if (validParticipants.length === 0) {
+      this.post({ type: 'meeting_ended_no_agents' });
+      return;
+    }
+
+    await this.launchMeeting({
+      title: setup.title,
+      agendaLines: setup.agendaLines,
+      participants: validParticipants,
+      resourceFiles: setup.resourceFiles,
+      initialActionItems: setup.initialActionItems
+    });
+  }
+
+  private async launchMeeting(params: {
+    title: string;
+    agendaLines: string[];
+    participants: string[];
+    resourceFiles: string[];
+    initialActionItems?: Array<{ text: string; assignedTo: string }>;
+  }): Promise<void> {
+    const { title, agendaLines, participants, resourceFiles, initialActionItems } = params;
 
     const id = this.storage.generateId();
     const agenda: AgendaItem[] = agendaLines
@@ -226,8 +337,8 @@ export class MeetingPanel {
       assignedTo: ai.assignedTo
     }));
 
-    // First participant is the meeting moderator
-    const moderatorId = participants.length > 0 ? participants[0] : undefined;
+    // First online participant is the moderator
+    const moderatorId = participants[0];
 
     const meeting: Meeting = {
       id,
@@ -248,7 +359,7 @@ export class MeetingPanel {
     await this.storage.saveMeeting(meeting);
 
     // Initialise inline minutes file
-    const modName = moderatorId ? (this.agentManager.getAgent(moderatorId)?.name ?? moderatorId) : 'N/A';
+    const modName = this.agentManager.getAgent(moderatorId)?.name ?? moderatorId;
     const participantNames = participants.map(p => this.agentManager.getAgent(p)?.name ?? p).join(', ');
     await this.storage.appendMinutesLine(id,
       `# Meeting Minutes: ${title}\n` +
@@ -259,38 +370,110 @@ export class MeetingPanel {
 
     this.post({ type: 'meeting_started', meeting });
 
-    // Automatically run the first round for the first agenda item
+    // ── 2. Introduction round (silent — not streamed to the UI feed) ────────
+    this.post({ type: 'introduction_started', count: participants.length });
+    await this.orchestrator.runIntroductionRound(meeting, (agentId, agentName) => {
+      this.post({ type: 'agent_introduced', agentId, agentName });
+    });
+    await this.storage.saveMeeting(meeting);
+    this.post({ type: 'introductions_complete' });
+
+    // ── 3. First agenda round ───────────────────────────────────────────────
     if (agenda.length > 0) {
       await this.handleRunRound(agenda[0].id, undefined);
     }
   }
 
-  /** Parse @agent-name mentions from a human message; returns matching agent IDs. */
-  private parseUserMentions(userMessage: string): string[] | undefined {
-    const pattern = /@([\w-]+)/g;
-    const matches = [...userMessage.matchAll(pattern)];
-    if (!matches.length) { return undefined; }
+  /** Record a human message in meeting.humanTurns and write it to the inline minutes. */
+  private async recordHumanTurn(agendaItemId: string, message: string): Promise<void> {
+    if (!this.activeMeeting) { return; }
+    const turn: HumanTurn = { agendaItemId, message, timestamp: new Date().toISOString() };
+    if (!this.activeMeeting.humanTurns) { this.activeMeeting.humanTurns = []; }
+    this.activeMeeting.humanTurns.push(turn);
+    await this.storage.appendMinutesLine(this.activeMeeting.id, `**[Human]:** ${message}\n`);
+  }
 
-    const mentioned: string[] = [];
-    for (const m of matches) {
-      const name = m[1].toLowerCase();
-      const agent = this.agentManager.listAgents().find(a =>
-        a.id.toLowerCase() === name ||
-        a.name.toLowerCase() === name ||
-        a.name.toLowerCase().replace(/\s+/g, '-') === name
-      );
-      if (agent) { mentioned.push(agent.id); }
+  /** Parse @mentions from a human message; supports IDs and display names (including spaces). */
+  private parseUserMentions(userMessage: string): string[] | undefined {
+    if (!this.activeMeeting) { return undefined; }
+    const text = userMessage.toLowerCase();
+    const participants = new Set(this.activeMeeting.participants);
+    const mentioned = new Set<string>();
+
+    const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    for (const agent of this.agentManager.listAgents()) {
+      if (!participants.has(agent.id)) { continue; }
+      const aliases = [
+        agent.id.toLowerCase(),
+        agent.name.toLowerCase(),
+        agent.name.toLowerCase().replace(/\s+/g, '-')
+      ];
+      for (const alias of aliases) {
+        const re = new RegExp(`(^|\\s)@${escapeRegex(alias)}(?=\\s|$|[.,!?;:])`, 'i');
+        if (re.test(text)) {
+          mentioned.add(agent.id);
+          break;
+        }
+      }
     }
-    return mentioned.length > 0 ? mentioned : undefined;
+
+    return mentioned.size > 0 ? Array.from(mentioned) : undefined;
+  }
+
+  private matchesAnyPattern(text: string, patterns: string[]): boolean {
+    const lower = text.toLowerCase();
+    for (const p of patterns) {
+      try {
+        if (new RegExp(p, 'i').test(lower)) { return true; }
+      } catch {
+        // Ignore malformed user-configured patterns
+      }
+    }
+    return false;
+  }
+
+  private extractDecisionOption(text: string): string | undefined {
+    const lower = text.toLowerCase();
+    for (const p of this.guardrails.humanIntent.optionExtractPatterns) {
+      try {
+        const m = lower.match(new RegExp(p, 'i'));
+        if (m?.[1]) { return m[1].toUpperCase(); }
+      } catch {
+        // Ignore malformed user-configured patterns
+      }
+    }
+    return undefined;
+  }
+
+  private isHumanFinalDecision(text: string): boolean {
+    return this.matchesAnyPattern(text, this.guardrails.humanIntent.finalDecisionPatterns);
+  }
+
+  private isHumanDeferIntent(text: string): boolean {
+    return this.matchesAnyPattern(text, this.guardrails.humanIntent.deferPatterns);
+  }
+
+  private recordFinalDecision(agendaItemId: string, decisionText: string): void {
+    if (!this.activeMeeting) { return; }
+    if (!this.activeMeeting.decisions) { this.activeMeeting.decisions = {}; }
+    this.activeMeeting.decisions[agendaItemId] = {
+      option: this.extractDecisionOption(decisionText) ?? decisionText.trim(),
+      chosenOption: this.extractDecisionOption(decisionText),
+      decidedByHumanAt: new Date().toISOString(),
+      isFinal: true,
+      notes: decisionText.trim()
+    };
   }
 
   /** Shared summary handler — called from both the normal onSummary callback and the defer closeout path. */
   private handleSummaryRound(aid: string, summary: SummaryRound): void {
     if (!this.activeMeeting) { return; }
-    this.post({ type: 'round_summary', agendaItemId: aid, summary });
 
     // Auto-transition item based on machine-readable status from moderator
     const summaryItem = this.activeMeeting.agenda.find(a => a.id === aid);
+    const finalDecision = this.activeMeeting.decisions?.[aid];
+    const hasFinalDecision = Boolean(finalDecision?.isFinal);
     if (summaryItem && summary.itemStatus) {
       if (summary.itemStatus === 'deferred') {
         summaryItem.status = 'deferred';
@@ -298,12 +481,23 @@ export class MeetingPanel {
         this.post({ type: 'item_deferred', agendaItemId: aid, reason: summary.deferReason });
         this.storage.saveMeeting(this.activeMeeting).catch(() => { /* ignore */ });
       } else if (summary.itemStatus === 'resolved') {
-        summaryItem.status = 'resolved';
-        summaryItem.decision = summary.recommendation;
-        this.post({ type: 'item_resolved', agendaItemId: aid, decision: summary.recommendation });
-        this.storage.saveMeeting(this.activeMeeting).catch(() => { /* ignore */ });
+        if (hasFinalDecision) {
+          const wasResolved = summaryItem.status === 'resolved';
+          summaryItem.status = 'resolved';
+          summaryItem.decision = summaryItem.decision ?? finalDecision?.notes ?? finalDecision?.option;
+          if (!wasResolved) {
+            this.post({ type: 'item_resolved', agendaItemId: aid, decision: summaryItem.decision });
+          }
+          this.storage.saveMeeting(this.activeMeeting).catch(() => { /* ignore */ });
+        } else {
+          // Guardrail: moderators cannot finalize unresolved items without explicit human decision.
+          summary.itemStatus = 'ready_for_human_decision';
+          summaryItem.status = 'discussing';
+        }
       }
     }
+
+    this.post({ type: 'round_summary', agendaItemId: aid, summary });
 
     // Auto-add ACTION items from summary — gated behind actionPolicy
     const actionsBlocked = summaryItem?.actionPolicy &&
@@ -351,18 +545,59 @@ export class MeetingPanel {
     const item = this.activeMeeting.agenda.find(a => a.id === agendaItemId);
     if (!item || item.status === 'resolved' || item.status === 'deferred') { return; }
 
+    const cleanedUserMessage = userMessage?.trim();
+    if (cleanedUserMessage) {
+      await this.recordHumanTurn(agendaItemId, cleanedUserMessage);
+    }
+
+    // Detect explicit human decision and lock the item immediately.
+    const finalDecisionIntent = Boolean(cleanedUserMessage && this.isHumanFinalDecision(cleanedUserMessage));
+    if (finalDecisionIntent && cleanedUserMessage) {
+      this.recordFinalDecision(agendaItemId, cleanedUserMessage);
+      item.status = 'resolved';
+      item.decision = cleanedUserMessage;
+      item.blockedByHuman = false;
+
+      const ai: ActionItem = {
+        id: `ai-decision-${Date.now()}`,
+        text: `[Decision] ${cleanedUserMessage}`,
+        assignedTo: 'Human'
+      };
+      this.activeMeeting.actionItems.push(ai);
+      this.post({ type: 'action_item_added', actionItem: ai });
+      this.post({ type: 'item_resolved', agendaItemId, decision: cleanedUserMessage });
+
+      this.runningRound = true;
+      this.post({ type: 'round_started', agendaItemId, userMessage: cleanedUserMessage });
+      try {
+        const summary = await this.orchestrator.generateStructuredSummary(
+          this.activeMeeting,
+          agendaItemId,
+          { status: 'resolved', reason: cleanedUserMessage }
+        );
+        if (summary) { this.handleSummaryRound(agendaItemId, summary); }
+        this.post({ type: 'round_complete', agendaItemId });
+        await this.storage.saveMeeting(this.activeMeeting);
+      } catch (err) {
+        this.post({ type: 'round_error', agendaItemId, error: (err as Error).message });
+      } finally {
+        this.runningRound = false;
+      }
+      return;
+    }
+
     // Detect "next / defer / proceed" intent — run a moderator closeout summary instead of a full agent round
-    const deferIntent = /\b(next agenda item|proceed to next|move on|defer(red)?|postpone|skip this item)\b/i.test(userMessage ?? '');
+    const deferIntent = Boolean(cleanedUserMessage && this.isHumanDeferIntent(cleanedUserMessage));
     if (deferIntent) {
       item.blockedByHuman = false;
-      item.deferReason = userMessage;
+      item.deferReason = cleanedUserMessage;
       // Don't skip the orchestrator — run a moderator-only closeout to get a proper summary entry
       this.runningRound = true;
-      this.post({ type: 'round_started', agendaItemId, userMessage });
+      this.post({ type: 'round_started', agendaItemId, userMessage: cleanedUserMessage });
       try {
         const summary = await this.orchestrator.generateStructuredSummary(
           this.activeMeeting, agendaItemId,
-          { status: 'deferred', reason: userMessage ?? 'Human deferred this item.' }
+          { status: 'deferred', reason: cleanedUserMessage ?? 'Human deferred this item.' }
         );
         if (summary) { this.handleSummaryRound(agendaItemId, summary); }
         // If summary didn't auto-fire item_deferred (e.g. status parse failed), fire it manually
@@ -370,14 +605,14 @@ export class MeetingPanel {
         const itemAfter = this.activeMeeting.agenda.find(a => a.id === agendaItemId);
         if (itemAfter && itemAfter.status !== 'deferred') {
           itemAfter.status = 'deferred';
-          this.post({ type: 'item_deferred', agendaItemId, reason: userMessage });
+          this.post({ type: 'item_deferred', agendaItemId, reason: cleanedUserMessage });
         }
         this.post({ type: 'round_complete', agendaItemId });
         await this.storage.saveMeeting(this.activeMeeting);
       } catch (err) {
         // If closeout summary fails, fall back to direct deferral
         item.status = 'deferred';
-        this.post({ type: 'item_deferred', agendaItemId, reason: userMessage });
+        this.post({ type: 'item_deferred', agendaItemId, reason: cleanedUserMessage });
         this.post({ type: 'round_error', agendaItemId, error: (err as Error).message });
         await this.storage.saveMeeting(this.activeMeeting);
       } finally {
@@ -387,11 +622,11 @@ export class MeetingPanel {
     }
 
     // Parse @mentions to route question to specific agent(s)
-    const targetAgentIds = userMessage ? this.parseUserMentions(userMessage) : undefined;
+    const targetAgentIds = cleanedUserMessage ? this.parseUserMentions(cleanedUserMessage) : undefined;
 
     item.status = 'discussing';
     this.runningRound = true;
-    this.post({ type: 'round_started', agendaItemId, userMessage });
+    this.post({ type: 'round_started', agendaItemId, userMessage: cleanedUserMessage });
 
     // Append agenda item header to minutes on first discussion
     const isFirstRoundForItem = !this.activeMeeting.rounds.some(r => r.agendaItemId === agendaItemId);
@@ -405,7 +640,7 @@ export class MeetingPanel {
       await this.orchestrator.runRound(
         this.activeMeeting,
         agendaItemId,
-        userMessage,
+        cleanedUserMessage,
         // onDelta
         (aid, agentId, delta) => {
           this.post({ type: 'agent_delta', agendaItemId: aid, agentId, delta });
@@ -413,7 +648,8 @@ export class MeetingPanel {
         // onDone
         (aid, agentId, fullResponse, tag) => {
           const isSkip = tag === 'SKIP';
-          this.post({ type: 'agent_round_done', agendaItemId: aid, agentId, fullResponse, skipped: isSkip, tag });
+          const rendered = this.marked.parse(fullResponse, { breaks: true }) as string;
+          this.post({ type: 'agent_round_done', agendaItemId: aid, agentId, fullResponse: rendered, skipped: isSkip, tag });
           this.storage.saveMeeting(this.activeMeeting!).catch(() => { /* ignore */ });
           // Append to inline minutes
           if (!isSkip) {
@@ -439,7 +675,8 @@ export class MeetingPanel {
         },
         // onInterruptDone
         (aid, agentId, triggeredBy, fullResponse, tag) => {
-          this.post({ type: 'interrupt_done', agendaItemId: aid, agentId, triggeredBy, fullResponse, tag });
+          const rendered = this.marked.parse(fullResponse, { breaks: true }) as string;
+          this.post({ type: 'interrupt_done', agendaItemId: aid, agentId, triggeredBy, fullResponse: rendered, tag });
           this.storage.saveMeeting(this.activeMeeting!).catch(() => { /* ignore */ });
           const agentName = this.agentManager.getAgent(agentId)?.name ?? agentId;
           const callerName = this.agentManager.getAgent(triggeredBy)?.name ?? triggeredBy;

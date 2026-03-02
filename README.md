@@ -40,7 +40,8 @@ No admin permissions are required. Install from the VS Code Marketplace or from 
 15. [MCP Tools Reference](#mcp-tools-reference)
 16. [Security](#security)
 17. [Publishing to the Marketplace](#publishing-to-the-marketplace)
-18. [Recent Enhancements](#recent-enhancements-nf2-batch--all-complete)
+18. [Recent Enhancements — Meeting Productivity](#recent-enhancements-meeting-productivity--all-complete)
+    [Recent Enhancements — NF2 batch](#recent-enhancements-nf2-batch--all-complete)
 19. [Building Agents](#building-agents)
 
 ---
@@ -232,24 +233,91 @@ Before the meeting starts, configure:
 
 Click **Start Meeting** to begin.
 
+### Availability check
+
+When you click **Start Meeting**, Bormagi tests the connection to every selected agent before creating the meeting. If any agents are offline or unreachable you will see an inline prompt:
+
+| Option | What happens |
+|---|---|
+| **Proceed without offline agents** | Removes unavailable agents and starts the meeting with the remaining participants |
+| **Reconfigure** | Cancels setup so you can fix the agent configuration before retrying |
+
+If all selected agents are offline, the meeting does not start and an error message is shown. The first available online participant is automatically assigned as **moderator**.
+
+### Introduction round
+
+Once the meeting is created, each agent silently introduces itself to establish shared context. These introductions are not displayed in the conversation view — the UI shows a brief counter such as `(introduction — 2 / 4)` while the round runs. This lets all agents know who else is attending before discussion begins.
+
 ### Meeting tab
 
 Agents respond sequentially per agenda item — each agent sees all prior responses for that item before composing its own. Responses stream in real-time.
 
-The left column shows the agenda with live status indicators (`pending` → `discussing` → `resolved`). The right column shows all agent responses for the selected item.
+The left column shows the agenda with live status indicators:
+
+| Status | Meaning |
+|---|---|
+| `pending` | Not yet reached |
+| `discussing` | Active item — agents are responding |
+| `resolved` | Item closed with a decision |
+| `deferred` | Item postponed — skipped in auto-advance |
+
+The right column shows all agent responses for the selected item.
 
 For each agenda item you can:
 
 - **Record a Decision** — type the outcome and click **Mark resolved**
 - **Add an Action Item** — assign follow-up work to a specific agent
+- **Defer the item** — see below
+
+### Deferring agenda items
+
+Type any of the following phrases in the meeting chat to immediately defer the current agenda item without running another agent round:
+
+> "next agenda item" · "proceed to next" · "move on" · "defer" · "deferred" · "postpone" · "skip this item"
+
+The moderator generates a brief closeout summary with a `DeferReason:` note, the item status changes to `deferred`, and the meeting automatically advances to the next pending item. Deferred items appear with a grey dot in the agenda sidebar and are included in the minutes with their reason.
+
+### Action Policy
+
+The **⛔** button in the meeting chat toolbar cycles through three action-restriction modes for the current agenda item:
+
+| Mode | Effect |
+|---|---|
+| **Normal** | No restriction — agents may propose any output including `ACTION:` |
+| **Block all actions** | Agents may not emit `ACTION:` tags. Use this for pure discussion or analysis rounds |
+| **Allow moderator actions only** | Only the meeting moderator may emit `ACTION:` tags |
+
+The active mode is shown as a badge (⛔ / ⚠) next to the button. The restriction is enforced in the system prompt and by the response validator — responses that violate the policy are rewritten before display.
+
+### Moderator summaries
+
+After each round the moderator produces a structured summary containing:
+
+| Field | Description |
+|---|---|
+| **Problem** | The core question or challenge |
+| **Options** | Alternative approaches considered |
+| **Recommendation** | The moderator's suggested path forward |
+| **Risks** | Identified risks |
+| **Actions** | Proposed action items |
+| **Status** | Machine-readable state: `open` · `ready_for_human_decision` · `blocked` · `deferred` · `resolved` |
+| **DecisionPromptForHuman** | Shown to you when the item reaches `ready_for_human_decision` |
+
+When the summary status is `deferred` or `resolved`, the agenda item transitions automatically.
+
+### Off-topic guard
+
+Each agent's system prompt includes a **topic guard** anchored to the current agenda item text. If an agent's response is primarily about a different agenda item it is flagged as off-topic and the agent is prompted to respond on-topic or emit `[SKIP]:`.
 
 ### Action Items tab
 
 All action items for the meeting are listed here with their assigned agent. Action items appear in this tab as you add them during the meeting.
 
+> Action items from moderator summaries are added automatically, unless the current item has an **Action Policy** of Block all actions or Allow moderator actions only — in which case only moderator-sourced actions are added.
+
 ### Minutes tab
 
-Click **Generate Minutes** to produce a complete Markdown summary of the meeting: agenda, all agent responses, decisions, and action items. Click **Save to File** to persist the minutes to `.bormagi/virtual-meetings/<meeting-id>/minutes.md`.
+Click **Generate Minutes** to produce a complete Markdown summary of the meeting: agenda, all agent responses, decisions, deferred items (with reasons), and action items. Click **Save to File** to persist the minutes to `.bormagi/virtual-meetings/<meeting-id>/minutes.md`.
 
 ### Storage
 
@@ -765,6 +833,23 @@ npm run vsce:publish
 For the full step-by-step guide — including how to create an Azure DevOps organisation, generate a PAT, and set up automated publishing via GitHub Actions — see [PUBLISHING.md](PUBLISHING.md).
 
 ---
+
+---
+
+## Recent Enhancements (Meeting Productivity — all complete)
+
+The following improvements were delivered as the Meeting Productivity batch, addressing agenda stalling, action-policy enforcement, summary quality, off-topic drift, and meeting startup reliability.
+
+| Feature | What was delivered |
+|---|---|
+| **Agent availability check** | Bormagi pings all selected agents before creating the meeting. Offline agents trigger an inline dialog: remove them and proceed, or cancel to reconfigure |
+| **Moderator auto-assignment** | The first available online participant is automatically set as moderator. If the originally-intended moderator is offline the next available agent takes the role |
+| **Silent introduction round** | All attending agents introduce themselves at meeting start. Introductions are stored internally but not shown in the conversation view — the UI shows a `(introduction — N/M)` counter only |
+| **Deferred agenda items** | Agenda items now have a `deferred` status. Typing "next agenda item", "proceed to next", "move on", "defer", "postpone", or "skip this item" in chat immediately defers the current item (after a moderator closeout summary) and advances to the next pending item |
+| **Action Policy** | A per-agenda-item action policy can be toggled via the ⛔ button: Normal → Block all actions → Allow moderator actions only. Enforced both in agent system prompts and in the response validator |
+| **Moderator summary Status field** | Moderator summaries now include a machine-readable `Status:` field (`open` / `ready_for_human_decision` / `blocked` / `deferred` / `resolved`) that drives automatic item transitions |
+| **Off-topic guard** | Each agent's system prompt includes a topic guard anchored to the current agenda item. Off-topic responses are flagged and the agent is reprompted to stay on topic or skip |
+| **Interrupt suppression** | When an item has `BLOCK_ALL_ACTIONS` or `ALLOW_ONLY_TAGS` policy, or is blocked pending human input, inter-agent interrupt requests are suppressed |
 
 ---
 

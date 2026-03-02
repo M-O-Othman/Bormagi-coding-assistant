@@ -280,6 +280,23 @@
       background: var(--vscode-descriptionForeground, #888);
     }
 
+    .intro-notice {
+      font-size: 12px;
+      font-style: italic;
+      color: var(--vscode-descriptionForeground, #888);
+      padding: 4px 0;
+      text-align: center;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 6px;
+    }
+
+    .checking-notice {
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground, #888);
+      padding: 4px 8px;
+      font-style: italic;
+    }
+
     /* chat feed */
     .chat-area {
       flex: 1;
@@ -1017,7 +1034,7 @@
           <!-- Chat input bar (shown during meeting) -->
           <div class="chat-input-bar" id="chat-input-bar" style="display:none">
             <div class="chat-input-row">
-              <textarea id="user-input" rows="1" placeholder="Message… @agent-name to direct a question to a specific agent"
+              <textarea id="user-input" rows="1" placeholder="Message… use @mention to direct a question to a specific agent"
                 onkeydown="handleInputKey(event)" oninput="onUserInputChange()"></textarea>
               <button class="btn" onclick="continueDiscussion()" id="continue-btn" title="Run another round">
                 <span class="spinner" id="send-spinner" style="display:none"></span>
@@ -1031,6 +1048,15 @@
               <button class="btn btn-outline btn-sm" onclick="toggleBlockActions()" id="block-actions-btn" title="Block/unblock agents from creating new actions">⛔ Block actions</button>
               <span id="action-policy-badge" style="display:none;font-size:11px;padding:2px 6px;background:var(--warn);border-radius:3px;"></span>
               <button class="btn btn-danger btn-sm" onclick="endMeeting()" id="end-meeting-btn">■ End</button>
+            </div>
+          </div>
+
+          <!-- Offline-agent dialog (shown before meeting starts if agents are unavailable) -->
+          <div class="inline-panel" id="offline-agent-panel" style="display:none">
+            <div class="inline-panel-label" id="offline-agent-msg">Some agents are unavailable.</div>
+            <div class="inline-panel-row" style="gap:8px;flex-wrap:wrap">
+              <button class="btn btn-sm btn-outline" onclick="proceedWithoutOffline()">▶ Proceed without them</button>
+              <button class="btn btn-sm btn-outline" onclick="reconfigureAndRetry()">⚙ Reconfigure agents</button>
             </div>
           </div>
 
@@ -1142,6 +1168,13 @@
         case 'open_question_created': onOpenQuestionCreated(msg.agendaItemId, msg.oqId, msg.question, msg.askedBy); break;
         case 'round_complete': onRoundComplete(msg.agendaItemId); break;
         case 'round_error': onRoundError(msg.agendaItemId, msg.error); break;
+        case 'availability_checking': onAvailabilityChecking(); break;
+        case 'agents_availability_check': onAgentsAvailabilityCheck(msg.offlineAgentIds, msg.offlineAgentNames); break;
+        case 'meeting_ended_no_agents': onMeetingEndedNoAgents(); break;
+        case 'meeting_setup_cancelled': onMeetingSetupCancelled(); break;
+        case 'introduction_started': onIntroductionStarted(msg.count); break;
+        case 'agent_introduced': onAgentIntroduced(msg.agentId, msg.agentName); break;
+        case 'introductions_complete': onIntroductionsComplete(); break;
         case 'item_resolved': onItemResolved(msg.agendaItemId, msg.decision); break;
         case 'item_deferred': onItemDeferred(msg.agendaItemId, msg.reason); break;
         case 'item_blocked_for_human': onItemBlockedForHuman(msg.agendaItemId); break;
@@ -1196,6 +1229,9 @@
     // ── Meeting started ────────────────────────────────────────
     function onMeetingStarted(m) {
       meeting = m;
+      // Clean up any pre-start UI elements
+      document.getElementById('availability-checking-notice')?.remove();
+      document.getElementById('offline-agent-panel').style.display = 'none';
 
       // Hide setup form — no longer needed during the meeting
       document.getElementById('tab-setup').style.display = 'none';
@@ -1358,11 +1394,12 @@
         el = document.getElementById(`stream-${agendaItemId}-${agentId}`);
       }
       const wasNearBottom = isNearBottom(feed);
-      el.textContent += delta;
+      el.innerHTML += delta;
       if (wasNearBottom) { scrollToBottom(feed); }
     }
 
     function onAgentRoundDone(agendaItemId, agentId, fullResponse, skipped, tag) {
+      if (activeItemId !== agendaItemId) { return; }
       const el = document.getElementById(`stream-${agendaItemId}-${agentId}`);
       if (el) {
         if (skipped) {
@@ -1390,8 +1427,9 @@
               nameEl.appendChild(badge);
             }
           }
-          // Re-render body with @mention highlights and INTERRUPT_REQUEST callouts
-          el.innerHTML = renderWithMentions(el.textContent || fullResponse);
+          // The 'fullResponse' is already parsed markdown.
+          // We just need to render @mentions on top of the HTML.
+          el.innerHTML = renderWithMentions(fullResponse);
         }
         el.removeAttribute('id');
       }
@@ -1436,11 +1474,12 @@
         el = document.getElementById(streamId);
       }
       const wasNearBottom = isNearBottom(feed);
-      el.textContent += delta;
+      el.innerHTML += delta;
       if (wasNearBottom) { scrollToBottom(feed); }
     }
 
     function onInterruptDone(agendaItemId, agentId, triggeredBy, fullResponse, tag) {
+      if (activeItemId !== agendaItemId) { return; }
       const streamId = `interrupt-${agendaItemId}-${agentId}-${triggeredBy}`;
       const el = document.getElementById(streamId);
       if (el) {
@@ -1457,8 +1496,9 @@
             nameEl.appendChild(badge);
           }
         }
-        // Re-render body with @mention highlights
-        el.innerHTML = renderWithMentions(el.textContent || fullResponse);
+        // The 'fullResponse' is already parsed markdown.
+        // We just need to render @mentions on top of the HTML.
+        el.innerHTML = renderWithMentions(fullResponse);
         el.removeAttribute('id');
       }
 
@@ -1481,32 +1521,32 @@
 
       // Render structured sections if available
       if (summary.problem) {
-        html += `<div class="summary-section"><span class="summary-section-label">Problem:</span> <span class="summary-section-content">${esc(summary.problem)}</span></div>`;
+        html += `<div class="summary-section"><span class="summary-section-label">Problem:</span> <span class="summary-section-content">${summary.problem}</span></div>`;
       }
       if (summary.options && summary.options.length) {
         html += '<div class="summary-section"><span class="summary-section-label">Options:</span>';
-        summary.options.forEach(function (o) { html += `<div class="summary-section-content">• ${esc(o)}</div>`; });
+        summary.options.forEach(function (o) { html += `<div class="summary-section-content">• ${o}</div>`; });
         html += '</div>';
       }
       if (summary.recommendation) {
-        html += `<div class="summary-section"><span class="summary-section-label">Recommendation:</span> <span class="summary-section-content">${esc(summary.recommendation)}</span></div>`;
+        html += `<div class="summary-section"><span class="summary-section-label">Recommendation:</span> <span class="summary-section-content">${summary.recommendation}</span></div>`;
       }
       if (summary.risks && summary.risks.length) {
         html += '<div class="summary-section"><span class="summary-section-label">Risks:</span>';
-        summary.risks.forEach(function (r) { html += `<div class="summary-section-content">• ${esc(r)}</div>`; });
+        summary.risks.forEach(function (r) { html += `<div class="summary-section-content">• ${r}</div>`; });
         html += '</div>';
       }
       if (summary.actions && summary.actions.length) {
         html += '<div class="summary-section"><span class="summary-section-label">Actions:</span>';
-        summary.actions.forEach(function (a) { html += `<div class="summary-section-content">• ${esc(a)}</div>`; });
+        summary.actions.forEach(function (a) { html += `<div class="summary-section-content">• ${a}</div>`; });
         html += '</div>';
       }
       if (summary.decisionPrompt) {
-        html += `<div class="decision-prompt">${esc(summary.decisionPrompt)}</div>`;
+        html += `<div class="decision-prompt">${summary.decisionPrompt}</div>`;
       }
       // Fallback: show raw summary if no structured fields
       if (!summary.problem && !summary.recommendation && !summary.decisionPrompt && summary.summary) {
-        html += `<div class="summary-card-body">${esc(summary.summary)}</div>`;
+        html += `<div class="summary-card-body">${summary.summary}</div>`;
       }
 
       card.innerHTML = html;
@@ -1552,6 +1592,86 @@
       feed.appendChild(errDiv);
     }
 
+    // ── Availability + introduction handlers ──────────────────
+    function onAvailabilityChecking() {
+      const feed = document.getElementById('chat-feed');
+      if (!feed) { return; }
+      const div = document.createElement('div');
+      div.className = 'checking-notice';
+      div.id = 'availability-checking-notice';
+      div.textContent = '⏳ Checking agent availability…';
+      feed.appendChild(div);
+    }
+
+    function onAgentsAvailabilityCheck(offlineIds, offlineNames) {
+      // Remove checking notice
+      document.getElementById('availability-checking-notice')?.remove();
+
+      const panel = document.getElementById('offline-agent-panel');
+      const msg = document.getElementById('offline-agent-msg');
+      if (!panel || !msg) { return; }
+
+      const names = (offlineNames || offlineIds || []).join(', ');
+      msg.innerHTML = `⚠ <strong>${names}</strong> ${offlineIds.length === 1 ? 'is' : 'are'} unavailable (no provider / API key configured). Proceed without ${offlineIds.length === 1 ? 'them' : 'them'}, or reconfigure first.`;
+      panel.style.display = '';
+    }
+
+    function onMeetingEndedNoAgents() {
+      document.getElementById('availability-checking-notice')?.remove();
+      document.getElementById('offline-agent-panel').style.display = 'none';
+      const feed = document.getElementById('chat-feed');
+      const div = document.createElement('div');
+      div.className = 'resolved-notice';
+      div.style.borderLeftColor = 'var(--error, #f44)';
+      div.innerHTML = '<strong>Cannot start meeting.</strong> No agents are available. Configure at least one agent with a valid provider and API key.';
+      feed.appendChild(div);
+      document.getElementById('start-btn').disabled = false;
+    }
+
+    function onMeetingSetupCancelled() {
+      document.getElementById('offline-agent-panel').style.display = 'none';
+      document.getElementById('start-btn').disabled = false;
+      setStatus('Setup cancelled — reconfigure agents and try again.', 'idle', 5000);
+    }
+
+    let introCount = 0;
+    let introDone = 0;
+
+    function onIntroductionStarted(count) {
+      introCount = count; introDone = 0;
+      const feed = document.getElementById('chat-feed');
+      if (!feed) { return; }
+      const div = document.createElement('div');
+      div.className = 'intro-notice';
+      div.id = 'intro-progress';
+      div.textContent = `(introduction — 0 / ${count})`;
+      feed.appendChild(div);
+      scrollToBottom(feed);
+    }
+
+    function onAgentIntroduced(agentId, agentName) {
+      introDone++;
+      const el = document.getElementById('intro-progress');
+      if (el) { el.textContent = `(introduction — ${introDone} / ${introCount})`; }
+    }
+
+    function onIntroductionsComplete() {
+      const el = document.getElementById('intro-progress');
+      if (el) { el.textContent = '(introduction complete — meeting started)'; }
+      setStatus('Introductions done — starting first agenda item…', 'active', 4000);
+    }
+
+    function proceedWithoutOffline() {
+      document.getElementById('offline-agent-panel').style.display = 'none';
+      vscode.postMessage({ type: 'offline_agent_decision', action: 'proceed' });
+    }
+
+    function reconfigureAndRetry() {
+      document.getElementById('offline-agent-panel').style.display = 'none';
+      vscode.postMessage({ type: 'offline_agent_decision', action: 'reconfigure' });
+    }
+
+    // ──────────────────────────────────────────────────────────
     function onItemResolved(agendaItemId, decision) {
       if (!meeting) { return; }
       const item = meeting.agenda.find(a => a.id === agendaItemId);
@@ -1681,7 +1801,7 @@
       // Reset any blocked styling
       const input = document.getElementById('user-input');
       input.style.borderColor = '';
-      input.placeholder = 'Message… @agent-name to direct a question to a specific agent';
+      input.placeholder = 'Message… use @mention to direct a question to a specific agent';
       vscode.postMessage({ type: 'run_round', agendaItemId: itemId, userMessage });
     }
 
@@ -1690,7 +1810,7 @@
       const input = document.getElementById('user-input');
       if (input.value.trim() && input.style.borderColor) {
         input.style.borderColor = '';
-        input.placeholder = 'Message… @agent-name to direct a question to a specific agent';
+        input.placeholder = 'Message… use @mention to direct a question to a specific agent';
       }
       // Check for @mention trigger
       checkMentionTrigger(input);
@@ -1809,7 +1929,8 @@
       // Replace from @ start to current cursor position
       const before = val.slice(0, mentionStartPos);
       const after = val.slice(cursor);
-      const mention = '@' + agentName + ' ';
+      // Use stable agent ID for routing; UI still shows display names in the dropdown.
+      const mention = '@' + agentId + ' ';
       input.value = before + mention + after;
       const newPos = mentionStartPos + mention.length;
       input.setSelectionRange(newPos, newPos);
@@ -1982,7 +2103,7 @@
       <span class="agent-name">${esc(name)}${isModerator ? '<span class="moderator-badge">moderator</span>' : ''}</span>
       <span class="agent-timestamp">${timestamp ? new Date(timestamp).toLocaleTimeString() : ''}</span>
     </div>
-    <div class="agent-body">${renderWithMentions(text)}</div>`;
+    <div class="agent-body">${text}</div>`;
       feed.appendChild(div);
     }
 
@@ -1999,18 +2120,17 @@
      * line callouts. Safe to insert as innerHTML — escapes all content first.
      */
     function renderWithMentions(text) {
-      // 1. Split into lines, escape each line, then re-join
+      // 1. Split into lines, and re-join
       const lines = String(text).split('\n');
       const rendered = lines.map(line => {
-        const escaped = esc(line);
         // Highlight INTERRUPT_REQUEST: lines
         if (/^INTERRUPT_REQUEST:/i.test(line.trim())) {
           // Highlight any @mention inside it too
-          const inner = escaped.replace(/@([\w-]+)/g, '<span class="mention">@$1</span>');
+          const inner = line.replace(/@([\w-]+)/g, '<span class="mention">@$1</span>');
           return `<span class="interrupt-request-line">${inner}</span>`;
         }
         // Highlight @mentions in regular lines
-        return escaped.replace(/@([\w-]+)/g, '<span class="mention">@$1</span>');
+        return line.replace(/@([\w-]+)/g, '<span class="mention">@$1</span>');
       });
       return rendered.join('\n');
     }
