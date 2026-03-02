@@ -15,6 +15,8 @@ interface GeminiProviderOptions {
   authMethod: 'api_key' | 'oauth_proxy' | 'vertex_ai' | 'gcp_adc';
   baseUrl?: string;
   proxyUrl?: string;
+  /** GCP region for Vertex AI, e.g. "europe-west4". Overrides env vars when set. */
+  vertexLocation?: string;
 }
 
 export class GeminiProvider implements ILLMProvider {
@@ -24,6 +26,7 @@ export class GeminiProvider implements ILLMProvider {
   private readonly apiKey: string;
   private readonly baseUrl?: string;
   private readonly proxyUrl?: string;
+  private readonly vertexLocation?: string;
   private readonly apiClient: GoogleGenerativeAI | null;
 
   constructor(options: GeminiProviderOptions) {
@@ -32,6 +35,7 @@ export class GeminiProvider implements ILLMProvider {
     this.apiKey = options.apiKey?.trim() ?? '';
     this.baseUrl = options.baseUrl?.trim() || undefined;
     this.proxyUrl = options.proxyUrl?.trim() || undefined;
+    this.vertexLocation = options.vertexLocation?.trim() || undefined;
 
     if (this.authMethod === 'api_key') {
       if (!this.apiKey) {
@@ -98,7 +102,12 @@ export class GeminiProvider implements ILLMProvider {
   }
 
   private getVertexLocation(): string {
-    return (process.env.GOOGLE_CLOUD_LOCATION || process.env.GCP_LOCATION || 'us-central1').trim();
+    return (
+      this.vertexLocation ||
+      process.env.GOOGLE_CLOUD_LOCATION ||
+      process.env.GCP_LOCATION ||
+      'us-central1'
+    ).trim();
   }
 
   private stripTrailingSlash(url: string): string {

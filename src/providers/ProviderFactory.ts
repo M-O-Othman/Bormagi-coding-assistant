@@ -37,7 +37,8 @@ export class ProviderFactory {
           model: provider.model,
           authMethod: provider.auth_method,
           baseUrl: provider.base_url ?? undefined,
-          proxyUrl: provider.proxy_url ?? undefined
+          proxyUrl: provider.proxy_url ?? undefined,
+          vertexLocation: provider.vertex_location ?? undefined
         });
 
       case 'deepseek':

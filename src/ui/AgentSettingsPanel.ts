@@ -303,11 +303,15 @@ export class AgentSettingsPanel {
     <label for="dp-proxy-url">Proxy URL (optional)</label>
     <input id="dp-proxy-url" type="text" placeholder="https://proxy.example.com"/>
     <label for="dp-auth">Auth Method (Gemini only)</label>
-    <select id="dp-auth">
+    <select id="dp-auth" onchange="syncDefaultAuthControls()">
       <option value="api_key">API Key</option>
       <option value="oauth_proxy">OAuth Identity via Proxy (no API key)</option>
       <option value="vertex_ai">GCP Vertex AI (ADC/OAuth)</option>
     </select>
+    <div id="dp-vertex-location-row" style="display:none">
+      <label for="dp-vertex-location">Vertex AI Region</label>
+      <input id="dp-vertex-location" type="text" placeholder="europe-west4"/>
+    </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn" onclick="saveDefaultProvider()">Save Default Provider</button>
       <button class="btn btn-secondary" onclick="applyDefaultToAll()" title="Set all agents to use the workspace default provider">Apply to all agents</button>
@@ -371,6 +375,11 @@ export class AgentSettingsPanel {
 
       <label for="f-proxy-url">Proxy URL (optional)</label>
       <input id="f-proxy-url" type="text" placeholder="https://proxy.example.com"/>
+
+      <div id="f-vertex-location-row" style="display:none">
+        <label for="f-vertex-location">Vertex AI Region</label>
+        <input id="f-vertex-location" type="text" placeholder="europe-west4"/>
+      </div>
     </div>
 
     <div class="row" style="margin-top:8px">
@@ -396,6 +405,8 @@ export class AgentSettingsPanel {
       const authSel = document.getElementById('dp-auth');
       authSel.disabled = !isGemini;
       if (!isGemini) authSel.value = 'api_key';
+      const isVertex = isGemini && authSel.value === 'vertex_ai';
+      document.getElementById('dp-vertex-location-row').style.display = isVertex ? '' : 'none';
     }
 
     function syncAgentAuthControls() {
@@ -410,6 +421,8 @@ export class AgentSettingsPanel {
       } else {
         hint.textContent = 'Leave blank to keep existing key. For Gemini OAuth/Vertex modes, API key is not required.';
       }
+      const isVertex = isGemini && authSel.value === 'vertex_ai';
+      document.getElementById('f-vertex-location-row').style.display = isVertex ? '' : 'none';
     }
 
     // ── Default provider section ───────────────────────────────────────────
@@ -427,9 +440,10 @@ export class AgentSettingsPanel {
       const apiKey = document.getElementById('dp-apikey').value.trim();
       const baseUrl = document.getElementById('dp-base-url').value.trim() || null;
       const proxyUrl = document.getElementById('dp-proxy-url').value.trim() || null;
+      const vertexLocation = document.getElementById('dp-vertex-location').value.trim() || null;
       vscode.postMessage({
         type: 'save_default_provider',
-        provider: { type, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod },
+        provider: { type, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod, vertex_location: vertexLocation },
         apiKey: apiKey || undefined
       });
     }
@@ -507,6 +521,7 @@ export class AgentSettingsPanel {
           document.getElementById('f-auth-method').value = normaliseAuthMethod(a.provider.auth_method || 'api_key');
           document.getElementById('f-base-url').value = a.provider.base_url || '';
           document.getElementById('f-proxy-url').value = a.provider.proxy_url || '';
+          document.getElementById('f-vertex-location').value = a.provider.vertex_location || '';
           document.getElementById('f-apikey').value = '';
           syncAgentAuthControls();
           onUseDefaultChange();
@@ -523,6 +538,7 @@ export class AgentSettingsPanel {
         document.getElementById('f-auth-method').value = 'api_key';
         document.getElementById('f-base-url').value = '';
         document.getElementById('f-proxy-url').value = '';
+        document.getElementById('f-vertex-location').value = '';
         document.getElementById('f-apikey').value = '';
         syncAgentAuthControls();
         onUseDefaultChange();
@@ -548,6 +564,7 @@ export class AgentSettingsPanel {
         : 'api_key';
       const baseUrl = document.getElementById('f-base-url').value.trim() || null;
       const proxyUrl = document.getElementById('f-proxy-url').value.trim() || null;
+      const vertexLocation = document.getElementById('f-vertex-location').value.trim() || null;
       const apiKey = document.getElementById('f-apikey').value;
 
       if (!id || !name) {
@@ -558,7 +575,7 @@ export class AgentSettingsPanel {
       const config = {
         id, name, category, description, enabled: true,
         useDefaultProvider,
-        provider: { type: providerType, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod },
+        provider: { type: providerType, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod, vertex_location: vertexLocation },
         system_prompt_files: ['system-prompt.md'],
         mcp_servers: [],
         context_filter: {
@@ -595,6 +612,7 @@ export class AgentSettingsPanel {
           document.getElementById('dp-auth').value = normaliseAuthMethod(msg.defaultProvider.auth_method || 'api_key');
           document.getElementById('dp-base-url').value = msg.defaultProvider.base_url || '';
           document.getElementById('dp-proxy-url').value = msg.defaultProvider.proxy_url || '';
+          document.getElementById('dp-vertex-location').value = msg.defaultProvider.vertex_location || '';
           syncDefaultAuthControls();
         }
         document.getElementById('default-status').textContent =

@@ -27,6 +27,8 @@ export interface ProviderConfig {
   base_url: string | null;
   proxy_url: string | null;
   auth_method: AuthMethod;
+  /** GCP region for Vertex AI, e.g. "europe-west4". Overrides env vars. */
+  vertex_location?: string | null;
 }
 
 export interface MCPServerConfig {
