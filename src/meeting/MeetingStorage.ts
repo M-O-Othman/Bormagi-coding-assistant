@@ -53,4 +53,30 @@ export class MeetingStorage {
     if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
     fs.writeFileSync(path.join(dir, 'minutes.md'), markdown, 'utf8');
   }
+
+  /** Append a line to the minutes file (creates header if file doesn't exist). */
+  async appendMinutesLine(id: string, line: string): Promise<void> {
+    const dir = this.meetingDir(id);
+    if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
+    const file = path.join(dir, 'minutes.md');
+    fs.appendFileSync(file, line + '\n', 'utf8');
+  }
+
+  /** Append a structured open question block to the open_questions.md file. */
+  async appendOpenQuestionBlock(id: string, block: string): Promise<void> {
+    const dir = this.meetingDir(id);
+    if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
+    const file = path.join(dir, 'open_questions.md');
+    if (!fs.existsSync(file)) {
+      fs.writeFileSync(file, '# Open Questions\n\n', 'utf8');
+    }
+    fs.appendFileSync(file, block + '\n', 'utf8');
+  }
+
+  /** Return the next sequential open question ID (OQ-00001, OQ-00002, ...). */
+  nextOpenQuestionId(meeting: { oqCounter?: number }): string {
+    const counter = (meeting.oqCounter ?? 0) + 1;
+    meeting.oqCounter = counter;
+    return `OQ-${String(counter).padStart(5, '0')}`;
+  }
 }

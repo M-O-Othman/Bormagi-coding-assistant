@@ -65,17 +65,7 @@ Open the dashboard with **`Ctrl+Shift+P` → `Bormagi: Open Dashboard`**, or via
 
 The dashboard is a full-width VS Code panel with five tabs and a status bar footer. It uses your active VS Code colour theme automatically.
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  [B] Bormagi  │ Work │ Chat │ Review [2] │ Workflows │ Setup │ ws/ │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│                        (active tab content)                         │
-│                                                                     │
-├─────────────────────────────────────────────────────────────────────┤
-│  No active workflow  •  advanced-coder  •  ↑ 1.2k  ↓ 3.4k  •  ● Ready │
-└─────────────────────────────────────────────────────────────────────┘
-```
+![Bormagi dashboard overview](docs/assets/screenshots/dashboard-overview.png)
 
 The footer status bar shows the active workflow name, active agent, cumulative token counts, and extension readiness at a glance. The **Review** tab badge shows the count of pending items needing your attention.
 
@@ -85,33 +75,7 @@ The footer status bar shows the active workflow name, active agent, cumulative t
 
 The Work tab is the landing view. It shows the most recently active workflow, its stage progress, the current running task, and any items that need your attention (blockers, pending reviews, pending handoffs).
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Work                                          [Open Chat] [↺ Refresh] │
-├─────────────────────────────────────────────────────────────────────┤
-│  ┌─── Active Workflow ─────────────────────────────────────────────┐│
-│  │  Add dark mode support                         status: active   ││
-│  │  ● requirements  ● architecture  ◉ implementation  ○ qa  ○ done ││
-│  │  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  60%        ││
-│  └─────────────────────────────────────────────────────────────────┘│
-│                                                                     │
-│  ┌── Current Task ─────────────────────────────────────────────────┐│
-│  │  Implement colour token system             advanced-coder        ││
-│  │  Status: active                                                  ││
-│  │                       [Open Chat]  [Review Items]               ││
-│  └─────────────────────────────────────────────────────────────────┘│
-│                                                                     │
-│  ┌── Attention ────────────────────────────────────────────────────┐│
-│  │  ⚠ Blocker: Unclear design spec for high-contrast mode  [View]  ││
-│  │  🔗 Handoff: Delegate QA validation to software-qa      [View]  ││
-│  └─────────────────────────────────────────────────────────────────┘│
-│                                                                     │
-│  ┌─ KPIs ──────────┐ ┌─ KPIs ──────────┐ ┌─ KPIs ──────────────┐  │
-│  │  Total Workflows │ │  Active          │ │  Pending Reviews     │  │
-│  │       3          │ │      1           │ │        2             │  │
-│  └──────────────────┘ └──────────────────┘ └──────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
-```
+![Bormagi Work tab](docs/assets/screenshots/work-tab.png)
 
 When no workflow is running, the Work tab shows an empty state with a prompt to create one.
 
@@ -121,34 +85,7 @@ When no workflow is running, the Work tab shows an empty state with a prompt to 
 
 The Chat tab provides a full streaming chat experience with the selected agent.
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  [advanced-coder ▾]  [anthropic · claude-sonnet-4-6]  [Clear] [Export] │
-│                                              ↑ 4,210  ↓ 1,830  $0.04 │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  You                                                         14:22  │
-│  Refactor the colour system to use CSS custom properties.           │
-│                                                                     │
-│  advanced-coder                                              14:22  │
-│  I'll refactor the colour system now. Let me start by reading       │
-│  the current implementation…                                        │
-│                                                                     │
-│  ▶ Tool calls  (2 calls — click to expand)                          │
-│    read_file  src/styles/colours.css                                │
-│    write_file src/styles/colours.css  [approved]                    │
-│                                                                     │
-│  Done. All 14 colour values are now CSS custom properties           │
-│  under :root { --color-* }. No functional changes.                  │
-│                                                                     │
-│  ···                                                                │
-├─────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────┐ [Send]    │
-│  │ Message… (↑/↓ history · Enter to send · Shift+Enter │           │
-│  │ for newline)                                         │           │
-│  └─────────────────────────────────────────────────────┘           │
-└─────────────────────────────────────────────────────────────────────┘
-```
+![Bormagi Chat tab](docs/assets/screenshots/chat-tab.png)
 
 | Feature | Detail |
 |---|---|
@@ -167,34 +104,7 @@ The Chat tab provides a full streaming chat experience with the selected agent.
 
 The Review tab aggregates everything waiting for your attention across all active workflows. Items appear automatically; a badge on the tab header shows the count.
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Review                                                  [↺ Refresh] │
-├─────────────────────────────────────────────────────────────────────┤
-│  [All]  [Handoffs]  [QA Reviews]  [Blockers]                        │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  ┌── HANDOFF ─────────────────────────────────────────────────────┐ │
-│  │  "Add dark mode support"  →  Delegate architecture design       │ │
-│  │  From: advanced-coder   To: solution-architect                  │ │
-│  │  Agent delegation request                          task #t-002  │ │
-│  │                                          [Approve]  [Reject]    │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                                                                     │
-│  ┌── QA REVIEW ───────────────────────────────────────────────────┐ │
-│  │  "Add dark mode support"  →  QA Review                         │ │
-│  │  Colour token refactor ready for validation      task #t-005   │ │
-│  │  Requested by: advanced-coder                                   │ │
-│  │              [Approved]  [Approved with comments]  [Rejected]   │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                                                                     │
-│  ┌── BLOCKER  high ───────────────────────────────────────────────┐ │
-│  │  "Add dark mode support"                         task #t-003   │ │
-│  │  Unclear design spec for high-contrast mode                    │ │
-│  │                                                  [Resolve]     │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────┘
-```
+![Bormagi Review tab](docs/assets/screenshots/review-tab.png)
 
 | Item type | Available actions |
 |---|---|
@@ -212,46 +122,13 @@ The Workflows tab has two sub-views: **Board** (kanban) and **New Workflow** (cr
 
 #### Board view
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Workflows                                               [↺ Refresh] │
-│  [Board]  [+ New Workflow]                                          │
-├──────────┬────────────┬───────────────┬────────────┬───────────────┤
-│ Backlog  │   Active   │ Waiting Review│  Blocked   │     Done      │
-├──────────┼────────────┼───────────────┼────────────┼───────────────┤
-│          │ ┌────────┐ │ ┌───────────┐ │            │ ┌───────────┐ │
-│          │ │Impl.   │ │ │Arch. rev. │ │            │ │Req. phase │ │
-│          │ │task    │ │ │           │ │            │ │           │ │
-│          │ │adv-cdr │ │ │sol-arch   │ │            │ │           │ │
-│          │ └────────┘ │ └───────────┘ │            │ └───────────┘ │
-│          │            │               │            │               │
-└──────────┴────────────┴───────────────┴────────────┴───────────────┘
-```
+![Bormagi Workflows board view](docs/assets/screenshots/workflows-board.png)
 
 Click any task card to open the **task detail overlay**, which shows the objective, owner agent, handoff context, child tasks, blockers, reviews, and a full audit timeline. From the overlay you can cancel the task.
 
 #### New Workflow form
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Create Workflow                                         │
-│                                                         │
-│  Template  ┌──────────────────────────────────────────┐ │
-│            │ New Feature Delivery               ▾      │ │
-│            └──────────────────────────────────────────┘ │
-│  Title     ┌──────────────────────────────────────────┐ │
-│            │ Add dark mode support                     │ │
-│            └──────────────────────────────────────────┘ │
-│  Owner     ┌──────────────────────────────────────────┐ │
-│            │ alice                                     │ │
-│            └──────────────────────────────────────────┘ │
-│  Linked    ┌──────────────────────────────────────────┐ │
-│  Issue     │ #123                                      │ │
-│            └──────────────────────────────────────────┘ │
-│                                                         │
-│  [Create Workflow]                                      │
-└─────────────────────────────────────────────────────────┘
-```
+![Bormagi new workflow form](docs/assets/screenshots/workflows-new-form.png)
 
 Available templates:
 
@@ -267,27 +144,7 @@ Available templates:
 
 The Setup tab has three sub-views: **Agents**, **Workspace**, and **Tools & Log**.
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Setup                                                              │
-│  [Agents]  [Workspace]  [Tools & Log]                               │
-├─────────────────────────────────────────────────────────────────────┤
-│  Agents                               [+ New Agent] [Install Predefined] │
-│                                                                     │
-│  ┌─────────────────────────────────────────────────────────────────┐│
-│  │  advanced-coder          anthropic · claude-sonnet-4-6  [Edit] ││
-│  │  Production-ready code, refactoring, code review                ││
-│  └─────────────────────────────────────────────────────────────────┘│
-│  ┌─────────────────────────────────────────────────────────────────┐│
-│  │  solution-architect      openai · gpt-4o                [Edit] ││
-│  │  Architecture decisions, C4 diagrams, system design             ││
-│  └─────────────────────────────────────────────────────────────────┘│
-│  ...                                                                │
-│                                                                     │
-│  Full configuration (providers, system prompts, MCP servers)        │
-│  is available in the Agent Settings panel.                          │
-└─────────────────────────────────────────────────────────────────────┘
-```
+![Bormagi Setup tab](docs/assets/screenshots/setup-tab.png)
 
 **Workspace sub-tab** provides one-click access to: initialise the `.bormagi` folder, install predefined agents, and open the full Agent Settings panel.
 

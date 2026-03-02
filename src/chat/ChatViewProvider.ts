@@ -10,7 +10,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly controller: ChatController
-  ) {}
+  ) { }
 
   resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -55,13 +55,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private getHtml(): string {
     const htmlPath = path.join(this.extensionUri.fsPath, 'media', 'chat.html');
     try {
-      const raw = fs.readFileSync(htmlPath, 'utf8');
+      let raw = fs.readFileSync(htmlPath, 'utf8');
       // Inject model context limits from the shared constants so chat.html
       // never needs its own hardcoded copy.
-      return raw.replace(
+      raw = raw.replace(
         /\/\*__MODEL_CONTEXT_LIMITS_JSON__\*\/\{\}\/\*__END__\*\//,
         JSON.stringify(getAppData().contextLimits)
       );
+      // Inject the marked.js Markdown parser library inline so it works
+      // within the webview's strict CSP (no external scripts allowed).
+      try {
+        const markedPath = path.join(this.extensionUri.fsPath, 'node_modules', 'marked', 'lib', 'marked.umd.js');
+        const markedSrc = fs.readFileSync(markedPath, 'utf8');
+        raw = raw.replace('/*__MARKED_LIB__*/', markedSrc);
+      } catch {
+        // If marked.js can't be loaded, the fallback in chat.html will
+        // render messages as escaped plain text (no Markdown formatting).
+      }
+      return raw;
     } catch {
       return '<html><body><p>Bormagi: Could not load chat UI.</p></body></html>';
     }

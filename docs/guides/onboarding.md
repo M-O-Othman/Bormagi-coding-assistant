@@ -184,9 +184,7 @@ Back in the chat panel:
 
 After completing step 5:
 
-```
-Chat panel → select "Business Analyst" agent → type "Hello"
-```
+![Bormagi chat panel example](../assets/screenshots/chat-tab.svg)
 
 Expected: A streaming response appears in the chat. Token usage stats appear at the top of the chat panel after the response completes.
 

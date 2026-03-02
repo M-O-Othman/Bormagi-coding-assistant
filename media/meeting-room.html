@@ -1,749 +1,2013 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Bormagi — Virtual Meeting</title>
-<style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg: var(--vscode-editor-background);
-    --fg: var(--vscode-editor-foreground);
-    --border: var(--vscode-panel-border, #444);
-    --input-bg: var(--vscode-input-background);
-    --input-border: var(--vscode-input-border, #555);
-    --btn-bg: var(--vscode-button-background);
-    --btn-fg: var(--vscode-button-foreground);
-    --btn-hover: var(--vscode-button-hoverBackground);
-    --secondary-bg: var(--vscode-editorWidget-background, #252526);
-    --accent: var(--vscode-focusBorder, #007acc);
-    --muted: var(--vscode-descriptionForeground, #888);
-    --tag-bg: var(--vscode-badge-background, #4d4d4d);
-    --tag-fg: var(--vscode-badge-foreground, #fff);
-    --success: #4caf50;
-    --warn: #ff9800;
-  }
-  body { background: var(--bg); color: var(--fg); font-family: var(--vscode-font-family, sans-serif); font-size: 13px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bormagi — Virtual Meeting</title>
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
 
-  /* ── Tabs ─────────────────────────────────────────── */
-  .tab-bar { display: flex; border-bottom: 1px solid var(--border); background: var(--secondary-bg); flex-shrink: 0; }
-  .tab { padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--muted); user-select: none; }
-  .tab.active { border-bottom-color: var(--accent); color: var(--fg); }
-  .tab-content { flex: 1; overflow: hidden; display: none; flex-direction: column; min-height: 0; }
-  .tab-content.active { display: flex; }
+    :root {
+      --bg: var(--vscode-editor-background);
+      --fg: var(--vscode-editor-foreground);
+      --border: var(--vscode-panel-border, #444);
+      --input-bg: var(--vscode-input-background);
+      --input-border: var(--vscode-input-border, #555);
+      --btn-bg: var(--vscode-button-background);
+      --btn-fg: var(--vscode-button-foreground);
+      --btn-hover: var(--vscode-button-hoverBackground);
+      --secondary-bg: var(--vscode-editorWidget-background, #252526);
+      --accent: var(--vscode-focusBorder, #007acc);
+      --muted: var(--vscode-descriptionForeground, #888);
+      --tag-bg: var(--vscode-badge-background, #4d4d4d);
+      --tag-fg: var(--vscode-badge-foreground, #fff);
+      --success: #4caf50;
+      --warn: #ff9800;
+    }
 
-  /* ── Forms ────────────────────────────────────────── */
-  .form-group { margin-bottom: 12px; }
-  label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
-  input[type=text], textarea, select { width: 100%; background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border); border-radius: 3px; padding: 6px 8px; font-size: 13px; font-family: inherit; resize: vertical; }
-  input[type=text]:focus, textarea:focus { outline: 1px solid var(--accent); }
-  .checkbox-list { max-height: 120px; overflow-y: auto; border: 1px solid var(--input-border); border-radius: 3px; padding: 4px; background: var(--input-bg); }
-  .checkbox-list label { display: flex; align-items: center; gap: 6px; padding: 3px 4px; color: var(--fg); font-size: 12px; text-transform: none; letter-spacing: 0; cursor: pointer; }
-  .checkbox-list label:hover { background: var(--secondary-bg); }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--vscode-font-family, sans-serif);
+      font-size: 13px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-bottom: 40px;
+    }
 
-  /* ── Buttons ──────────────────────────────────────── */
-  .btn { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; background: var(--btn-bg); color: var(--btn-fg); border: none; border-radius: 3px; cursor: pointer; font-size: 12px; font-family: inherit; }
-  .btn:hover { background: var(--btn-hover); }
-  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--fg); }
-  .btn-outline:hover { background: var(--secondary-bg); }
-  .btn-danger { background: var(--vscode-errorForeground, #f44); color: #fff; }
-  .btn-sm { padding: 3px 8px; font-size: 11px; }
+    /* ── Main Container ─────────────────────────────────────────── */
+    .container {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+      max-width: 1000px;
+      margin: 0 auto;
+      width: 100%;
+    }
 
-  /* ── Setup tab ────────────────────────────────────── */
-  #tab-setup { padding: 16px; overflow-y: auto; }
-  #tab-setup h2 { margin-bottom: 16px; font-size: 15px; }
+    /* ── Forms ────────────────────────────────────────── */
+    .form-group {
+      margin-bottom: 12px;
+    }
 
-  /* ── Meeting tab ──────────────────────────────────── */
-  #tab-meeting { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-  .meeting-layout { display: flex; flex: 1; overflow: hidden; min-height: 0; }
-  .agenda-sidebar { width: 220px; flex-shrink: 0; border-right: 1px solid var(--border); overflow-y: auto; padding: 8px; }
-  .agenda-sidebar h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 8px; padding: 0 4px; }
-  .agenda-item-btn { display: block; width: 100%; text-align: left; padding: 7px 8px; background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; color: var(--fg); font-size: 12px; font-family: inherit; margin-bottom: 4px; }
-  .agenda-item-btn:hover { background: var(--secondary-bg); }
-  .agenda-item-btn.active { border-color: var(--accent); background: var(--secondary-bg); }
-  .agenda-item-btn.resolved { opacity: 0.5; }
-  .item-status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
-  .dot-pending { background: var(--muted); }
-  .dot-discussing { background: var(--warn); }
-  .dot-resolved { background: var(--success); }
+    label {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
 
-  /* chat feed */
-  .chat-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-  .chat-feed { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
-  .item-header { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; padding-bottom: 8px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
-  .round-divider { font-size: 10px; color: var(--muted); text-align: center; padding: 4px 0; border-top: 1px dashed var(--border); }
-  .agent-msg { background: var(--secondary-bg); border-radius: 6px; padding: 10px 12px; }
-  .agent-msg-header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-  .agent-avatar { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: #fff; flex-shrink: 0; }
-  .agent-name { font-weight: 600; font-size: 12px; }
-  .agent-timestamp { font-size: 10px; color: var(--muted); margin-left: auto; }
-  .agent-body { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
-  .user-msg { align-self: flex-end; max-width: 80%; background: var(--accent); color: #fff; border-radius: 6px; padding: 8px 12px; font-size: 13px; line-height: 1.5; word-break: break-word; }
-  .user-msg-label { font-size: 10px; opacity: 0.75; margin-bottom: 3px; }
+    input[type=text],
+    textarea,
+    select {
+      width: 100%;
+      background: var(--input-bg);
+      color: var(--fg);
+      border: 1px solid var(--input-border);
+      border-radius: 3px;
+      padding: 6px 8px;
+      font-size: 13px;
+      font-family: inherit;
+      resize: vertical;
+    }
 
-  /* chat input bar */
-  .chat-input-bar { flex-shrink: 0; border-top: 1px solid var(--border); padding: 8px 12px; background: var(--secondary-bg); }
-  .chat-input-row { display: flex; gap: 8px; align-items: flex-end; }
-  .chat-input-row textarea { flex: 1; min-height: 36px; max-height: 120px; resize: none; border-radius: 4px; padding: 7px 10px; line-height: 1.4; }
-  .chat-controls { display: flex; gap: 6px; padding-top: 6px; flex-wrap: wrap; }
-  .agenda-select-label { font-size: 11px; color: var(--muted); margin-right: 4px; }
-  select.agenda-sel { width: auto; padding: 4px 6px; font-size: 12px; }
+    input[type=text]:focus,
+    textarea:focus {
+      outline: 1px solid var(--accent);
+    }
 
-  /* resolved notice */
-  .resolved-notice { background: rgba(76,175,80,0.12); border: 1px solid var(--success); border-radius: 6px; padding: 10px 14px; margin: 8px 12px; font-size: 12px; }
-  .resolved-notice strong { color: var(--success); }
+    .checkbox-list {
+      max-height: 120px;
+      overflow-y: auto;
+      border: 1px solid var(--input-border);
+      border-radius: 3px;
+      padding: 4px;
+      background: var(--input-bg);
+    }
 
-  /* ── Action Items tab ─────────────────────────────── */
-  #tab-actions { padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
-  .action-list { display: flex; flex-direction: column; gap: 6px; }
-  .action-card { background: var(--secondary-bg); border-radius: 4px; padding: 8px 12px; display: flex; align-items: center; gap: 10px; }
-  .action-assignee { background: var(--tag-bg); color: var(--tag-fg); border-radius: 10px; padding: 1px 8px; font-size: 11px; white-space: nowrap; }
-  .action-text { flex: 1; font-size: 13px; }
-  .add-action-form { display: flex; gap: 8px; align-items: flex-end; }
-  .add-action-form input { flex: 2; }
-  .add-action-form select { flex: 1; }
+    .checkbox-list label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 4px;
+      color: var(--fg);
+      font-size: 12px;
+      text-transform: none;
+      letter-spacing: 0;
+      cursor: pointer;
+    }
 
-  /* ── Minutes tab ──────────────────────────────────── */
-  #tab-minutes { padding: 12px; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
-  #minutes-output { flex: 1; overflow-y: auto; background: var(--secondary-bg); border-radius: 4px; padding: 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; border: 1px solid var(--border); }
-  .minutes-controls { display: flex; gap: 8px; }
+    .checkbox-list label:hover {
+      background: var(--secondary-bg);
+    }
 
-  /* ── Empty / placeholder ──────────────────────────── */
-  .empty { color: var(--muted); font-size: 12px; padding: 20px; text-align: center; }
-  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--muted); border-top-color: var(--fg); border-radius: 50%; animation: spin 0.7s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
+    /* ── Buttons ──────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 12px;
+      background: var(--btn-bg);
+      color: var(--btn-fg);
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 12px;
+      font-family: inherit;
+    }
 
-  /* ── Status bar ─────────────────────────────────────────── */
-  #status-bar {
-    flex-shrink: 0; display: flex; align-items: center; gap: 7px;
-    padding: 3px 10px; min-height: 20px;
-    background: var(--secondary-bg);
-    border-top: 1px solid var(--border);
-    font-size: 10px; color: var(--muted);
-    opacity: 0; transition: opacity 200ms ease; pointer-events: none; overflow: hidden;
-  }
-  #status-bar.visible { opacity: 1; pointer-events: auto; }
-  #sb-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); flex-shrink: 0; transition: background 200ms; }
-  #sb-dot.active { background: var(--accent); animation: sbpulse 1.2s ease-in-out infinite; }
-  #sb-dot.error  { background: var(--vscode-errorForeground, #f44336); }
-  @keyframes sbpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
-  #sb-text { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.8; }
-  #sb-dismiss { background: none; border: none; cursor: pointer; opacity: 0.3; color: var(--fg); font-size: 12px; padding: 0 2px; flex-shrink: 0; line-height: 1; }
-  #sb-dismiss:hover { opacity: 0.7; }
-</style>
+    .btn:hover {
+      background: var(--btn-hover);
+    }
+
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--fg);
+    }
+
+    .btn-outline:hover {
+      background: var(--secondary-bg);
+    }
+
+    .btn-danger {
+      background: var(--vscode-errorForeground, #f44);
+      color: #fff;
+    }
+
+    .btn-sm {
+      padding: 3px 8px;
+      font-size: 11px;
+    }
+
+    /* ── Setup Section ────────────────────────────────────── */
+
+    #tab-setup h2 {
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+
+    .setup-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .setup-grid .form-group {
+      margin-bottom: 0;
+    }
+
+    .setup-full {
+      grid-column: 1 / -1;
+    }
+
+    .setup-grid textarea {
+      flex: 1;
+      min-height: 80px;
+      resize: vertical;
+    }
+
+    .setup-grid .checkbox-list {
+      max-height: 110px;
+    }
+
+    .setup-actions {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding-top: 4px;
+    }
+
+    /* ── Meeting Section ──────────────────────────────────── */
+    .meeting-layout {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .agenda-sidebar {
+      width: 180px;
+      flex-shrink: 0;
+      border: 1px solid var(--border);
+      background: var(--secondary-bg);
+      border-radius: 4px;
+      padding: 8px;
+      position: sticky;
+      top: 24px;
+      max-height: calc(100vh - 48px);
+      overflow-y: auto;
+    }
+
+    .agenda-sidebar h3 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--muted);
+      margin-bottom: 8px;
+      padding: 0 4px;
+    }
+
+    .agenda-item-btn {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 5px 6px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      cursor: pointer;
+      color: var(--fg);
+      font-size: 11px;
+      font-family: inherit;
+      margin-bottom: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .agenda-item-btn:hover {
+      background: var(--secondary-bg);
+    }
+
+    .agenda-item-btn.active {
+      border-color: var(--accent);
+      background: var(--secondary-bg);
+    }
+
+    .agenda-item-btn.resolved {
+      opacity: 0.5;
+    }
+
+    .item-status-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+
+    .dot-pending {
+      background: var(--muted);
+    }
+
+    .dot-discussing {
+      background: var(--warn);
+    }
+
+    .dot-resolved {
+      background: var(--success);
+    }
+
+    /* chat feed */
+    .chat-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--secondary-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+
+    .chat-feed {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 200px;
+    }
+
+    .item-header {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 8px;
+    }
+
+    .round-divider {
+      font-size: 10px;
+      color: var(--muted);
+      text-align: center;
+      padding: 4px 0;
+      border-top: 1px dashed var(--border);
+    }
+
+    .agent-msg {
+      background: var(--secondary-bg);
+      border-radius: 6px;
+      padding: 10px 12px;
+    }
+
+    .agent-msg-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+
+    .agent-avatar {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: bold;
+      color: #fff;
+      flex-shrink: 0;
+    }
+
+    .agent-name {
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    .agent-timestamp {
+      font-size: 10px;
+      color: var(--muted);
+      margin-left: auto;
+    }
+
+    .agent-body {
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .user-msg {
+      align-self: flex-end;
+      max-width: 80%;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
+    .user-msg-label {
+      font-size: 10px;
+      opacity: 0.75;
+      margin-bottom: 3px;
+    }
+
+    /* chat input bar */
+    .chat-input-bar {
+      flex-shrink: 0;
+      border-top: 1px solid var(--border);
+      padding: 6px 10px;
+      background: var(--secondary-bg);
+    }
+
+    .chat-input-row {
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+    }
+
+    .chat-input-row textarea {
+      flex: 1;
+      min-height: 36px;
+      max-height: 120px;
+      resize: none;
+      border-radius: 4px;
+      padding: 7px 10px;
+      line-height: 1.4;
+    }
+
+    .chat-controls {
+      display: flex;
+      gap: 6px;
+      padding-top: 6px;
+      flex-wrap: wrap;
+    }
+
+    .agenda-select-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-right: 4px;
+    }
+
+    select.agenda-sel {
+      width: auto;
+      padding: 4px 6px;
+      font-size: 12px;
+    }
+
+    /* resolved notice */
+    .resolved-notice {
+      background: rgba(76, 175, 80, 0.12);
+      border: 1px solid var(--success);
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin: 8px 12px;
+      font-size: 12px;
+    }
+
+    .resolved-notice strong {
+      color: var(--success);
+    }
+
+    /* ── Action Items Section ─────────────────────────────── */
+    #tab-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .action-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .action-card {
+      background: var(--secondary-bg);
+      border-radius: 4px;
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .action-assignee {
+      background: var(--tag-bg);
+      color: var(--tag-fg);
+      border-radius: 10px;
+      padding: 1px 8px;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .action-text {
+      flex: 1;
+      font-size: 13px;
+    }
+
+    .add-action-form {
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+    }
+
+    .add-action-form input {
+      flex: 2;
+    }
+
+    .add-action-form select {
+      flex: 1;
+    }
+
+    /* ── Minutes Section ──────────────────────────────────── */
+    #tab-minutes {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    #minutes-output {
+      min-height: 150px;
+      background: var(--secondary-bg);
+      border-radius: 4px;
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid var(--border);
+    }
+
+    .minutes-controls {
+      display: flex;
+      gap: 8px;
+    }
+
+    /* ── Empty / placeholder ──────────────────────────── */
+    .empty {
+      color: var(--muted);
+      font-size: 12px;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid var(--muted);
+      border-top-color: var(--fg);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    /* ── Status bar ─────────────────────────────────────────── */
+    #status-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 3px 10px;
+      min-height: 20px;
+      background: var(--secondary-bg);
+      border-top: 1px solid var(--border);
+      font-size: 10px;
+      color: var(--muted);
+      opacity: 0;
+      transition: opacity 200ms ease;
+      pointer-events: none;
+      overflow: hidden;
+    }
+
+    #status-bar.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    #sb-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
+      transition: background 200ms;
+    }
+
+    #sb-dot.active {
+      background: var(--accent);
+      animation: sbpulse 1.2s ease-in-out infinite;
+    }
+
+    #sb-dot.error {
+      background: var(--vscode-errorForeground, #f44336);
+    }
+
+    @keyframes sbpulse {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.35;
+      }
+    }
+
+    #sb-text {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      opacity: 0.8;
+    }
+
+    #sb-dismiss {
+      background: none;
+      border: none;
+      cursor: pointer;
+      opacity: 0.3;
+      color: var(--fg);
+      font-size: 12px;
+      padding: 0 2px;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+
+    #sb-dismiss:hover {
+      opacity: 0.7;
+    }
+
+    /* ── Agent skip indicator ────────────────────────── */
+    .agent-skip {
+      font-size: 11px;
+      color: var(--muted);
+      font-style: italic;
+      padding: 4px 12px;
+      opacity: 0.6;
+    }
+
+    /* ── Interrupt response (@mention) ──────────────── */
+    .agent-msg.interrupt {
+      margin-left: 24px;
+      border-left: 3px solid var(--accent);
+      padding-left: 12px;
+      background: rgba(0, 122, 204, 0.06);
+    }
+
+    .interrupt-label {
+      font-size: 10px;
+      color: var(--accent);
+      margin-bottom: 4px;
+      font-style: italic;
+    }
+
+    /* ── Moderator summary card ─────────────────────── */
+    .summary-card {
+      background: rgba(76, 175, 80, 0.08);
+      border: 1px solid rgba(76, 175, 80, 0.25);
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin: 4px 0;
+    }
+
+    .summary-card-header {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--success);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+
+    .summary-card-body {
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* ── Moderator badge ────────────────────────────── */
+    .moderator-badge {
+      font-size: 9px;
+      background: var(--success);
+      color: #fff;
+      padding: 1px 5px;
+      border-radius: 8px;
+      margin-left: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      vertical-align: middle;
+    }
+
+    /* ── Output tag badges ─────────────────────────────── */
+    .tag-badge {
+      font-size: 9px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 8px;
+      margin-left: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      vertical-align: middle;
+      background: var(--muted);
+      color: #fff;
+    }
+
+    .tag-RECOMMENDATION {
+      background: #2196F3;
+      color: #fff;
+    }
+
+    .tag-RISK {
+      background: #FF9800;
+      color: #fff;
+    }
+
+    .tag-OPEN_QUESTION {
+      background: #9C27B0;
+      color: #fff;
+    }
+
+    .tag-ACTION {
+      background: #4CAF50;
+      color: #fff;
+    }
+
+    .tag-VALIDATION {
+      background: #00BCD4;
+      color: #fff;
+    }
+
+    .tag-CLARIFICATION_FOR_HUMAN {
+      background: #F44336;
+      color: #fff;
+    }
+
+    .tag-SKIP {
+      background: var(--muted);
+      color: #fff;
+    }
+
+    /* ── @mention chip (in transcript text) ──────────── */
+    .mention {
+      color: var(--accent);
+      background: rgba(0, 122, 204, 0.12);
+      border-radius: 3px;
+      padding: 0 4px;
+      font-weight: 600;
+      font-size: 0.92em;
+      cursor: default;
+      white-space: nowrap;
+    }
+
+    /* ── INTERRUPT_REQUEST line in agent body ────────── */
+    .interrupt-request-line {
+      display: block;
+      color: var(--accent);
+      background: rgba(0, 122, 204, 0.07);
+      border-left: 3px solid var(--accent);
+      padding: 3px 8px;
+      margin: 6px 0 2px;
+      border-radius: 0 4px 4px 0;
+      font-size: 11px;
+      font-style: italic;
+      white-space: pre-wrap;
+    }
+
+    /* ── @mention autocomplete dropdown ─────────────── */
+    .mention-dropdown {
+      position: fixed;
+      background: var(--secondary-bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+      z-index: 9000;
+      max-height: 200px;
+      overflow-y: auto;
+      min-width: 200px;
+    }
+
+    .mention-dropdown-item {
+      padding: 7px 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .mention-dropdown-item:last-child {
+      border-bottom: none;
+    }
+
+    .mention-dropdown-item:hover,
+    .mention-dropdown-item.selected {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .mention-dropdown-item .md-avatar {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--tag-bg);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .mention-dropdown-item.selected .md-avatar {
+      background: rgba(255, 255, 255, 0.3);
+    }
+
+    .mention-dropdown-item .md-name {
+      flex: 1;
+    }
+
+    .mention-dropdown-item .md-cat {
+      font-size: 10px;
+      opacity: 0.65;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    /* ── Open question notification ──────────────────── */
+    .oq-notification {
+      background: rgba(156, 39, 176, 0.08);
+      border: 1px solid rgba(156, 39, 176, 0.25);
+      border-radius: 6px;
+      padding: 6px 10px;
+      margin: 4px 0;
+      font-size: 11px;
+      color: var(--fg);
+    }
+
+    .oq-notification strong {
+      color: #9C27B0;
+    }
+
+    /* ── Blocked-for-human notice ───────────────────── */
+    .blocked-notice {
+      background: rgba(255, 152, 0, 0.1);
+      border: 1px solid rgba(255, 152, 0, 0.45);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 12px;
+      color: var(--fg);
+    }
+
+    .blocked-notice strong {
+      color: var(--warn);
+    }
+
+    /* ── Planning Mode badge ─────────────────────────── */
+    .planning-mode-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--muted);
+      background: rgba(0, 0, 0, 0.08);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 2px 8px;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      user-select: none;
+      cursor: default;
+    }
+
+    .planning-mode-badge .lock-icon {
+      font-size: 10px;
+    }
+
+    .agenda-sidebar-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      padding: 0 4px;
+    }
+
+    .agenda-sidebar-header h3 {
+      margin-bottom: 0;
+      padding: 0;
+    }
+
+    /* ── Inline panels (resolve / quick-action) ──────── */
+    .inline-panel {
+      padding: 8px 10px;
+      border-top: 1px solid var(--border);
+      background: var(--secondary-bg);
+    }
+
+    .inline-panel-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .inline-panel-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .inline-panel-row input {
+      flex: 2;
+      padding: 4px 8px;
+      font-size: 12px;
+    }
+
+    .inline-panel-row input.assignee {
+      flex: 1;
+    }
+
+    .resolve-panel {
+      background: rgba(76, 175, 80, 0.07);
+      border-top-color: rgba(76, 175, 80, 0.4);
+    }
+
+    /* ── Decision prompt highlight ───────────────────── */
+    .decision-prompt {
+      background: rgba(244, 67, 54, 0.08);
+      border: 1px solid rgba(244, 67, 54, 0.3);
+      border-radius: 6px;
+      padding: 8px 12px;
+      margin-top: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--fg);
+    }
+
+    .decision-prompt::before {
+      content: '❗ ';
+    }
+
+    .summary-section {
+      margin-bottom: 4px;
+    }
+
+    .summary-section-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      color: var(--muted);
+      letter-spacing: 0.3px;
+    }
+
+    .summary-section-content {
+      font-size: 12px;
+      margin-left: 8px;
+    }
+  </style>
 </head>
+
 <body>
+  <div class="container">
 
-<div class="tab-bar">
-  <div class="tab active" onclick="switchTab('setup')" id="tabt-setup">Setup</div>
-  <div class="tab" onclick="switchTab('meeting')" id="tabt-meeting">Meeting</div>
-  <div class="tab" onclick="switchTab('actions')" id="tabt-actions">Action Items</div>
-  <div class="tab" onclick="switchTab('minutes')" id="tabt-minutes">Minutes</div>
-</div>
 
-<!-- ══════════════════════════════════════════════════
+
+    <!-- ══════════════════════════════════════════════════
      TAB 1 — SETUP
 ═══════════════════════════════════════════════════ -->
-<div class="tab-content active" id="tab-setup">
-  <h2>Start a Virtual Meeting</h2>
+    <div class="section-content" id="tab-setup">
+      <h2>Start a Virtual Meeting</h2>
+      <div class="setup-grid">
 
-  <div class="form-group">
-    <label>Meeting Title</label>
-    <input type="text" id="meeting-title" placeholder="e.g. Q2 Architecture Review"/>
-  </div>
+        <div class="form-group setup-full">
+          <label>Meeting Title</label>
+          <input type="text" id="meeting-title" placeholder="e.g. Q2 Architecture Review" />
+        </div>
 
-  <div class="form-group">
-    <label>Agenda Items (one per line)</label>
-    <textarea id="agenda-input" rows="5" placeholder="What database engine should we use?&#10;How do we handle authentication?&#10;Deployment strategy?"></textarea>
-  </div>
+        <div class="form-group" style="display:flex;flex-direction:column;">
+          <label>Agenda Items (one per line)</label>
+          <textarea id="agenda-input" rows="4"
+            placeholder="What database engine should we use?&#10;How do we handle authentication?&#10;Deployment strategy?"></textarea>
+        </div>
 
-  <div class="form-group">
-    <label>Participants (select agents)</label>
-    <div class="checkbox-list" id="agent-checkboxes">
-      <span class="empty">Loading agents…</span>
+        <div class="form-group" style="display:flex;flex-direction:column;gap:8px;">
+          <div>
+            <label>Participants</label>
+            <div class="checkbox-list" id="agent-checkboxes">
+              <span class="empty">Loading agents…</span>
+            </div>
+          </div>
+          <div>
+            <label>Resource Files (optional)</label>
+            <div class="checkbox-list" id="file-checkboxes" style="max-height:80px;">
+              <span class="empty">Loading files…</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="setup-actions">
+          <button class="btn" onclick="startMeeting()" id="start-btn">Start Meeting</button>
+        </div>
+
+      </div>
+      <datalist id="agents-datalist"></datalist>
     </div>
-  </div>
 
-  <div class="form-group">
-    <label>Resource Files (optional)</label>
-    <div class="checkbox-list" id="file-checkboxes">
-      <span class="empty">Loading workspace files…</span>
-    </div>
-  </div>
-
-  <div class="form-group">
-    <label>Pre-Meeting Action Items (optional)</label>
-    <div id="pre-action-list" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;"></div>
-    <div class="add-action-form">
-      <input type="text" id="pre-action-text" placeholder="Describe the action item"/>
-      <input type="text" id="pre-action-assignee" list="agents-datalist" placeholder="Assigned to (any name)"/>
-      <button class="btn btn-sm btn-outline" type="button" onclick="addPreActionItem()">Add</button>
-    </div>
-  </div>
-
-  <button class="btn" onclick="startMeeting()" id="start-btn">Start Meeting</button>
-  <datalist id="agents-datalist"></datalist>
-</div>
-
-<!-- ══════════════════════════════════════════════════
+    <!-- ══════════════════════════════════════════════════
      TAB 2 — MEETING
 ═══════════════════════════════════════════════════ -->
-<div class="tab-content" id="tab-meeting">
-  <div class="meeting-layout">
-    <!-- Agenda sidebar -->
-    <div class="agenda-sidebar">
-      <h3>Agenda</h3>
-      <div id="agenda-list"><span class="empty">No agenda yet.</span></div>
+    <div class="section-content" id="tab-meeting">
+      <div class="meeting-layout">
+        <!-- Agenda sidebar -->
+        <div class="agenda-sidebar">
+          <div class="agenda-sidebar-header">
+            <h3>Agenda</h3>
+            <span class="planning-mode-badge" id="planning-badge" style="display:none" title="No code changes are permitted during a meeting. Agents may only plan, recommend, and ask questions.">
+              <span class="lock-icon">🔒</span> Planning
+            </span>
+          </div>
+          <div id="agenda-list"><span class="empty">No agenda yet.</span></div>
+        </div>
+
+        <!-- Chat area -->
+        <div class="chat-area">
+          <div class="chat-feed" id="chat-feed">
+            <span class="empty">Start the meeting to begin the discussion.</span>
+          </div>
+
+          <!-- Chat input bar (shown during meeting) -->
+          <div class="chat-input-bar" id="chat-input-bar" style="display:none">
+            <div class="chat-input-row">
+              <textarea id="user-input" rows="1" placeholder="Message… @agent-name to direct a question to a specific agent"
+                onkeydown="handleInputKey(event)" oninput="onUserInputChange()"></textarea>
+              <button class="btn" onclick="continueDiscussion()" id="continue-btn" title="Run another round">
+                <span class="spinner" id="send-spinner" style="display:none"></span>
+                ▶ Send
+              </button>
+            </div>
+            <div class="chat-controls">
+              <select class="agenda-sel" id="active-item-sel" title="Switch agenda item"></select>
+              <button class="btn btn-outline btn-sm" onclick="toggleResolvePanel()" id="resolve-btn">✓ Resolve</button>
+              <button class="btn btn-outline btn-sm" onclick="toggleQuickActionPanel()" id="quick-action-btn">+ Action</button>
+              <button class="btn btn-danger btn-sm" onclick="endMeeting()" id="end-meeting-btn">■ End</button>
+            </div>
+          </div>
+
+          <!-- Resolve inline panel -->
+          <div class="inline-panel resolve-panel" id="resolve-panel" style="display:none">
+            <div class="inline-panel-label">Enter your decision / resolution:</div>
+            <div class="inline-panel-row">
+              <input type="text" id="resolve-input" placeholder="Decision text (optional)" onkeydown="resolveInputKey(event)" />
+              <button class="btn btn-sm" onclick="confirmResolve()">✓ Confirm Resolve</button>
+              <button class="btn btn-sm btn-outline" onclick="hideResolvePanel()">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Quick-add action inline panel -->
+          <div class="inline-panel" id="quick-action-panel" style="display:none">
+            <div class="inline-panel-label">Quick-add action item:</div>
+            <div class="inline-panel-row">
+              <input type="text" id="quick-action-text" placeholder="Action description" onkeydown="quickActionKey(event)" />
+              <input type="text" id="quick-action-assignee" class="assignee" list="agents-datalist" placeholder="Assigned to" />
+              <button class="btn btn-sm" onclick="confirmQuickAction()">Add</button>
+              <button class="btn btn-sm btn-outline" onclick="hideQuickActionPanel()">×</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <!-- Chat area -->
-    <div class="chat-area">
-      <div class="chat-feed" id="chat-feed">
-        <span class="empty">Start the meeting to begin the discussion.</span>
-      </div>
-
-      <!-- Chat input bar (shown during meeting) -->
-      <div class="chat-input-bar" id="chat-input-bar" style="display:none">
-        <div style="margin-bottom:6px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-          <span class="agenda-select-label">Discussing:</span>
-          <select class="agenda-sel" id="active-item-sel"></select>
-        </div>
-        <div class="chat-input-row">
-          <textarea id="user-input" rows="2" placeholder="Type a message or question for the agents, then press Continue Discussion…" onkeydown="handleInputKey(event)"></textarea>
-          <button class="btn" onclick="continueDiscussion()" id="continue-btn" title="Run another round">
-            <span class="spinner" id="send-spinner" style="display:none"></span>
-            Continue Discussion
-          </button>
-        </div>
-        <div class="chat-controls">
-          <button class="btn btn-outline btn-sm" onclick="resolveCurrentItem()">✓ Mark Resolved</button>
-          <button class="btn btn-outline btn-sm" onclick="switchTab('actions')">+ Action Item</button>
-          <button class="btn btn-danger btn-sm" onclick="endMeeting()" id="end-meeting-btn">■ End Meeting</button>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- ══════════════════════════════════════════════════
+    <!-- ══════════════════════════════════════════════════
      TAB 3 — ACTION ITEMS
 ═══════════════════════════════════════════════════ -->
-<div class="tab-content" id="tab-actions">
-  <h3 style="margin-bottom:8px">Action Items</h3>
-  <div class="action-list" id="action-list">
-    <span class="empty">No action items yet.</span>
-  </div>
-  <div style="margin-top:16px">
-    <label style="display:block;margin-bottom:6px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">Add Action Item</label>
-    <div class="add-action-form">
-      <input type="text" id="new-action-text" placeholder="Action item description"/>
-      <input type="text" id="new-action-assignee" list="agents-datalist" placeholder="Assigned to (any name)"/>
-      <button class="btn btn-sm" onclick="addActionItem()">Add</button>
+    <div class="section-content" id="tab-actions">
+      <h2 style="margin-bottom:8px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">Action Items</h2>
+      <div class="action-list" id="action-list">
+        <span class="empty">No action items yet.</span>
+      </div>
+      <div style="margin-top:16px">
+        <label
+          style="display:block;margin-bottom:6px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">Add
+          Action Item</label>
+        <div class="add-action-form">
+          <input type="text" id="new-action-text" placeholder="Action item description" />
+          <input type="text" id="new-action-assignee" list="agents-datalist" placeholder="Assigned to (any name)" />
+          <button class="btn btn-sm" onclick="addActionItem()">Add</button>
+        </div>
+      </div>
     </div>
-  </div>
-</div>
 
-<!-- ══════════════════════════════════════════════════
-     TAB 4 — MINUTES
+    <!-- ══════════════════════════════════════════════════
+     MINUTES
 ═══════════════════════════════════════════════════ -->
-<div class="tab-content" id="tab-minutes">
-  <div class="minutes-controls">
-    <button class="btn" onclick="generateMinutes()">Generate Minutes</button>
-    <button class="btn btn-outline" onclick="saveMinutes()">Save to File</button>
+    <h2 style="margin-bottom:8px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">Meeting Minutes</h2>
+    <div class="section-content" id="tab-minutes">
+      <div class="minutes-controls">
+        <button class="btn" onclick="generateMinutes()">Generate Minutes</button>
+        <button class="btn btn-outline" onclick="saveMinutes()">Save to File</button>
+      </div>
+      <div id="minutes-output" class="empty">Click "Generate Minutes" to create meeting minutes.</div>
+    </div>
+
   </div>
-  <div id="minutes-output" class="empty">Click "Generate Minutes" to create meeting minutes.</div>
-</div>
 
-<!-- ── STATUS BAR ────────────────────────────────────────── -->
-<div id="status-bar">
-  <span id="sb-dot"></span>
-  <span id="sb-text"></span>
-  <button id="sb-dismiss" title="Dismiss" onclick="dismissStatus()">×</button>
-</div>
+  <!-- ── @mention autocomplete dropdown (global, positioned by JS) -->
+  <div id="mention-dropdown" class="mention-dropdown" style="display:none"></div>
 
-<script>
-// ── VS Code API ────────────────────────────────────────────
-const vscode = acquireVsCodeApi();
+  <!-- ── STATUS BAR ────────────────────────────────────────── -->
+  <div id="status-bar">
+    <span id="sb-dot"></span>
+    <span id="sb-text"></span>
+    <button id="sb-dismiss" title="Dismiss" onclick="dismissStatus()">×</button>
+  </div>
 
-// ── State ──────────────────────────────────────────────────
-let allAgents = [];        // { id, name }[]
-let allFiles = [];         // string[]
-let meeting = null;        // Meeting object from extension
-let activeItemId = null;
-let roundRunning = false;
-let meetingEnded = false;
-let preActionItems = [];   // { text, assignedTo }[] — collected before meeting starts
+  <script>
+    // ── VS Code API ────────────────────────────────────────────
+    const vscode = acquireVsCodeApi();
 
-// Per-item chat feeds: itemId → array of rendered html strings (we append to the DOM directly)
-const itemBuffers = {};   // itemId → { agentBuffers: { agentId: string }, roundCount: number }
+    // ── State ──────────────────────────────────────────────────
+    let allAgents = [];        // { id, name }[]
+    let allFiles = [];         // string[]
+    let meeting = null;        // Meeting object from extension
+    let activeItemId = null;
+    let roundRunning = false;
+    let meetingEnded = false;
+    let preActionItems = [];   // { text, assignedTo }[] — collected before meeting starts
 
-// ── Tab switching ──────────────────────────────────────────
-function switchTab(name) {
-  document.querySelectorAll('.tab, .tab-content').forEach(el => el.classList.remove('active'));
-  document.getElementById('tabt-' + name).classList.add('active');
-  document.getElementById('tab-' + name).classList.add('active');
-}
+    // @mention autocomplete state
+    let mentionStartPos = -1;
+    let mentionSelectedIdx = 0;
 
-// ── Message handling ───────────────────────────────────────
-window.addEventListener('message', e => {
-  const msg = e.data;
-  switch (msg.type) {
-    case 'agents_list':       onAgentsList(msg.agents); break;
-    case 'workspace_files':   onWorkspaceFiles(msg.files); break;
-    case 'meeting_started':   onMeetingStarted(msg.meeting); break;
-    case 'round_started':     onRoundStarted(msg.agendaItemId, msg.userMessage); break;
-    case 'agent_delta':       onAgentDelta(msg.agendaItemId, msg.agentId, msg.delta); break;
-    case 'agent_round_done':  onAgentRoundDone(msg.agendaItemId, msg.agentId, msg.fullResponse); break;
-    case 'round_complete':    onRoundComplete(msg.agendaItemId); break;
-    case 'round_error':       onRoundError(msg.agendaItemId, msg.error); break;
-    case 'item_resolved':     onItemResolved(msg.agendaItemId, msg.decision); break;
-    case 'action_item_added': onActionItemAdded(msg.actionItem); break;
-    case 'minutes_ready':     onMinutesReady(msg.markdown); break;
-    case 'meeting_stopped':   onMeetingStopped(msg.minutes); break;
-  }
-});
+    // Per-item chat feeds: itemId → array of rendered html strings (we append to the DOM directly)
+    const itemBuffers = {};   // itemId → { agentBuffers: { agentId: string }, roundCount: number }
 
-// ── Setup handlers ─────────────────────────────────────────
-function onAgentsList(agents) {
-  allAgents = agents;
-  const box = document.getElementById('agent-checkboxes');
-  if (!agents.length) { box.innerHTML = '<span class="empty">No agents configured.</span>'; return; }
-  box.innerHTML = agents.map(a =>
-    `<label><input type="checkbox" value="${esc(a.id)}"/> ${esc(a.name)}</label>`
-  ).join('');
+    // ── Tab switching ──────────────────────────────────────────
 
-  // Populate agents-datalist for action item assignee autocomplete
-  const dl = document.getElementById('agents-datalist');
-  if (dl) {
-    dl.innerHTML = agents.map(a => `<option value="${esc(a.name)}"/>`).join('');
-  }
-}
 
-function onWorkspaceFiles(files) {
-  allFiles = files;
-  const box = document.getElementById('file-checkboxes');
-  if (!files.length) { box.innerHTML = '<span class="empty">No files found.</span>'; return; }
-  box.innerHTML = files.map(f =>
-    `<label><input type="checkbox" value="${esc(f)}"/> ${esc(f)}</label>`
-  ).join('');
-}
+    // ── Message handling ───────────────────────────────────────
+    window.addEventListener('message', e => {
+      const msg = e.data;
+      switch (msg.type) {
+        case 'agents_list': onAgentsList(msg.agents); break;
+        case 'workspace_files': onWorkspaceFiles(msg.files); break;
+        case 'meeting_started': onMeetingStarted(msg.meeting); break;
+        case 'round_started': onRoundStarted(msg.agendaItemId, msg.userMessage); break;
+        case 'agent_delta': onAgentDelta(msg.agendaItemId, msg.agentId, msg.delta); break;
+        case 'agent_round_done': onAgentRoundDone(msg.agendaItemId, msg.agentId, msg.fullResponse, msg.skipped, msg.tag); break;
+        case 'agent_skipped': onAgentSkipped(msg.agendaItemId, msg.agentId); break;
+        case 'interrupt_delta': onInterruptDelta(msg.agendaItemId, msg.agentId, msg.triggeredBy, msg.delta); break;
+        case 'interrupt_done': onInterruptDone(msg.agendaItemId, msg.agentId, msg.triggeredBy, msg.fullResponse, msg.tag); break;
+        case 'round_summary': onRoundSummary(msg.agendaItemId, msg.summary); break;
+        case 'open_question_created': onOpenQuestionCreated(msg.agendaItemId, msg.oqId, msg.question, msg.askedBy); break;
+        case 'round_complete': onRoundComplete(msg.agendaItemId); break;
+        case 'round_error': onRoundError(msg.agendaItemId, msg.error); break;
+        case 'item_resolved': onItemResolved(msg.agendaItemId, msg.decision); break;
+        case 'item_blocked_for_human': onItemBlockedForHuman(msg.agendaItemId); break;
+        case 'action_item_added': onActionItemAdded(msg.actionItem); break;
+        case 'minutes_ready': onMinutesReady(msg.markdown); break;
+        case 'meeting_stopped': onMeetingStopped(msg.minutes); break;
+      }
+    });
 
-function startMeeting() {
-  const title = document.getElementById('meeting-title').value.trim();
-  if (!title) { alert('Please enter a meeting title.'); return; }
+    // ── Setup handlers ─────────────────────────────────────────
+    function onAgentsList(agents) {
+      allAgents = agents;
+      const box = document.getElementById('agent-checkboxes');
+      if (!agents.length) { box.innerHTML = '<span class="empty">No agents configured.</span>'; return; }
+      box.innerHTML = agents.map(a =>
+        `<label><input type="checkbox" value="${esc(a.id)}"/> ${esc(a.name)}</label>`
+      ).join('');
 
-  const agendaLines = document.getElementById('agenda-input').value.split('\n').map(l => l.trim()).filter(Boolean);
-  if (!agendaLines.length) { alert('Please enter at least one agenda item.'); return; }
+      // Populate agents-datalist for action item assignee autocomplete
+      const dl = document.getElementById('agents-datalist');
+      if (dl) {
+        dl.innerHTML = agents.map(a => `<option value="${esc(a.name)}"/>`).join('');
+      }
+    }
 
-  const participants = [...document.querySelectorAll('#agent-checkboxes input:checked')].map(cb => cb.value);
-  if (!participants.length) { alert('Please select at least one agent participant.'); return; }
+    function onWorkspaceFiles(files) {
+      allFiles = files;
+      const box = document.getElementById('file-checkboxes');
+      if (!files.length) { box.innerHTML = '<span class="empty">No files found.</span>'; return; }
+      box.innerHTML = files.map(f =>
+        `<label><input type="checkbox" value="${esc(f)}"/> ${esc(f)}</label>`
+      ).join('');
+    }
 
-  const resourceFiles = [...document.querySelectorAll('#file-checkboxes input:checked')].map(cb => cb.value);
+    function startMeeting() {
+      const title = document.getElementById('meeting-title').value.trim();
+      if (!title) { alert('Please enter a meeting title.'); return; }
 
-  document.getElementById('start-btn').disabled = true;
-  vscode.postMessage({ type: 'start_meeting', title, agendaLines, participants, resourceFiles, initialActionItems: preActionItems });
-}
+      const agendaLines = document.getElementById('agenda-input').value.split('\n').map(l => l.trim()).filter(Boolean);
+      if (!agendaLines.length) { alert('Please enter at least one agenda item.'); return; }
 
-// ── Meeting started ────────────────────────────────────────
-function onMeetingStarted(m) {
-  meeting = m;
-  switchTab('meeting');
+      const participants = [...document.querySelectorAll('#agent-checkboxes input:checked')].map(cb => cb.value);
+      if (!participants.length) { alert('Please select at least one agent participant.'); return; }
 
-  // Render agenda sidebar
-  renderAgendaSidebar();
+      const resourceFiles = [...document.querySelectorAll('#file-checkboxes input:checked')].map(cb => cb.value);
 
-  // Populate active-item selector
-  const sel = document.getElementById('active-item-sel');
-  sel.innerHTML = meeting.agenda.map(item =>
-    `<option value="${esc(item.id)}">${esc(item.text)}</option>`
-  ).join('');
+      document.getElementById('start-btn').disabled = true;
+      vscode.postMessage({ type: 'start_meeting', title, agendaLines, participants, resourceFiles, initialActionItems: preActionItems });
+    }
 
-  // Show chat input bar
-  document.getElementById('chat-input-bar').style.display = '';
+    // ── Meeting started ────────────────────────────────────────
+    function onMeetingStarted(m) {
+      meeting = m;
 
-  // Render any pre-meeting action items that were included
-  if (meeting.actionItems && meeting.actionItems.length > 0) {
-    meeting.actionItems.forEach(ai => onActionItemAdded(ai));
-  }
+      // Hide setup form — no longer needed during the meeting
+      document.getElementById('tab-setup').style.display = 'none';
 
-  // Clear feed, show first item
-  const feed = document.getElementById('chat-feed');
-  feed.innerHTML = '';
-  if (meeting.agenda.length > 0) {
-    setActiveItem(meeting.agenda[0].id);
-  }
-}
+      // Show Planning Mode lock badge (meetings are always planning-only)
+      document.getElementById('planning-badge').style.display = '';
 
-function renderAgendaSidebar() {
-  if (!meeting) { return; }
-  const list = document.getElementById('agenda-list');
-  list.innerHTML = meeting.agenda.map(item => {
-    const dotClass = item.status === 'resolved' ? 'dot-resolved' : item.status === 'discussing' ? 'dot-discussing' : 'dot-pending';
-    return `<button class="agenda-item-btn${activeItemId === item.id ? ' active' : ''}${item.status === 'resolved' ? ' resolved' : ''}"
+      // Render agenda sidebar
+      renderAgendaSidebar();
+
+      // Populate active-item selector
+      const sel = document.getElementById('active-item-sel');
+      sel.innerHTML = meeting.agenda.map(item =>
+        `<option value="${esc(item.id)}">${esc(item.text)}</option>`
+      ).join('');
+
+      // Show chat input bar
+      document.getElementById('chat-input-bar').style.display = '';
+
+      // Render any pre-meeting action items that were included
+      if (meeting.actionItems && meeting.actionItems.length > 0) {
+        meeting.actionItems.forEach(ai => onActionItemAdded(ai));
+      }
+
+      // Clear feed, show first item
+      const feed = document.getElementById('chat-feed');
+      feed.innerHTML = '';
+      if (meeting.agenda.length > 0) {
+        setActiveItem(meeting.agenda[0].id);
+      }
+    }
+
+    function renderAgendaSidebar() {
+      if (!meeting) { return; }
+      const list = document.getElementById('agenda-list');
+      list.innerHTML = meeting.agenda.map(item => {
+        const dotClass = item.status === 'resolved' ? 'dot-resolved' : item.status === 'discussing' ? 'dot-discussing' : 'dot-pending';
+        return `<button class="agenda-item-btn${activeItemId === item.id ? ' active' : ''}${item.status === 'resolved' ? ' resolved' : ''}"
       onclick="setActiveItem('${esc(item.id)}')" id="abtn-${esc(item.id)}">
       <span class="item-status-dot ${dotClass}"></span>${esc(item.text)}
     </button>`;
-  }).join('');
-}
-
-function setActiveItem(itemId) {
-  activeItemId = itemId;
-  document.getElementById('active-item-sel').value = itemId;
-
-  // Show item's feed content
-  const feed = document.getElementById('chat-feed');
-  feed.innerHTML = '';
-
-  if (!meeting) { return; }
-  const item = meeting.agenda.find(a => a.id === itemId);
-  if (!item) { return; }
-
-  // Header
-  const header = document.createElement('div');
-  header.className = 'item-header';
-  header.textContent = item.text;
-  feed.appendChild(header);
-
-  // Show resolved notice if applicable
-  if (item.status === 'resolved' && item.decision) {
-    const notice = document.createElement('div');
-    notice.className = 'resolved-notice';
-    notice.innerHTML = `<strong>Resolved.</strong> ${esc(item.decision)}`;
-    feed.appendChild(notice);
-  }
-
-  // Replay existing rounds for this item
-  const rounds = (meeting.rounds || []).filter(r => r.agendaItemId === itemId);
-  // Group by pass — each full cycle through agents = one pass
-  if (rounds.length > 0) {
-    const passSize = meeting.participants.length || 1;
-    let passIdx = 0;
-    for (let i = 0; i < rounds.length; i++) {
-      if (i % passSize === 0) {
-        passIdx++;
-        const div = document.createElement('div');
-        div.className = 'round-divider';
-        div.textContent = `— Pass ${passIdx} —`;
-        feed.appendChild(div);
-      }
-      const r = rounds[i];
-      appendAgentMessage(feed, r.agentId, r.response, r.timestamp);
+      }).join('');
     }
-  }
 
-  renderAgendaSidebar();
-  feed.scrollTop = feed.scrollHeight;
-}
+    function setActiveItem(itemId) {
+      activeItemId = itemId;
+      document.getElementById('active-item-sel').value = itemId;
 
-// ── Round streaming ────────────────────────────────────────
-function onRoundStarted(agendaItemId, userMessage) {
-  roundRunning = true;
-  setRoundUiState(true);
-  const item = meeting && meeting.agenda.find(a => a.id === agendaItemId);
-  setStatus('Running round' + (item ? ' — ' + item.text.slice(0, 50) : '') + '…', 'active');
+      // Show item's feed content
+      const feed = document.getElementById('chat-feed');
+      feed.innerHTML = '';
 
-  // If this item isn't currently shown, switch to it
-  if (activeItemId !== agendaItemId) {
-    setActiveItem(agendaItemId);
-  }
+      if (!meeting) { return; }
+      const item = meeting.agenda.find(a => a.id === itemId);
+      if (!item) { return; }
 
-  const feed = document.getElementById('chat-feed');
+      // Header
+      const header = document.createElement('div');
+      header.className = 'item-header';
+      header.textContent = item.text;
+      feed.appendChild(header);
 
-  // Show user's message if any
-  if (userMessage) {
-    const userDiv = document.createElement('div');
-    userDiv.className = 'user-msg';
-    userDiv.innerHTML = `<div class="user-msg-label">You</div>${esc(userMessage)}`;
-    feed.appendChild(userDiv);
-  }
+      // Show resolved notice if applicable
+      if (item.status === 'resolved' && item.decision) {
+        const notice = document.createElement('div');
+        notice.className = 'resolved-notice';
+        notice.innerHTML = `<strong>Resolved.</strong> ${esc(item.decision)}`;
+        feed.appendChild(notice);
+      }
 
-  // Round divider
-  const existingRounds = (meeting.rounds || []).filter(r => r.agendaItemId === agendaItemId);
-  const passIdx = Math.floor(existingRounds.length / (meeting.participants.length || 1)) + 1;
-  const div = document.createElement('div');
-  div.className = 'round-divider';
-  div.textContent = `— Pass ${passIdx} —`;
-  feed.appendChild(div);
+      // Replay existing rounds for this item
+      const rounds = (meeting.rounds || []).filter(r => r.agendaItemId === itemId);
+      // Group by pass — each full cycle through agents = one pass
+      if (rounds.length > 0) {
+        const passSize = meeting.participants.length || 1;
+        let passIdx = 0;
+        for (let i = 0; i < rounds.length; i++) {
+          if (i % passSize === 0) {
+            passIdx++;
+            const div = document.createElement('div');
+            div.className = 'round-divider';
+            div.textContent = `— Pass ${passIdx} —`;
+            feed.appendChild(div);
+          }
+          const r = rounds[i];
+          appendAgentMessage(feed, r.agentId, r.response, r.timestamp);
+        }
+      }
 
-  // Initialise streaming buffers
-  if (!itemBuffers[agendaItemId]) { itemBuffers[agendaItemId] = {}; }
-  meeting.participants.forEach(aid => { itemBuffers[agendaItemId][aid] = null; });
+      renderAgendaSidebar();
+      scrollToBottom(feed);
+    }
 
-  feed.scrollTop = feed.scrollHeight;
-}
+    // ── Round streaming ────────────────────────────────────────
+    function onRoundStarted(agendaItemId, userMessage) {
+      roundRunning = true;
+      setRoundUiState(true);
+      const item = meeting && meeting.agenda.find(a => a.id === agendaItemId);
+      setStatus('Running round' + (item ? ' — ' + item.text.slice(0, 50) : '') + '…', 'active');
 
-function onAgentDelta(agendaItemId, agentId, delta) {
-  if (activeItemId !== agendaItemId) { return; }
-  const feed = document.getElementById('chat-feed');
+      // If this item isn't currently shown, switch to it
+      if (activeItemId !== agendaItemId) {
+        setActiveItem(agendaItemId);
+      }
 
-  let el = document.getElementById(`stream-${agendaItemId}-${agentId}`);
-  if (!el) {
-    // Create streaming message card
-    const agent = allAgents.find(a => a.id === agentId);
-    const name = agent ? agent.name : agentId;
-    setStatus(name + ' is responding…', 'active');
-    const wrapper = document.createElement('div');
-    wrapper.className = 'agent-msg';
-    wrapper.innerHTML = `
+      const feed = document.getElementById('chat-feed');
+
+      // Show user's message if any
+      if (userMessage) {
+        const userDiv = document.createElement('div');
+        userDiv.className = 'user-msg';
+        userDiv.innerHTML = `<div class="user-msg-label">You</div>${renderWithMentions(userMessage)}`;
+        feed.appendChild(userDiv);
+      }
+
+      // Round divider
+      const existingRounds = (meeting.rounds || []).filter(r => r.agendaItemId === agendaItemId);
+      const passIdx = Math.floor(existingRounds.length / (meeting.participants.length || 1)) + 1;
+      const div = document.createElement('div');
+      div.className = 'round-divider';
+      div.textContent = `— Pass ${passIdx} —`;
+      feed.appendChild(div);
+
+      // Initialise streaming buffers
+      if (!itemBuffers[agendaItemId]) { itemBuffers[agendaItemId] = {}; }
+      meeting.participants.forEach(aid => { itemBuffers[agendaItemId][aid] = null; });
+
+      scrollToBottom(feed);
+    }
+
+    function onAgentDelta(agendaItemId, agentId, delta) {
+      if (activeItemId !== agendaItemId) { return; }
+      const feed = document.getElementById('chat-feed');
+
+      let el = document.getElementById(`stream-${agendaItemId}-${agentId}`);
+      if (!el) {
+        // Create streaming message card
+        const agent = allAgents.find(a => a.id === agentId);
+        const name = agent ? agent.name : agentId;
+        setStatus(name + ' is responding…', 'active');
+        const wrapper = document.createElement('div');
+        wrapper.className = 'agent-msg';
+        const isModerator = meeting && meeting.moderatorId === agentId;
+        wrapper.innerHTML = `
+      <div class="agent-msg-header">
+        <div class="agent-avatar">${name.charAt(0).toUpperCase()}</div>
+        <span class="agent-name">${esc(name)}${isModerator ? '<span class="moderator-badge">moderator</span>' : ''}</span>
+        <span class="agent-timestamp"><span class="spinner"></span></span>
+      </div>
+      <div class="agent-body" id="stream-${agendaItemId}-${agentId}"></div>`;
+        feed.appendChild(wrapper);
+        el = document.getElementById(`stream-${agendaItemId}-${agentId}`);
+      }
+      const wasNearBottom = isNearBottom(feed);
+      el.textContent += delta;
+      if (wasNearBottom) { scrollToBottom(feed); }
+    }
+
+    function onAgentRoundDone(agendaItemId, agentId, fullResponse, skipped, tag) {
+      const el = document.getElementById(`stream-${agendaItemId}-${agentId}`);
+      if (el) {
+        if (skipped) {
+          const card = el.closest('.agent-msg');
+          if (card) {
+            const agent = allAgents.find(a => a.id === agentId);
+            const name = agent ? agent.name : agentId;
+            const reason = fullResponse.replace(/^\[SKIP\][:\s]*/i, '').trim();
+            const skipDiv = document.createElement('div');
+            skipDiv.className = 'agent-skip';
+            skipDiv.textContent = `${name} — skipped: ${reason || 'nothing material to add'}`;
+            card.replaceWith(skipDiv);
+          }
+        } else {
+          const card = el.closest('.agent-msg');
+          const spinner = card && card.querySelector('.spinner');
+          if (spinner) { spinner.parentElement.textContent = new Date().toLocaleTimeString(); }
+          // Add tag badge to header
+          if (tag && card) {
+            const nameEl = card.querySelector('.agent-name');
+            if (nameEl && !nameEl.querySelector('.tag-badge')) {
+              const badge = document.createElement('span');
+              badge.className = `tag-badge tag-${tag}`;
+              badge.textContent = tag.replace(/_/g, ' ');
+              nameEl.appendChild(badge);
+            }
+          }
+          // Re-render body with @mention highlights and INTERRUPT_REQUEST callouts
+          el.innerHTML = renderWithMentions(el.textContent || fullResponse);
+        }
+        el.removeAttribute('id');
+      }
+
+      if (meeting) {
+        meeting.rounds = meeting.rounds || [];
+        meeting.rounds.push({ agendaItemId, agentId, response: fullResponse, timestamp: new Date().toISOString(), skipped: skipped || undefined, tag });
+      }
+    }
+
+    // ── Skip handler ───────────────────────────────────────────
+    function onAgentSkipped(agendaItemId, agentId) {
+      // The skip UI is already handled in onAgentRoundDone via the skipped flag
+      // This provides an explicit notification if needed
+    }
+
+    // ── @mention interrupt handlers ────────────────────────────
+    function onInterruptDelta(agendaItemId, agentId, triggeredBy, delta) {
+      if (activeItemId !== agendaItemId) { return; }
+      const feed = document.getElementById('chat-feed');
+      const streamId = `interrupt-${agendaItemId}-${agentId}-${triggeredBy}`;
+
+      let el = document.getElementById(streamId);
+      if (!el) {
+        const agent = allAgents.find(a => a.id === agentId);
+        const caller = allAgents.find(a => a.id === triggeredBy);
+        const name = agent ? agent.name : agentId;
+        const callerName = caller ? caller.name : triggeredBy;
+        setStatus(name + ' responding to @mention…', 'active');
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'agent-msg interrupt';
+        wrapper.innerHTML = `
+      <div class="interrupt-label">↳ responding to @${esc(callerName)}</div>
       <div class="agent-msg-header">
         <div class="agent-avatar">${name.charAt(0).toUpperCase()}</div>
         <span class="agent-name">${esc(name)}</span>
         <span class="agent-timestamp"><span class="spinner"></span></span>
       </div>
-      <div class="agent-body" id="stream-${agendaItemId}-${agentId}"></div>`;
-    feed.appendChild(wrapper);
-    el = document.getElementById(`stream-${agendaItemId}-${agentId}`);
-  }
-  const wasNearBottom = isNearBottom(feed);
-  el.textContent += delta;
-  if (wasNearBottom) { scrollToBottom(feed); }
-}
+      <div class="agent-body" id="${streamId}"></div>`;
+        feed.appendChild(wrapper);
+        el = document.getElementById(streamId);
+      }
+      const wasNearBottom = isNearBottom(feed);
+      el.textContent += delta;
+      if (wasNearBottom) { scrollToBottom(feed); }
+    }
 
-function onAgentRoundDone(agendaItemId, agentId, fullResponse) {
-  // Remove spinner from the agent's card header
-  const el = document.getElementById(`stream-${agendaItemId}-${agentId}`);
-  if (el) {
-    const card = el.closest('.agent-msg');
-    const spinner = card && card.querySelector('.spinner');
-    if (spinner) { spinner.parentElement.textContent = new Date().toLocaleTimeString(); }
-    el.removeAttribute('id'); // prevent reuse
-  }
+    function onInterruptDone(agendaItemId, agentId, triggeredBy, fullResponse, tag) {
+      const streamId = `interrupt-${agendaItemId}-${agentId}-${triggeredBy}`;
+      const el = document.getElementById(streamId);
+      if (el) {
+        const card = el.closest('.agent-msg');
+        const spinner = card && card.querySelector('.spinner');
+        if (spinner) { spinner.parentElement.textContent = new Date().toLocaleTimeString(); }
+        // Add tag badge if tag provided
+        if (tag && card) {
+          const nameEl = card.querySelector('.agent-name');
+          if (nameEl && !nameEl.querySelector('.tag-badge')) {
+            const badge = document.createElement('span');
+            badge.className = `tag-badge tag-${tag}`;
+            badge.textContent = tag.replace(/_/g, ' ');
+            nameEl.appendChild(badge);
+          }
+        }
+        // Re-render body with @mention highlights
+        el.innerHTML = renderWithMentions(el.textContent || fullResponse);
+        el.removeAttribute('id');
+      }
 
-  // Update local meeting rounds cache
-  if (meeting) {
-    meeting.rounds = meeting.rounds || [];
-    meeting.rounds.push({ agendaItemId, agentId, response: fullResponse, timestamp: new Date().toISOString() });
-  }
-}
+      // Update local meeting rounds cache
+      if (meeting) {
+        meeting.rounds = meeting.rounds || [];
+        meeting.rounds.push({ agendaItemId, agentId, response: fullResponse, timestamp: new Date().toISOString(), isInterrupt: true, triggeredBy });
+      }
+    }
 
-function onRoundComplete(agendaItemId) {
-  roundRunning = false;
-  setRoundUiState(false);
-  setStatus('Round complete — continue or mark item resolved', 'idle', 6000);
+    // ── Moderator summary handler ──────────────────────────────
+    function onRoundSummary(agendaItemId, summary) {
+      if (activeItemId !== agendaItemId) { return; }
+      const feed = document.getElementById('chat-feed');
 
-  // Update agenda item status to 'discussing' (still active)
-  if (meeting) {
-    const item = meeting.agenda.find(a => a.id === agendaItemId);
-    if (item && item.status !== 'resolved') { item.status = 'discussing'; }
-  }
-  renderAgendaSidebar();
-}
+      const card = document.createElement('div');
+      card.className = 'summary-card';
 
-function onRoundError(agendaItemId, error) {
-  roundRunning = false;
-  setRoundUiState(false);
-  setStatus('Error: ' + error, 'error');
-  const feed = document.getElementById('chat-feed');
-  const errDiv = document.createElement('div');
-  errDiv.style.cssText = 'color:var(--vscode-errorForeground,#f44);font-size:12px;padding:8px 0;';
-  errDiv.textContent = `Error: ${error}`;
-  feed.appendChild(errDiv);
-}
+      let html = '<div class="summary-card-header">📋 Moderator Summary</div>';
 
-function onItemResolved(agendaItemId, decision) {
-  if (!meeting) { return; }
-  const item = meeting.agenda.find(a => a.id === agendaItemId);
-  if (item) { item.status = 'resolved'; item.decision = decision; }
+      // Render structured sections if available
+      if (summary.problem) {
+        html += `<div class="summary-section"><span class="summary-section-label">Problem:</span> <span class="summary-section-content">${esc(summary.problem)}</span></div>`;
+      }
+      if (summary.options && summary.options.length) {
+        html += '<div class="summary-section"><span class="summary-section-label">Options:</span>';
+        summary.options.forEach(function (o) { html += `<div class="summary-section-content">• ${esc(o)}</div>`; });
+        html += '</div>';
+      }
+      if (summary.recommendation) {
+        html += `<div class="summary-section"><span class="summary-section-label">Recommendation:</span> <span class="summary-section-content">${esc(summary.recommendation)}</span></div>`;
+      }
+      if (summary.risks && summary.risks.length) {
+        html += '<div class="summary-section"><span class="summary-section-label">Risks:</span>';
+        summary.risks.forEach(function (r) { html += `<div class="summary-section-content">• ${esc(r)}</div>`; });
+        html += '</div>';
+      }
+      if (summary.actions && summary.actions.length) {
+        html += '<div class="summary-section"><span class="summary-section-label">Actions:</span>';
+        summary.actions.forEach(function (a) { html += `<div class="summary-section-content">• ${esc(a)}</div>`; });
+        html += '</div>';
+      }
+      if (summary.decisionPrompt) {
+        html += `<div class="decision-prompt">${esc(summary.decisionPrompt)}</div>`;
+      }
+      // Fallback: show raw summary if no structured fields
+      if (!summary.problem && !summary.recommendation && !summary.decisionPrompt && summary.summary) {
+        html += `<div class="summary-card-body">${esc(summary.summary)}</div>`;
+      }
 
-  if (activeItemId === agendaItemId) {
-    const feed = document.getElementById('chat-feed');
-    const notice = document.createElement('div');
-    notice.className = 'resolved-notice';
-    notice.innerHTML = `<strong>Resolved.</strong> ${decision ? esc(decision) : '(No decision recorded)'}`;
-    feed.appendChild(notice);
-    feed.scrollTop = feed.scrollHeight;
-  }
-  renderAgendaSidebar();
-}
+      card.innerHTML = html;
+      feed.appendChild(card);
 
-// ── User actions ───────────────────────────────────────────
-function continueDiscussion() {
-  if (roundRunning) { return; }
-  const itemId = document.getElementById('active-item-sel').value;
-  if (!itemId) { return; }
-  const userMessage = document.getElementById('user-input').value.trim() || undefined;
-  document.getElementById('user-input').value = '';
-  vscode.postMessage({ type: 'run_round', agendaItemId: itemId, userMessage });
-}
+      const wasNearBottom = isNearBottom(feed);
+      if (wasNearBottom) { scrollToBottom(feed); }
+    }
 
-function handleInputKey(e) {
-  // Ctrl+Enter or Shift+Enter to send (Enter alone = newline for multi-line)
-  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-    e.preventDefault();
-    continueDiscussion();
-  }
-}
+    // ── Open question created handler ───────────────────────────
+    function onOpenQuestionCreated(agendaItemId, oqId, question, askedBy) {
+      if (activeItemId !== agendaItemId) { return; }
+      const feed = document.getElementById('chat-feed');
+      const div = document.createElement('div');
+      div.className = 'oq-notification';
+      div.innerHTML = `<strong>${esc(oqId)}</strong> added to Open Questions — ${esc(question)} (asked by ${esc(askedBy)})`;
+      feed.appendChild(div);
+      const wasNearBottom = isNearBottom(feed);
+      if (wasNearBottom) { scrollToBottom(feed); }
+    }
 
-function resolveCurrentItem() {
-  if (!activeItemId || roundRunning) { return; }
-  const userInput = document.getElementById('user-input').value.trim();
-  const decision = userInput || prompt('Enter your decision or summary (optional):') || '';
-  document.getElementById('user-input').value = '';
-  vscode.postMessage({ type: 'resolve_item', agendaItemId: activeItemId, decision });
-}
+    function onRoundComplete(agendaItemId) {
+      roundRunning = false;
+      setRoundUiState(false);
+      setStatus('Round complete — continue or mark item resolved', 'idle', 6000);
 
-function setRoundUiState(busy) {
-  document.getElementById('continue-btn').disabled = busy;
-  document.getElementById('send-spinner').style.display = busy ? '' : 'none';
-}
+      // Update agenda item status to 'discussing' (still active)
+      if (meeting) {
+        const item = meeting.agenda.find(a => a.id === agendaItemId);
+        if (item && item.status !== 'resolved') { item.status = 'discussing'; }
+      }
+      renderAgendaSidebar();
+    }
 
-// ── Active item selector ───────────────────────────────────
-document.getElementById('active-item-sel').addEventListener('change', function() {
-  setActiveItem(this.value);
-});
+    function onRoundError(agendaItemId, error) {
+      roundRunning = false;
+      setRoundUiState(false);
+      setStatus('Error: ' + error, 'error');
+      const feed = document.getElementById('chat-feed');
+      const errDiv = document.createElement('div');
+      errDiv.style.cssText = 'color:var(--vscode-errorForeground,#f44);font-size:12px;padding:8px 0;';
+      errDiv.textContent = `Error: ${error}`;
+      feed.appendChild(errDiv);
+    }
 
-// ── Action Items ───────────────────────────────────────────
-function onActionItemAdded(ai) {
-  const list = document.getElementById('action-list');
-  const empty = list.querySelector('.empty');
-  if (empty) { empty.remove(); }
+    function onItemResolved(agendaItemId, decision) {
+      if (!meeting) { return; }
+      const item = meeting.agenda.find(a => a.id === agendaItemId);
+      if (item) { item.status = 'resolved'; item.decision = decision; item.blockedByHuman = false; }
 
-  const card = document.createElement('div');
-  card.className = 'action-card';
-  card.innerHTML = `<span class="action-text">${esc(ai.text)}</span>
+      if (activeItemId === agendaItemId) {
+        const feed = document.getElementById('chat-feed');
+        const notice = document.createElement('div');
+        notice.className = 'resolved-notice';
+        notice.innerHTML = `<strong>Resolved.</strong> ${decision ? esc(decision) : '(No decision recorded)'}`;
+        feed.appendChild(notice);
+        scrollToBottom(feed);
+      }
+      renderAgendaSidebar();
+
+      // Auto-advance to the next unresolved agenda item
+      if (!meetingEnded && meeting) {
+        const next = meeting.agenda.find(a => a.id !== agendaItemId && a.status !== 'resolved');
+        if (next) {
+          setTimeout(() => {
+            setActiveItem(next.id);
+            // Auto-start if the item hasn't been discussed yet
+            if (next.status === 'pending') {
+              vscode.postMessage({ type: 'run_round', agendaItemId: next.id });
+            }
+          }, 700);
+        }
+      }
+    }
+
+    // ── Blocked-for-human handler ──────────────────────────────
+    function onItemBlockedForHuman(agendaItemId) {
+      if (!meeting) { return; }
+      const item = meeting.agenda.find(a => a.id === agendaItemId);
+      if (item) { item.blockedByHuman = true; }
+
+      if (activeItemId === agendaItemId) {
+        const feed = document.getElementById('chat-feed');
+        const notice = document.createElement('div');
+        notice.className = 'blocked-notice';
+        notice.innerHTML = `<strong>⏸ Your input is needed.</strong> An agent raised a blocking question — type your answer below and press Send to continue.`;
+        feed.appendChild(notice);
+        scrollToBottom(feed);
+
+        // Highlight the input to draw attention
+        const input = document.getElementById('user-input');
+        input.style.borderColor = 'var(--warn)';
+        input.placeholder = 'Your answer is needed here — type and Send to continue…';
+        input.focus();
+      }
+
+      setStatus('Waiting for your input on: ' + (item?.text?.slice(0, 50) ?? agendaItemId), 'active');
+    }
+
+    // ── User actions ───────────────────────────────────────────
+    function continueDiscussion() {
+      if (roundRunning) { return; }
+      const itemId = document.getElementById('active-item-sel').value;
+      if (!itemId) { return; }
+      const userMessage = document.getElementById('user-input').value.trim() || undefined;
+      document.getElementById('user-input').value = '';
+      // Reset any blocked styling
+      const input = document.getElementById('user-input');
+      input.style.borderColor = '';
+      input.placeholder = 'Message… @agent-name to direct a question to a specific agent';
+      vscode.postMessage({ type: 'run_round', agendaItemId: itemId, userMessage });
+    }
+
+    function onUserInputChange() {
+      // Reset blocked-state border when user starts typing a response
+      const input = document.getElementById('user-input');
+      if (input.value.trim() && input.style.borderColor) {
+        input.style.borderColor = '';
+        input.placeholder = 'Message… @agent-name to direct a question to a specific agent';
+      }
+      // Check for @mention trigger
+      checkMentionTrigger(input);
+    }
+
+    function handleInputKey(e) {
+      const dd = document.getElementById('mention-dropdown');
+      // Handle dropdown navigation first
+      if (dd && dd.style.display !== 'none') {
+        const items = dd.querySelectorAll('.mention-dropdown-item');
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          mentionSelectedIdx = (mentionSelectedIdx + 1) % items.length;
+          updateMentionSelection(items);
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          mentionSelectedIdx = (mentionSelectedIdx - 1 + items.length) % items.length;
+          updateMentionSelection(items);
+          return;
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          const selected = items[mentionSelectedIdx];
+          if (selected) { e.preventDefault(); selected.click(); return; }
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          hideMentionDropdown();
+          return;
+        }
+      }
+      // Ctrl+Enter or Cmd+Enter to send (Enter alone = newline for multi-line)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        continueDiscussion();
+      }
+    }
+
+    // ── @mention autocomplete ──────────────────────────────────
+    function checkMentionTrigger(input) {
+      const val = input.value;
+      const cursor = input.selectionStart;
+      const beforeCursor = val.slice(0, cursor);
+      // Look for @ followed by word chars (or empty) right before cursor, no space after @
+      const match = beforeCursor.match(/@([\w-]*)$/);
+      if (!match || !meeting) { hideMentionDropdown(); return; }
+
+      mentionStartPos = beforeCursor.length - match[0].length;
+      const query = match[1].toLowerCase();
+
+      // Only offer attendees who are participants in this meeting
+      const attendees = meeting.participants
+        .map(id => allAgents.find(a => a.id === id))
+        .filter(Boolean);
+
+      const filtered = query
+        ? attendees.filter(a =>
+            a.name.toLowerCase().includes(query) ||
+            a.id.toLowerCase().includes(query))
+        : attendees;
+
+      if (!filtered.length) { hideMentionDropdown(); return; }
+      showMentionDropdown(filtered, input);
+    }
+
+    function showMentionDropdown(agents, input) {
+      const dd = document.getElementById('mention-dropdown');
+      mentionSelectedIdx = 0;
+      dd.innerHTML = agents.map((a, i) =>
+        `<div class="mention-dropdown-item${i === 0 ? ' selected' : ''}"
+              data-agent-id="${esc(a.id)}" data-agent-name="${esc(a.name)}"
+              onclick="insertMention('${esc(a.id)}','${esc(a.name)}')"
+              onmouseenter="mentionSelectedIdx=${i}; updateMentionSelection()">
+          <div class="md-avatar">${a.name.charAt(0).toUpperCase()}</div>
+          <span class="md-name">${esc(a.name)}</span>
+          <span class="md-cat">${esc(a.category || '')}</span>
+        </div>`
+      ).join('');
+
+      // Position just above the textarea
+      const rect = input.getBoundingClientRect();
+      dd.style.display = '';
+      dd.style.left = rect.left + 'px';
+      dd.style.width = Math.max(220, rect.width * 0.55) + 'px';
+      // Position above if enough room, else below
+      const ddHeight = dd.offsetHeight || 160;
+      if (rect.top > ddHeight + 12) {
+        dd.style.top = (rect.top - ddHeight - 4) + 'px';
+      } else {
+        dd.style.top = (rect.bottom + 4) + 'px';
+      }
+    }
+
+    function hideMentionDropdown() {
+      const dd = document.getElementById('mention-dropdown');
+      if (dd) { dd.style.display = 'none'; }
+      mentionStartPos = -1;
+      mentionSelectedIdx = 0;
+    }
+
+    function updateMentionSelection(items) {
+      if (!items) {
+        items = document.querySelectorAll('#mention-dropdown .mention-dropdown-item');
+      }
+      items.forEach((item, i) => item.classList.toggle('selected', i === mentionSelectedIdx));
+      // Scroll selected into view
+      const sel = items[mentionSelectedIdx];
+      if (sel) { sel.scrollIntoView({ block: 'nearest' }); }
+    }
+
+    function insertMention(agentId, agentName) {
+      const input = document.getElementById('user-input');
+      const val = input.value;
+      const cursor = input.selectionStart;
+      // Replace from @ start to current cursor position
+      const before = val.slice(0, mentionStartPos);
+      const after = val.slice(cursor);
+      const mention = '@' + agentName + ' ';
+      input.value = before + mention + after;
+      const newPos = mentionStartPos + mention.length;
+      input.setSelectionRange(newPos, newPos);
+      input.focus();
+      hideMentionDropdown();
+    }
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', function (e) {
+      const dd = document.getElementById('mention-dropdown');
+      if (dd && !dd.contains(e.target) && e.target.id !== 'user-input') {
+        hideMentionDropdown();
+      }
+    });
+
+    // ── Resolve item (inline panel) ───────────────────────────
+    function toggleResolvePanel() {
+      if (!activeItemId) { return; }
+      const panel = document.getElementById('resolve-panel');
+      const isHidden = panel.style.display === 'none';
+      // Hide the other panel first
+      document.getElementById('quick-action-panel').style.display = 'none';
+      panel.style.display = isHidden ? '' : 'none';
+      if (isHidden) {
+        const input = document.getElementById('resolve-input');
+        // Pre-fill with anything already typed in the main input
+        const typed = document.getElementById('user-input').value.trim();
+        if (typed) { input.value = typed; }
+        input.focus();
+      }
+    }
+
+    function hideResolvePanel() {
+      document.getElementById('resolve-panel').style.display = 'none';
+      document.getElementById('resolve-input').value = '';
+    }
+
+    function resolveInputKey(e) {
+      if (e.key === 'Enter') { e.preventDefault(); confirmResolve(); }
+      if (e.key === 'Escape') { hideResolvePanel(); }
+    }
+
+    function confirmResolve() {
+      if (!activeItemId) { return; }
+      const decision = document.getElementById('resolve-input').value.trim();
+      hideResolvePanel();
+      document.getElementById('user-input').value = '';
+      vscode.postMessage({ type: 'resolve_item', agendaItemId: activeItemId, decision });
+    }
+
+    // ── Quick-add action item ─────────────────────────────────
+    function toggleQuickActionPanel() {
+      const panel = document.getElementById('quick-action-panel');
+      const isHidden = panel.style.display === 'none';
+      // Hide the other panel first
+      document.getElementById('resolve-panel').style.display = 'none';
+      panel.style.display = isHidden ? '' : 'none';
+      if (isHidden) { document.getElementById('quick-action-text').focus(); }
+    }
+
+    function hideQuickActionPanel() {
+      document.getElementById('quick-action-panel').style.display = 'none';
+      document.getElementById('quick-action-text').value = '';
+      document.getElementById('quick-action-assignee').value = '';
+    }
+
+    function quickActionKey(e) {
+      if (e.key === 'Enter') { e.preventDefault(); confirmQuickAction(); }
+      if (e.key === 'Escape') { hideQuickActionPanel(); }
+    }
+
+    function confirmQuickAction() {
+      const text = document.getElementById('quick-action-text').value.trim();
+      const assignedTo = document.getElementById('quick-action-assignee').value.trim() || 'Unassigned';
+      if (!text) { return; }
+      hideQuickActionPanel();
+      vscode.postMessage({ type: 'add_action_item', text, assignedTo });
+    }
+
+    function setRoundUiState(busy) {
+      document.getElementById('continue-btn').disabled = busy;
+      document.getElementById('send-spinner').style.display = busy ? '' : 'none';
+    }
+
+    // ── Active item selector ───────────────────────────────────
+    document.getElementById('active-item-sel').addEventListener('change', function () {
+      setActiveItem(this.value);
+    });
+
+    // ── Action Items ───────────────────────────────────────────
+    function onActionItemAdded(ai) {
+      const list = document.getElementById('action-list');
+      const empty = list.querySelector('.empty');
+      if (empty) { empty.remove(); }
+
+      const card = document.createElement('div');
+      card.className = 'action-card';
+      card.innerHTML = `<span class="action-text">${esc(ai.text)}</span>
     <span class="action-assignee">${esc(ai.assignedTo || 'Unassigned')}</span>`;
-  list.appendChild(card);
-}
+      list.appendChild(card);
+    }
 
-function addActionItem() {
-  const text = document.getElementById('new-action-text').value.trim();
-  const assignedTo = document.getElementById('new-action-assignee').value.trim() || 'Unassigned';
-  if (!text) { return; }
-  document.getElementById('new-action-text').value = '';
-  document.getElementById('new-action-assignee').value = '';
-  vscode.postMessage({ type: 'add_action_item', text, assignedTo });
-}
+    function addActionItem() {
+      const text = document.getElementById('new-action-text').value.trim();
+      const assignedTo = document.getElementById('new-action-assignee').value.trim() || 'Unassigned';
+      if (!text) { return; }
+      document.getElementById('new-action-text').value = '';
+      document.getElementById('new-action-assignee').value = '';
+      vscode.postMessage({ type: 'add_action_item', text, assignedTo });
+    }
 
-// ── Minutes ────────────────────────────────────────────────
-function generateMinutes() {
-  vscode.postMessage({ type: 'generate_minutes' });
-}
+    // ── Minutes ────────────────────────────────────────────────
+    function generateMinutes() {
+      vscode.postMessage({ type: 'generate_minutes' });
+    }
 
-function onMinutesReady(markdown) {
-  document.getElementById('minutes-output').textContent = markdown;
-}
+    function onMinutesReady(markdown) {
+      document.getElementById('minutes-output').textContent = markdown;
+    }
 
-function saveMinutes() {
-  const markdown = document.getElementById('minutes-output').textContent;
-  if (!markdown || markdown.includes('Click "Generate Minutes"')) { alert('Generate minutes first.'); return; }
-  vscode.postMessage({ type: 'save_minutes', markdown });
-}
+    function saveMinutes() {
+      const markdown = document.getElementById('minutes-output').textContent;
+      if (!markdown || markdown.includes('Click "Generate Minutes"')) { alert('Generate minutes first.'); return; }
+      vscode.postMessage({ type: 'save_minutes', markdown });
+    }
 
-// ── Scroll helpers ─────────────────────────────────────────
-// Returns true when the user is already near the bottom — so auto-scroll is safe.
-// If the user has scrolled up to read, we leave them in place.
-function isNearBottom(el, threshold = 80) {
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
-}
-function scrollToBottom(el) {
-  el.scrollTop = el.scrollHeight;
-}
+    // ── Scroll helpers ─────────────────────────────────────────
+    // Returns true when the user is already near the bottom — so auto-scroll is safe.
+    // If the user has scrolled up to read, we leave them in place.
+    function isNearBottom(el, threshold = 80) {
+      return document.documentElement.scrollHeight - window.scrollY - window.innerHeight <= threshold;
+    }
+    function scrollToBottom(el) {
+      window.scrollTo(0, document.documentElement.scrollHeight);
+    }
 
-// ── Helpers ────────────────────────────────────────────────
-function appendAgentMessage(feed, agentId, text, timestamp) {
-  const agent = allAgents.find(a => a.id === agentId);
-  const name = agent ? agent.name : agentId;
-  const div = document.createElement('div');
-  div.className = 'agent-msg';
-  div.innerHTML = `
+    // ── Helpers ────────────────────────────────────────────────
+    function appendAgentMessage(feed, agentId, text, timestamp) {
+      const agent = allAgents.find(a => a.id === agentId);
+      const name = agent ? agent.name : agentId;
+      const isModerator = meeting && meeting.moderatorId === agentId;
+      const div = document.createElement('div');
+      div.className = 'agent-msg';
+      div.innerHTML = `
     <div class="agent-msg-header">
       <div class="agent-avatar">${name.charAt(0).toUpperCase()}</div>
-      <span class="agent-name">${esc(name)}</span>
+      <span class="agent-name">${esc(name)}${isModerator ? '<span class="moderator-badge">moderator</span>' : ''}</span>
       <span class="agent-timestamp">${timestamp ? new Date(timestamp).toLocaleTimeString() : ''}</span>
     </div>
-    <div class="agent-body">${esc(text)}</div>`;
-  feed.appendChild(div);
-}
+    <div class="agent-body">${renderWithMentions(text)}</div>`;
+      feed.appendChild(div);
+    }
 
-function esc(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
+    function esc(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
 
-// ── End Meeting ────────────────────────────────────────────
-function endMeeting() {
-  if (!meeting || meetingEnded) { return; }
-  if (!confirm('End the meeting now? Minutes will be saved automatically.')) { return; }
-  const endBtn = document.getElementById('end-meeting-btn');
-  if (endBtn) { endBtn.disabled = true; endBtn.textContent = 'Ending…'; }
-  vscode.postMessage({ type: 'stop_meeting' });
-}
+    /**
+     * Render agent response text with @mention highlights and INTERRUPT_REQUEST
+     * line callouts. Safe to insert as innerHTML — escapes all content first.
+     */
+    function renderWithMentions(text) {
+      // 1. Split into lines, escape each line, then re-join
+      const lines = String(text).split('\n');
+      const rendered = lines.map(line => {
+        const escaped = esc(line);
+        // Highlight INTERRUPT_REQUEST: lines
+        if (/^INTERRUPT_REQUEST:/i.test(line.trim())) {
+          // Highlight any @mention inside it too
+          const inner = escaped.replace(/@([\w-]+)/g, '<span class="mention">@$1</span>');
+          return `<span class="interrupt-request-line">${inner}</span>`;
+        }
+        // Highlight @mentions in regular lines
+        return escaped.replace(/@([\w-]+)/g, '<span class="mention">@$1</span>');
+      });
+      return rendered.join('\n');
+    }
 
-function onMeetingStopped(minutes) {
-  meetingEnded = true;
-  roundRunning = false;
-  setRoundUiState(false);
-  setStatus('Meeting ended — minutes saved automatically', 'idle');
+    // ── End Meeting ────────────────────────────────────────────
+    function endMeeting() {
+      if (!meeting || meetingEnded) { return; }
+      if (!confirm('End the meeting now? Minutes will be saved automatically.')) { return; }
+      const endBtn = document.getElementById('end-meeting-btn');
+      if (endBtn) { endBtn.disabled = true; endBtn.textContent = 'Ending…'; }
+      vscode.postMessage({ type: 'stop_meeting' });
+    }
 
-  const endBtn = document.getElementById('end-meeting-btn');
-  if (endBtn) { endBtn.disabled = true; endBtn.textContent = '✓ Ended'; }
-  const continueBtn = document.getElementById('continue-btn');
-  if (continueBtn) { continueBtn.disabled = true; }
+    function onMeetingStopped(minutes) {
+      meetingEnded = true;
+      roundRunning = false;
+      setRoundUiState(false);
+      setStatus('Meeting ended — minutes saved automatically', 'idle');
 
-  const feed = document.getElementById('chat-feed');
-  const banner = document.createElement('div');
-  banner.className = 'resolved-notice';
-  banner.innerHTML = '<strong>Meeting ended.</strong> Minutes have been saved automatically.';
-  feed.appendChild(banner);
-  feed.scrollTop = feed.scrollHeight;
+      const endBtn = document.getElementById('end-meeting-btn');
+      if (endBtn) { endBtn.disabled = true; endBtn.textContent = '✓ Ended'; }
+      const continueBtn = document.getElementById('continue-btn');
+      if (continueBtn) { continueBtn.disabled = true; }
 
-  if (minutes) {
-    document.getElementById('minutes-output').textContent = minutes;
-    switchTab('minutes');
-  }
-}
+      const feed = document.getElementById('chat-feed');
+      const banner = document.createElement('div');
+      banner.className = 'resolved-notice';
+      banner.innerHTML = '<strong>Meeting ended.</strong> Minutes have been saved. <a href="#" onclick="startNewMeeting(); return false;" style="color:var(--accent)">Start a new meeting?</a>';
+      feed.appendChild(banner);
+      scrollToBottom(feed);
 
-// ── Status bar ─────────────────────────────────────────────
-let sbTimer = null;
-function setStatus(text, state /* 'idle'|'active'|'error' */, autoClearMs) {
-  const bar = document.getElementById('status-bar');
-  const dot = document.getElementById('sb-dot');
-  const txt = document.getElementById('sb-text');
-  if (!bar) { return; }
-  clearTimeout(sbTimer);
-  bar.classList.add('visible');
-  dot.className = state === 'active' ? 'active' : state === 'error' ? 'error' : '';
-  txt.textContent = text;
-  if (autoClearMs) { sbTimer = setTimeout(clearStatus, autoClearMs); }
-}
-function clearStatus() {
-  const bar = document.getElementById('status-bar');
-  if (bar) { bar.classList.remove('visible'); }
-}
-function dismissStatus() { clearStatus(); }
+      if (minutes) {
+        document.getElementById('minutes-output').textContent = minutes;
+      }
+    }
 
-// ── Pre-Meeting Action Items ───────────────────────────────
-function addPreActionItem() {
-  const text = document.getElementById('pre-action-text').value.trim();
-  const assignedTo = document.getElementById('pre-action-assignee').value.trim() || 'Unassigned';
-  if (!text) { return; }
-  preActionItems.push({ text, assignedTo });
-  document.getElementById('pre-action-text').value = '';
-  document.getElementById('pre-action-assignee').value = '';
-  renderPreActionItems();
-}
+    function startNewMeeting() {
+      meeting = null;
+      meetingEnded = false;
+      activeItemId = null;
+      document.getElementById('planning-badge').style.display = 'none';
+      document.getElementById('tab-setup').style.display = '';
+      document.getElementById('start-btn').disabled = false;
+      document.getElementById('chat-input-bar').style.display = 'none';
+      document.getElementById('chat-feed').innerHTML = '<span class="empty">Start the meeting to begin the discussion.</span>';
+      document.getElementById('agenda-list').innerHTML = '<span class="empty">No agenda yet.</span>';
+      document.getElementById('action-list').innerHTML = '<span class="empty">No action items yet.</span>';
+      document.getElementById('minutes-output').textContent = '';
+      document.getElementById('minutes-output').className = 'empty';
+      document.getElementById('minutes-output').textContent = 'Click "Generate Minutes" to create meeting minutes.';
+      window.scrollTo(0, 0);
+    }
 
-function removePreActionItem(i) {
-  preActionItems.splice(i, 1);
-  renderPreActionItems();
-}
+    // ── Status bar ─────────────────────────────────────────────
+    let sbTimer = null;
+    function setStatus(text, state /* 'idle'|'active'|'error' */, autoClearMs) {
+      const bar = document.getElementById('status-bar');
+      const dot = document.getElementById('sb-dot');
+      const txt = document.getElementById('sb-text');
+      if (!bar) { return; }
+      clearTimeout(sbTimer);
+      bar.classList.add('visible');
+      dot.className = state === 'active' ? 'active' : state === 'error' ? 'error' : '';
+      txt.textContent = text;
+      if (autoClearMs) { sbTimer = setTimeout(clearStatus, autoClearMs); }
+    }
+    function clearStatus() {
+      const bar = document.getElementById('status-bar');
+      if (bar) { bar.classList.remove('visible'); }
+    }
+    function dismissStatus() { clearStatus(); }
 
-function renderPreActionItems() {
-  const list = document.getElementById('pre-action-list');
-  if (!list) { return; }
-  if (preActionItems.length === 0) { list.innerHTML = ''; return; }
-  list.innerHTML = preActionItems.map((ai, i) =>
-    `<div class="action-card" style="font-size:12px;">
+    // ── Pre-Meeting Action Items ───────────────────────────────
+    function addPreActionItem() {
+      const text = document.getElementById('pre-action-text').value.trim();
+      const assignedTo = document.getElementById('pre-action-assignee').value.trim() || 'Unassigned';
+      if (!text) { return; }
+      preActionItems.push({ text, assignedTo });
+      document.getElementById('pre-action-text').value = '';
+      document.getElementById('pre-action-assignee').value = '';
+      renderPreActionItems();
+    }
+
+    function removePreActionItem(i) {
+      preActionItems.splice(i, 1);
+      renderPreActionItems();
+    }
+
+    function renderPreActionItems() {
+      const list = document.getElementById('pre-action-list');
+      if (!list) { return; }
+      if (preActionItems.length === 0) { list.innerHTML = ''; return; }
+      list.innerHTML = preActionItems.map((ai, i) =>
+        `<div class="action-card" style="font-size:12px;">
       <span class="action-text">${esc(ai.text)}</span>
       <span class="action-assignee">${esc(ai.assignedTo)}</span>
       <button class="btn btn-sm btn-outline" style="padding:1px 6px;margin-left:4px;" onclick="removePreActionItem(${i})">×</button>
     </div>`
-  ).join('');
-}
-</script>
+      ).join('');
+    }
+  </script>
 </body>
+
 </html>

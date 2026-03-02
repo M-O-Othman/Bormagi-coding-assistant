@@ -540,6 +540,187 @@
     }
 
     #log-toggle-btn.active { opacity: 0.9; }
+
+    /* ── MARKDOWN RENDERING ──────────────────────────────────────────────────*/
+
+    .msg.assistant .msg-content h1,
+    .msg.assistant .msg-content h2,
+    .msg.assistant .msg-content h3,
+    .msg.assistant .msg-content h4 {
+      margin: 10px 0 4px;
+      line-height: 1.3;
+      color: var(--vscode-foreground);
+    }
+    .msg.assistant .msg-content h1 { font-size: 1.3em; font-weight: 700; border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.15)); padding-bottom: 4px; }
+    .msg.assistant .msg-content h2 { font-size: 1.15em; font-weight: 600; }
+    .msg.assistant .msg-content h3 { font-size: 1.05em; font-weight: 600; }
+    .msg.assistant .msg-content h4 { font-size: 1em; font-weight: 600; opacity: 0.85; }
+    .msg.assistant .msg-content h1:first-child,
+    .msg.assistant .msg-content h2:first-child,
+    .msg.assistant .msg-content h3:first-child { margin-top: 0; }
+
+    .msg.assistant .msg-content p { margin: 6px 0; line-height: 1.55; }
+    .msg.assistant .msg-content p:first-child { margin-top: 0; }
+    .msg.assistant .msg-content p:last-child { margin-bottom: 0; }
+
+    .msg.assistant .msg-content ul,
+    .msg.assistant .msg-content ol {
+      margin: 6px 0;
+      padding-left: 20px;
+    }
+    .msg.assistant .msg-content li { margin: 2px 0; line-height: 1.5; }
+    .msg.assistant .msg-content li > ul,
+    .msg.assistant .msg-content li > ol { margin: 2px 0; }
+
+    /* Task lists */
+    .msg.assistant .msg-content li.task-list-item { list-style: none; margin-left: -20px; }
+    .msg.assistant .msg-content li.task-list-item input[type="checkbox"] {
+      margin-right: 6px;
+      vertical-align: middle;
+      pointer-events: none;
+    }
+
+    /* Inline code */
+    .msg.assistant .msg-content code:not(.code-block-code) {
+      background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.15));
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+      font-size: 0.9em;
+    }
+
+    /* Fenced code blocks */
+    .md-code-block-wrap {
+      position: relative;
+      margin: 8px 0;
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      background: var(--vscode-editor-background, #1e1e1e);
+      border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.2));
+    }
+    .md-code-header {
+      display: flex;
+      align-items: center;
+      padding: 4px 10px;
+      background: rgba(128,128,128,0.08);
+      border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.12));
+      gap: 6px;
+    }
+    .md-code-lang {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      opacity: 0.55;
+      flex: 1;
+    }
+    .md-code-copy {
+      background: none;
+      border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.25));
+      color: var(--vscode-foreground);
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 3px;
+      cursor: pointer;
+      opacity: 0.6;
+      transition: opacity var(--transition);
+    }
+    .md-code-copy:hover { opacity: 1; }
+    .md-code-body {
+      overflow-x: auto;
+    }
+    .md-code-body pre {
+      margin: 0;
+      padding: 10px 12px;
+      background: transparent;
+    }
+    .md-code-body code {
+      font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--vscode-editor-foreground);
+      background: transparent;
+      padding: 0;
+      white-space: pre;
+    }
+
+    /* Auto-collapse long code blocks */
+    .md-code-body.collapsed {
+      max-height: calc(12px * 1.5 * 12 + 20px); /* ~12 lines */
+      overflow: hidden;
+    }
+    .md-code-expand {
+      display: block;
+      width: 100%;
+      text-align: center;
+      padding: 5px;
+      font-size: 11px;
+      cursor: pointer;
+      background: rgba(128,128,128,0.08);
+      border: none;
+      border-top: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.12));
+      color: var(--vscode-textLink-foreground, #3794ff);
+      opacity: 0.85;
+    }
+    .md-code-expand:hover { opacity: 1; background: rgba(128,128,128,0.14); }
+
+    /* Blockquotes */
+    .msg.assistant .msg-content blockquote {
+      margin: 8px 0;
+      padding: 4px 12px;
+      border-left: 3px solid var(--vscode-textLink-foreground, #3794ff);
+      background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.06));
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      opacity: 0.9;
+    }
+    .msg.assistant .msg-content blockquote p { margin: 4px 0; }
+
+    /* Tables */
+    .msg.assistant .msg-content table {
+      border-collapse: collapse;
+      margin: 8px 0;
+      width: 100%;
+      font-size: 12px;
+    }
+    .msg.assistant .msg-content th,
+    .msg.assistant .msg-content td {
+      border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.25));
+      padding: 5px 10px;
+      text-align: left;
+    }
+    .msg.assistant .msg-content th {
+      background: rgba(128,128,128,0.1);
+      font-weight: 600;
+    }
+    .msg.assistant .msg-content tr:nth-child(even) {
+      background: rgba(128,128,128,0.04);
+    }
+
+    /* Horizontal rules */
+    .msg.assistant .msg-content hr {
+      border: none;
+      border-top: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.2));
+      margin: 10px 0;
+    }
+
+    /* Links */
+    .msg.assistant .msg-content a {
+      color: var(--vscode-textLink-foreground, #3794ff);
+      text-decoration: none;
+    }
+    .msg.assistant .msg-content a:hover { text-decoration: underline; }
+
+    /* Strong / Em */
+    .msg.assistant .msg-content strong { font-weight: 600; }
+    .msg.assistant .msg-content em { font-style: italic; }
+
+    /* Images — constrain size */
+    .msg.assistant .msg-content img {
+      max-width: 100%;
+      border-radius: var(--radius-sm);
+      margin: 6px 0;
+    }
+
   </style>
 </head>
 <body>
@@ -669,6 +850,9 @@
 </div>
 
 <script>
+  // ── Marked.js Markdown parser (injected at build time by ChatViewProvider) ──
+  /*__MARKED_LIB__*/
+
   const vscode = acquireVsCodeApi();
 
   const messagesEl  = document.getElementById('messages');
@@ -979,7 +1163,15 @@
     const row = document.getElementById('stream-row');
     if (row) row.removeAttribute('id');
     const sc = document.getElementById('stream-content');
-    if (sc) sc.removeAttribute('id');
+    if (sc) {
+      sc.removeAttribute('id');
+      // Render Markdown from the streamed plain text
+      const rawText = sc.textContent || '';
+      if (rawText.trim()) {
+        sc.innerHTML = renderMarkdown(rawText);
+        postProcessCodeBlocks(sc);
+      }
+    }
     if (currentCursor) { currentCursor.remove(); currentCursor = null; }
 
     // Hide strip if no tool calls were made
@@ -991,6 +1183,117 @@
     currentContentEl    = null;
     currentThoughtStrip = null;
     clearStatus();
+  }
+
+  // ── Markdown rendering ────────────────────────────────────────────────────
+
+  const COLLAPSE_THRESHOLD = 30; // lines
+
+  /**
+   * Parse Markdown text and return sanitized HTML.
+   * Falls back to escaped plain text if marked.js was not injected.
+   */
+  function renderMarkdown(raw) {
+    if (typeof marked === 'undefined' || !marked.parse) {
+      // Fallback: return escaped text wrapped in <p>
+      return '<p>' + esc(raw) + '</p>';
+    }
+
+    try {
+      // Configure marked for safe rendering
+      const html = marked.parse(raw, { breaks: true, gfm: true });
+      return sanitizeHtml(html);
+    } catch (e) {
+      return '<p>' + esc(raw) + '</p>';
+    }
+  }
+
+  /**
+   * Sanitize rendered HTML: strip dangerous elements and attributes.
+   */
+  function sanitizeHtml(html) {
+    // Remove script / iframe / style / object / embed / form tags
+    html = html.replace(/<(script|iframe|style|object|embed|form)(\s[^>]*)?>.*?<\/\1>/gis, '');
+    html = html.replace(/<(script|iframe|style|object|embed|form)(\s[^>]*)?\/?>/gi, '');
+    // Remove event handler attributes (onclick, onerror, onload, etc.)
+    html = html.replace(/\s+on\w+\s*=\s*["'][^"']*["']/gi, '');
+    html = html.replace(/\s+on\w+\s*=\s*\S+/gi, '');
+    // Remove javascript: URLs
+    html = html.replace(/href\s*=\s*["']\s*javascript:/gi, 'href="#blocked:');
+    return html;
+  }
+
+  /**
+   * Post-process code blocks: wrap them with header (language badge + copy btn),
+   * and auto-collapse blocks exceeding COLLAPSE_THRESHOLD lines.
+   */
+  function postProcessCodeBlocks(container) {
+    const pres = container.querySelectorAll('pre');
+    pres.forEach(pre => {
+      const codeEl = pre.querySelector('code');
+      if (!codeEl) return;
+
+      // Extract language from class="language-xxx"
+      const langMatch = (codeEl.className || '').match(/language-(\S+)/);
+      const lang = langMatch ? langMatch[1] : '';
+
+      // Mark code element so inline-code styles don't apply
+      codeEl.classList.add('code-block-code');
+
+      // Build wrapper
+      const wrap = document.createElement('div');
+      wrap.className = 'md-code-block-wrap';
+
+      // Header: language badge + copy button
+      const header = document.createElement('div');
+      header.className = 'md-code-header';
+      header.innerHTML =
+        '<span class="md-code-lang">' + esc(lang || 'code') + '</span>' +
+        '<button class="md-code-copy" onclick="copyCodeBlock(this)">Copy</button>';
+
+      // Body
+      const body = document.createElement('div');
+      body.className = 'md-code-body';
+
+      // Move pre into body
+      pre.parentNode.insertBefore(wrap, pre);
+      body.appendChild(pre);
+      wrap.appendChild(header);
+      wrap.appendChild(body);
+
+      // Auto-collapse if > COLLAPSE_THRESHOLD lines
+      const lineCount = (codeEl.textContent || '').split('\n').length;
+      if (lineCount > COLLAPSE_THRESHOLD) {
+        body.classList.add('collapsed');
+        const expandBtn = document.createElement('button');
+        expandBtn.className = 'md-code-expand';
+        expandBtn.textContent = 'Expand (' + lineCount + ' lines)';
+        expandBtn.onclick = function() {
+          const isCollapsed = body.classList.toggle('collapsed');
+          expandBtn.textContent = isCollapsed
+            ? 'Expand (' + lineCount + ' lines)'
+            : 'Collapse';
+        };
+        wrap.appendChild(expandBtn);
+      }
+    });
+  }
+
+  /**
+   * Copy code block content to clipboard.
+   */
+  function copyCodeBlock(btn) {
+    const wrap = btn.closest('.md-code-block-wrap');
+    const code = wrap ? wrap.querySelector('code') : null;
+    if (!code) return;
+    const text = code.textContent || '';
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    }).catch(() => {
+      btn.textContent = 'Failed';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    });
   }
 
   // ── System / error messages ────────────────────────────────────────────────
