@@ -7,6 +7,8 @@ import {
 import { ILLMProvider } from './ILLMProvider';
 import { ChatMessage, MCPToolDefinition, StreamEvent } from '../types';
 import * as childProcess from 'child_process';
+import * as https from 'https';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 interface GeminiProviderOptions {
   /** API key. Leave empty for OAuth / Vertex modes. */
@@ -157,7 +159,8 @@ export class GeminiProvider implements ILLMProvider {
     const projectId = this.getGcpProjectId();
     const location = this.getVertexLocation();
     headers['x-goog-user-project'] = projectId;
-    const base = this.stripTrailingSlash(this.proxyUrl || this.baseUrl || `https://${location}-aiplatform.googleapis.com/v1`);
+    // proxyUrl is a network proxy, not the API endpoint — use baseUrl or the default
+    const base = this.stripTrailingSlash(this.baseUrl || `https://${location}-aiplatform.googleapis.com/v1`);
     const modelId = this.model.replace(/^models\//, '');
     const url = `${base}/projects/${projectId}/locations/${location}/publishers/google/models/${modelId}:streamGenerateContent?alt=sse`;
     return { url, headers };
@@ -324,6 +327,48 @@ export class GeminiProvider implements ILLMProvider {
     yield { type: 'done' };
   }
 
+  /** Wraps fetch to route through an HTTP network proxy when proxyUrl is set. */
+  private fetchWithOptionalProxy(
+    url: string,
+    init: { method: string; headers: Record<string, string>; body: string }
+  ): Promise<Response> {
+    if (!this.proxyUrl || this.authMethod !== 'vertex_ai') {
+      return fetch(url, init);
+    }
+
+    const agent = new HttpsProxyAgent(this.proxyUrl);
+    const parsed = new URL(url);
+
+    return new Promise((resolve, reject) => {
+      const req = https.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port ? Number(parsed.port) : 443,
+          path: parsed.pathname + parsed.search,
+          method: init.method,
+          headers: { ...init.headers, 'Content-Length': Buffer.byteLength(init.body) },
+          agent
+        },
+        (res) => {
+          const readable = new ReadableStream<Uint8Array>({
+            start(controller) {
+              res.on('data', (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
+              res.on('end', () => controller.close());
+              res.on('error', (err: Error) => controller.error(err));
+            }
+          });
+          resolve(new Response(readable, {
+            status: res.statusCode ?? 0,
+            statusText: res.statusMessage ?? ''
+          }));
+        }
+      );
+      req.on('error', reject);
+      req.write(init.body);
+      req.end();
+    });
+  }
+
   private async *streamViaOAuthFetch(
     messages: ChatMessage[],
     tools: MCPToolDefinition[] | undefined,
@@ -332,7 +377,7 @@ export class GeminiProvider implements ILLMProvider {
     const { url, headers } = this.buildOAuthEndpointAndHeaders();
     const payload = this.buildGeminiPayload(messages, tools, maxTokens);
 
-    const response = await fetch(url, {
+    const response = await this.fetchWithOptionalProxy(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload)
