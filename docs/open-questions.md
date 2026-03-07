@@ -100,10 +100,12 @@ If compaction is automatic (A or B above), should the user see:
 
 **Answer: B** — Store hook configuration at `.bormagi/config/hooks.json`.
 
-### OQ-11: Hook execution scope
+### OQ-11: Hook execution scope ✅
 - **A** Hooks run in-process (Node.js function calls, fast, sandboxed to extension)
 - **B** Hooks run as shell commands (more flexible, matches spec example, slightly heavier)
 - **C** Both: in-process hooks AND shell command hooks as separate types
+
+**Answer: C** — Support both in-process hooks (type: `"internal"`) and shell command hooks (type: `"shell"`) as distinct hook types in `.bormagi/config/hooks.json`.
 
 ---
 
