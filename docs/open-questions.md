@@ -16,11 +16,13 @@ Options:
 
 **Answer: C** — User explicitly picks mode from a UI dropdown; rules-based classifier is used as auto-detect fallback when no mode is explicitly selected.
 
-### OQ-2: Mode visibility to user
+### OQ-2: Mode visibility to user ✅
 Should the detected mode be shown to the user?
 - **A** Hidden/internal only (telemetry only)
 - **B** Shown in the VS Code status bar (read-only, informational)
 - **C** Shown in status bar AND user can override it before the request is sent
+
+**Answer: C** — Mode shown in status bar; user can override it before sending.
 
 ---
 
