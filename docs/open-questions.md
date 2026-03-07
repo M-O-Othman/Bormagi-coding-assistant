@@ -111,10 +111,12 @@ If compaction is automatic (A or B above), should the user see:
 
 ## Section F — Plan Artifacts (FR-15B)
 
-### OQ-12: Plan artifact storage location
+### OQ-12: Plan artifact storage location ✅
 - **A** Workspace root as `PLAN.md` + `.bormagi/plans/<id>.json` for machine-readable form
 - **B** `.bormagi/plans/` only (no workspace-root markdown)
 - **C** User-configurable, defaulting to (A)
+
+**Answer: C** — User-configurable via `bormagi.contextPipeline.plans.storageLocation` and `bormagi.contextPipeline.plans.writePlanMd`, defaulting to `PLAN.md` in workspace root + `.bormagi/plans/<id>.json` for machine-readable state.
 
 ### OQ-13: Plan artifact trigger threshold
 The spec says create a plan artifact when tasks span multiple files or milestones.
