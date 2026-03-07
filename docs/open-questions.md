@@ -28,11 +28,13 @@ Should the detected mode be shown to the user?
 
 ## Section B — Repo Map (FR-2)
 
-### OQ-3: Repo map storage location
+### OQ-3: Repo map storage location ✅
 The spec answers "file-based JSON." Where within the workspace?
 - **A** `.bormagi/repo-map.json` (alongside existing `.bormagi/` config)
 - **B** VS Code extension global storage (`context.globalStorageUri`)
 - **C** VS Code extension workspace storage (`context.storageUri`)
+
+**Answer: A** — Store as `.bormagi/repo-map.json` alongside existing config.
 
 ### OQ-4: Repo map refresh strategy ✅
 - **A** Rebuild on every session start (simple, always fresh)
