@@ -124,7 +124,7 @@ The spec says create a plan artifact when tasks span multiple files or milestone
 - **B** Only when user explicitly enters "plan mode" or uses `/plan` command
 - **C** Auto-detect complexity from request text (requires classifier — ties to OQ-1)
 
-**Answer: A** — Always create a plan artifact for any multi-file task.
+**Answer: A** — Always create a plan artifact for any multi-file task. Each plan is a new timestamped file (e.g., `.bormagi/plans/plan-<timestamp>.json` and `PLAN-<timestamp>.md`). Existing plan files are never overwritten.
 
 ---
 
