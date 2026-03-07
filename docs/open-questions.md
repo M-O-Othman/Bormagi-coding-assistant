@@ -130,11 +130,13 @@ The spec says create a plan artifact when tasks span multiple files or milestone
 
 ## Section G — Context Pipeline Integration (FR-5, FR-6, FR-7)
 
-### OQ-14: Backward compatibility / rollout approach
+### OQ-14: Backward compatibility / rollout approach ✅
 The spec says "old transcript-based path may remain temporarily as a fallback."
 - **A** Feature flag: new context pipeline enabled by default, old path as fallback via setting
 - **B** Parallel: both run, new pipeline results are logged/compared but old path is used
 - **C** Hard cutover: new pipeline replaces old, no fallback
+
+**Answer: C** — Hard cutover. The new context pipeline fully replaces the old transcript-based path with no fallback.
 
 ### OQ-15: Retrieval semantic search
 The existing `EmbeddingService` + `VectorStore` support knowledge-base documents. Should the new repo map retrieval also use embeddings for semantic search over code?
