@@ -32,12 +32,12 @@ The spec answers "file-based JSON." Where within the workspace?
 - **B** VS Code extension global storage (`context.globalStorageUri`)
 - **C** VS Code extension workspace storage (`context.storageUri`)
 
-### OQ-4: Repo map refresh strategy
+### OQ-4: Repo map refresh strategy ✅
 - **A** Rebuild on every session start (simple, always fresh)
 - **B** Incremental: watch for file changes, rebuild only changed files (spec preferred)
 - **C** Manual: user triggers rebuild via command
 
-**Is background auto-refresh acceptable, or should it be user-triggered?**
+**Answer: A** — Rebuild the repo map on every session start.
 
 ### OQ-5: Language server integration (spec says mandatory)
 The spec mandates LSP for symbol extraction. The codebase is TypeScript-first.
