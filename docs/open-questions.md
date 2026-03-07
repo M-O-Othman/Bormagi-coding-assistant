@@ -167,11 +167,11 @@ The spec recommends using a "cheap fast model" for classification, compaction, a
 - **B** Out of scope for now — use the same primary model for all operations
 - **C** Out of scope for now — but add the `ModeModelPolicy` interface as a placeholder
 
-**Answer: Custom** — A dedicated pre-defined system agent (e.g., `__bormagi_context_agent__`) is registered in the agent registry specifically for context pipeline tasks (mode classification, history compaction, summarization). Rules:
-- The agent is **pre-defined and system-reserved** — it appears in the registry but the user cannot edit or delete it via the UI.
-- It is **configurable**: users can override its provider/model in workspace settings (e.g., `bormagi.contextPipeline.contextAgentProvider`) without touching the agent definition itself.
-- If no override is set, it **defaults to the global agent provider config**, exactly like all other agents.
-- The `ModeModelPolicy` interface is still added as a typed wrapper so the pipeline can reference the resolved provider cleanly.
+**Answer: Custom** — A dedicated pre-defined system agent (`__bormagi_context_agent__`) is registered in the agent registry for context pipeline tasks (mode classification, history compaction, summarization). Rules:
+- The agent is **fully configurable by the user** — provider, model, and system prompt can all be edited via the normal agent settings UI.
+- The agent is **undeletable** — the delete action is hidden/disabled for this agent in the UI; the registry enforces its presence at startup and recreates it with defaults if somehow missing.
+- If no override is configured, it **defaults to the global agent provider config**, exactly like all other agents.
+- The `ModeModelPolicy` interface is added as a typed wrapper so the pipeline can reference the resolved provider cleanly.
 
 ---
 
