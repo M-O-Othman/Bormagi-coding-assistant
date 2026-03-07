@@ -161,11 +161,17 @@ The spec defines `MODE_BUDGETS` with specific token counts per slot (e.g., edit 
 
 ## Section H — Multi-Model Strategy (Section 16)
 
-### OQ-17: Cheap model for classification/compaction
+### OQ-17: Cheap model for classification/compaction ✅
 The spec recommends using a "cheap fast model" for classification, compaction, and summarization. Is this:
 - **A** In scope for this implementation (configure a secondary model per workspace)
 - **B** Out of scope for now — use the same primary model for all operations
 - **C** Out of scope for now — but add the `ModeModelPolicy` interface as a placeholder
+
+**Answer: Custom** — A dedicated pre-defined system agent (e.g., `__bormagi_context_agent__`) is registered in the agent registry specifically for context pipeline tasks (mode classification, history compaction, summarization). Rules:
+- The agent is **pre-defined and system-reserved** — it appears in the registry but the user cannot edit or delete it via the UI.
+- It is **configurable**: users can override its provider/model in workspace settings (e.g., `bormagi.contextPipeline.contextAgentProvider`) without touching the agent definition itself.
+- If no override is set, it **defaults to the global agent provider config**, exactly like all other agents.
+- The `ModeModelPolicy` interface is still added as a typed wrapper so the pipeline can reference the resolved provider cleanly.
 
 ---
 
