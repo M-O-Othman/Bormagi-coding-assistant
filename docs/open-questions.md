@@ -118,11 +118,13 @@ If compaction is automatic (A or B above), should the user see:
 
 **Answer: C** — User-configurable via `bormagi.contextPipeline.plans.storageLocation` and `bormagi.contextPipeline.plans.writePlanMd`, defaulting to `PLAN.md` in workspace root + `.bormagi/plans/<id>.json` for machine-readable state.
 
-### OQ-13: Plan artifact trigger threshold
+### OQ-13: Plan artifact trigger threshold ✅
 The spec says create a plan artifact when tasks span multiple files or milestones.
 - **A** Always create for any multi-file task (conservative)
 - **B** Only when user explicitly enters "plan mode" or uses `/plan` command
 - **C** Auto-detect complexity from request text (requires classifier — ties to OQ-1)
+
+**Answer: A** — Always create a plan artifact for any multi-file task.
 
 ---
 
