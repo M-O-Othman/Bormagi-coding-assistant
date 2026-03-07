@@ -43,11 +43,13 @@ The spec answers "file-based JSON." Where within the workspace?
 
 **Answer: A** — Rebuild the repo map on every session start.
 
-### OQ-5: Language server integration (spec says mandatory)
+### OQ-5: Language server integration (spec says mandatory) ✅
 The spec mandates LSP for symbol extraction. The codebase is TypeScript-first.
 - **A** TypeScript/JavaScript only via VS Code's built-in TS language server (fastest to ship)
 - **B** All languages VS Code supports via `vscode.executeDocumentSymbolProvider` (broader coverage, same API)
 - **C** Start with (A), document extensibility path to (B)
+
+**Answer: Custom** — Support JavaScript, TypeScript, Java, and Python via `vscode.executeDocumentSymbolProvider`. All four use the same VS Code API; language-specific symbol kinds will be mapped to the spec's `SymbolEntry.kind` enum.
 
 ---
 
