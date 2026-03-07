@@ -74,10 +74,12 @@ For path-scoped guidance (e.g., a file in `apps/web/` inherits `apps/web/.assist
 
 ## Section D — Compaction (FR-9)
 
-### OQ-8: Compaction trigger
+### OQ-8: Compaction trigger ✅
 - **A** Fully automatic — triggers silently when thresholds are hit (warnAt 65%, compactAt 82%)
 - **B** Automatic trigger with a user-visible notification before compacting
 - **C** Manual only — user explicitly triggers compaction via command
+
+**Answer: B** — Compaction triggers automatically at threshold, but user sees a notification first.
 
 ### OQ-9: Compaction user notification
 If compaction is automatic (A or B above), should the user see:
