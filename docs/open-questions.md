@@ -146,11 +146,16 @@ The existing `EmbeddingService` + `VectorStore` support knowledge-base documents
 
 **Answer: A** — Extend the existing `EmbeddingService` + `VectorStore` to also index code files from the repo map, enabling semantic search alongside lexical search in the `RetrievalOrchestrator`.
 
-### OQ-16: Mode budgets — are the token numbers in the spec final?
+### OQ-16: Mode budgets — are the token numbers in the spec final? ✅
 The spec defines `MODE_BUDGETS` with specific token counts per slot (e.g., edit mode gets 7000 tokens for `retrievedContext`). These are relative to a specific model context window.
 - **A** Use spec values as-is (baseline)
 - **B** Make them fully configurable in `package.json` settings and override per workspace
 - **C** Use spec values as defaults, allow workspace-level overrides only
+
+**Answer: B** — Fully configurable. Spec values are the defaults.
+- Values live in `src/config/ModeBudgets.ts` as exported constants (single source of truth in code).
+- All budget slots are also exposed as `package.json` `contributes.configuration` settings so users can override them in VS Code settings or `.vscode/settings.json`.
+- Onboarding documentation covering all budget settings must be added to `README.md`.
 
 ---
 
