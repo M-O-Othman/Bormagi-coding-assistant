@@ -115,6 +115,55 @@ export class AuditLogger {
     await this.log({ event: 'TOKEN_USAGE', agent: agentId, provider, model, inputTokens, outputTokens, costUsd });
   }
 
+  async logLLMRequest(
+    agentId: string,
+    provider: string,
+    model: string,
+    metrics: {
+      phase: string;
+      systemChars: number;
+      historyChars: number;
+      repoSummaryChars: number;
+      retrievalChars: number;
+      userChars: number;
+      toolSchemaChars: number;
+      totalChars: number;
+      totalBytes: number;
+      estimatedInputTokens: number;
+      contextCacheHit?: boolean;
+    }
+  ): Promise<void> {
+    await this.log({
+      event: 'LLM_REQUEST',
+      agent: agentId,
+      provider,
+      model,
+      ...metrics
+    });
+  }
+
+  async logLLMResponseHeaders(
+    agentId: string,
+    provider: string,
+    model: string,
+    headers: Record<string, string>
+  ): Promise<void> {
+    const compact: Record<string, string> = {};
+    const keys = Object.keys(headers).sort().slice(0, 64);
+    for (const key of keys) {
+      const value = headers[key] ?? '';
+      compact[key] = value.length > 200 ? `${value.slice(0, 197)}...` : value;
+    }
+
+    await this.log({
+      event: 'LLM_RESPONSE_HEADERS',
+      agent: agentId,
+      provider,
+      model,
+      headers: compact
+    });
+  }
+
   // ─── WF-701: Structured workflow events ────────────────────────────────────────
 
   async logWorkflowCreated(workflowId: string, title: string, templateId: string, humanOwner: string): Promise<void> {

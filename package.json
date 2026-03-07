@@ -148,6 +148,31 @@
           "default": 100,
           "description": "Maximum size (KB) of a single file to include in context."
         },
+        "bormagi.contextCacheTtlSeconds": {
+          "type": "number",
+          "default": 120,
+          "description": "How long to reuse scanned workspace context (seconds) before rescanning."
+        },
+        "bormagi.contextRepoSummaryChars": {
+          "type": "number",
+          "default": 2400,
+          "description": "Maximum characters for the repository bootstrap summary."
+        },
+        "bormagi.contextRetrievalTopFiles": {
+          "type": "number",
+          "default": 6,
+          "description": "Maximum number of task-relevant files to include per request."
+        },
+        "bormagi.contextRetrievalSnippetChars": {
+          "type": "number",
+          "default": 900,
+          "description": "Maximum characters per retrieved file snippet in task context."
+        },
+        "bormagi.maxOutputTokens": {
+          "type": "number",
+          "default": 1200,
+          "description": "Maximum output tokens requested from the model per completion call."
+        },
         "bormagi.showThoughtTrace": {
           "type": "boolean",
           "default": true,

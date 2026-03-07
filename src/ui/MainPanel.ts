@@ -176,7 +176,8 @@ export class MainPanel {
           this._svc.agentManager,
           this._svc.secretsManager,
           this._svc.configManager,
-          msg.mode as 'list' | 'new' | 'edit' | undefined
+          msg.mode as 'list' | 'new' | 'edit',
+          msg.agentId as string | undefined
         );
         break;
       case 'install_predefined_agents':
@@ -443,10 +444,42 @@ export class MainPanel {
   // ─── Setup data ───────────────────────────────────────────────────────────
 
   private async _sendSetupData(): Promise<void> {
-    const agents = this._svc.agentManager.listAgents().map(a => ({
-      id: a.id, name: a.name, category: a.category,
-      description: a.description, providerType: a.provider.type, model: a.provider.model, enabled: a.enabled,
-    }));
+    const readStringList = (value: unknown): string[] => {
+      if (!Array.isArray(value)) { return []; }
+      return value
+        .filter((entry): entry is string => typeof entry === 'string')
+        .map(entry => entry.trim())
+        .filter(entry => entry.length > 0);
+    };
+
+    const agents = this._svc.agentManager.listAgents().map(a => {
+      const knowledge = (a.knowledge ?? {}) as Record<string, unknown>;
+      const sourceFolders = readStringList(knowledge.source_folders);
+      const directContextItems = readStringList(knowledge.direct_context_items);
+      const retrievableCollections = readStringList(knowledge.retrievable_collections);
+      const sharedCollections = readStringList(knowledge.shared_collections);
+
+      return {
+        id: a.id,
+        name: a.name,
+        category: a.category,
+        description: a.description,
+        providerType: a.provider.type,
+        model: a.provider.model,
+        enabled: a.enabled,
+        knowledge: {
+          sourceFolders,
+          directContextItems,
+          retrievableCollections,
+          sharedCollections,
+          totalItems:
+            sourceFolders.length +
+            directContextItems.length +
+            retrievableCollections.length +
+            sharedCollections.length
+        }
+      };
+    });
     const proj = await this._svc.configManager.readProjectConfig();
     this._post({ type: 'setup_data', agents, workspaceName: proj?.project.name ?? '', initialized: !!proj });
   }

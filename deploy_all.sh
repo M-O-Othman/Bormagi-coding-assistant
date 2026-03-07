@@ -92,4 +92,3 @@ printf "=============================================================\n\n"
 
 printf "Opening regular VS Code window: %s\n" "$WORKSPACE_TO_OPEN"
 "$CODE_CMD" "$WORKSPACE_TO_OPEN" >/dev/null 2>&1 || true
---

@@ -6,7 +6,7 @@ import { getAppData } from '../data/DataStore';
 export class PromptComposer {
   constructor(private readonly config: ConfigManager) {}
 
-  async compose(agentConfig: AgentConfig, projectName: string): Promise<string> {
+  async compose(agentConfig: AgentConfig, projectName: string, evidence?: string): Promise<string> {
     const parts: string[] = [];
 
     for (const filename of agentConfig.system_prompt_files) {
@@ -23,7 +23,13 @@ export class PromptComposer {
     const combined = parts.join('\n\n---\n\n');
 
     const ctx = TemplateEngine.buildContext(agentConfig.name, projectName);
-    return TemplateEngine.resolve(combined, ctx);
+    let result = TemplateEngine.resolve(combined, ctx);
+
+    if (evidence) {
+      result += `\n\n${evidence}\n\n[Output Guidelines]\nCite the sources provided in the evidence above when referencing specific facts.`;
+    }
+
+    return result;
   }
 
   private defaultPrompt(agentConfig: AgentConfig): string {

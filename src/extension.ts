@@ -22,6 +22,11 @@ import { SetupWizard } from './ui/SetupWizard';
 import { AuditLogger } from './audit/AuditLogger';
 import { MCPHost } from './mcp/MCPHost';
 import { ProjectConfig } from './types';
+// Import workflow engine and related classes
+import { createWorkflowEngine } from './workflow/WorkflowEngine';
+import { WorkflowStorage } from './workflow/WorkflowStorage';
+import { ArtifactRegistry } from './workflow/ArtifactRegistry';
+import { KnowledgeManager } from './knowledge/KnowledgeManager';
 
 let configManager: ConfigManager | undefined;
 let secretsManager: SecretsManager | undefined;
@@ -64,15 +69,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   agentManager = new AgentManager(configManager, secretsManager, mcpHost);
   statusBar = new StatusBar();
 
-  const memoryManager  = new MemoryManager(configManager);
-  const undoManager    = new UndoManager();
-  const skillManager   = new SkillManager(configManager);
-  const promptComposer = new PromptComposer(configManager);
+  const memoryManager     = new MemoryManager(configManager);
+  const undoManager       = new UndoManager();
+  const skillManager      = new SkillManager(configManager);
+  const promptComposer    = new PromptComposer(configManager);
+  const knowledgeManager  = new KnowledgeManager(workspaceRoot);
   const runner = new AgentRunner(
     agentManager, mcpHost, promptComposer, memoryManager,
-    undoManager, skillManager, auditLogger, configManager, workspaceRoot
+    undoManager, skillManager, auditLogger, configManager, workspaceRoot, knowledgeManager
   );
   chatController = new ChatController(agentManager, configManager, auditLogger, statusBar, runner, undoManager);
+
+  // ─── Workflow services ────────────────────────────────────────────────────
+  // Create workflow engine and related services
+  const workflowEngine = createWorkflowEngine(workspaceRoot);
+  const workflowStorage = new WorkflowStorage(workspaceRoot);
+  const artifactRegistry = new ArtifactRegistry(workflowStorage);
 
   // ─── Main Dashboard panel (configure singleton before any command fires) ──
   MainPanel.configure({
@@ -83,6 +95,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     configManager,
     secretsManager,
   });
+
+  // Inject workflow services into MainPanel
+  MainPanel.currentPanel?.setWorkflowServices(workflowEngine, workflowStorage, artifactRegistry);
+
+  // Inject workflow engine into ChatController
+  chatController.setWorkflowEngine(workflowEngine, workflowStorage);
 
   // ─── Sidebar chat WebView ─────────────────────────────────────────────────
   const chatViewProvider = new ChatViewProvider(context.extensionUri, chatController);

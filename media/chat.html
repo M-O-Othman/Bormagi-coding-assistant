@@ -204,10 +204,14 @@
 
     .msg-content {
       padding: 9px 12px;
-      white-space: pre-wrap;
+      white-space: normal;
       word-break: break-word;
       font-size: 13px;
       line-height: 1.6;
+    }
+    /* Preserve whitespace inside streaming plain-text (before markdown renders) */
+    .msg-content.streaming {
+      white-space: pre-wrap;
     }
     .msg.error .msg-content { color: var(--vscode-errorForeground); }
 
@@ -633,6 +637,7 @@
       margin: 0;
       padding: 10px 12px;
       background: transparent;
+      white-space: pre;
     }
     .md-code-body code {
       font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
@@ -719,6 +724,51 @@
       max-width: 100%;
       border-radius: var(--radius-sm);
       margin: 6px 0;
+    }
+
+    /* ── ACTION CARDS ────────────────────────────────────────────────────────*/
+
+    .msg.action-card .msg-avatar {
+      background: var(--vscode-editorWarning-foreground, #cca700);
+      color: #000;
+    }
+
+    .action-btns {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    .action-btn {
+      padding: 5px 16px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--vscode-button-background);
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+      transition: background var(--transition), opacity var(--transition);
+    }
+    .action-btn:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
+    .action-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .action-btn.chosen {
+      outline: 2px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+    }
+    .action-btn.deny-btn {
+      background: transparent;
+      color: var(--vscode-foreground);
+      border-color: var(--vscode-widget-border, rgba(128,128,128,0.35));
+    }
+    .action-btn.deny-btn:hover:not(:disabled) { background: var(--vscode-toolbar-hoverBackground); }
+
+    .action-resolved {
+      font-size: 11px;
+      opacity: 0.5;
+      margin-top: 8px;
+      font-style: italic;
     }
 
   </style>
@@ -850,8 +900,120 @@
 </div>
 
 <script>
-  // ── Marked.js Markdown parser (injected at build time by ChatViewProvider) ──
-  /*__MARKED_LIB__*/
+  // ── Minimal self-contained Markdown renderer ──────────────────────────────
+  // No external library required — handles headings, bold, italic, code spans,
+  // fenced code blocks, lists, blockquotes, links, and horizontal rules.
+
+  function miniMd(raw) {
+    // 1. Extract fenced code blocks before any other processing
+    const blocks = [];
+    raw = raw.replace(/```([\w-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+      blocks.push({ lang: lang || '', code: code.replace(/\n$/, '') });
+      return '\x00' + (blocks.length - 1) + '\x00\n';
+    });
+
+    // 2. Inline renderer: protects code spans, then applies bold/italic/links
+    function inline(s) {
+      const spans = [];
+      // Protect inline code spans
+      s = s.replace(/`([^`]+)`/g, (_, c) => {
+        spans.push(c);
+        return '\x01' + (spans.length - 1) + '\x01';
+      });
+      // HTML-escape the rest (& < > only — * _ [ ] ( ) must survive)
+      s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      // Bold (** and __)
+      s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/__(.+?)__/g, '<strong>$1</strong>');
+      // Italic (* and _)
+      s = s.replace(/\*([^\s*][^*]*?)\*/g, '<em>$1</em>');
+      s = s.replace(/_([^\s_][^_]*?)_/g, '<em>$1</em>');
+      // Links
+      s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, t, u) =>
+        '<a href="' + u.replace(/"/g, '&quot;') + '">' + t + '</a>');
+      // Restore inline code spans
+      s = s.replace(/\x01(\d+)\x01/g, (_, i) =>
+        '<code>' + spans[+i].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code>');
+      return s;
+    }
+
+    // 3. Line-by-line pass
+    const lines = raw.split('\n');
+    const html  = [];
+    let listType = null;
+
+    function closeList() {
+      if (listType) { html.push('</' + listType + '>'); listType = null; }
+    }
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Fenced code block placeholder
+      const cbM = line.match(/^\x00(\d+)\x00$/);
+      if (cbM) {
+        closeList();
+        const b = blocks[+cbM[1]];
+        const safe = b.code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        html.push('<pre><code class="language-' + (b.lang || 'text') + '">' + safe + '</code></pre>');
+        continue;
+      }
+
+      // Heading (# – ####)
+      const hM = line.match(/^(#{1,4}) (.+)/);
+      if (hM) {
+        closeList();
+        const n = hM[1].length;
+        html.push('<h' + n + '>' + inline(hM[2]) + '</h' + n + '>');
+        continue;
+      }
+
+      // Horizontal rule
+      if (/^([-]{3,}|[*]{3,}|[_]{3,})$/.test(line.trim())) {
+        closeList();
+        html.push('<hr>');
+        continue;
+      }
+
+      // Blockquote
+      const bqM = line.match(/^> ?(.*)/);
+      if (bqM) {
+        closeList();
+        html.push('<blockquote><p>' + inline(bqM[1]) + '</p></blockquote>');
+        continue;
+      }
+
+      // Unordered list
+      const ulM = line.match(/^[-*+] (.*)/);
+      if (ulM) {
+        if (listType !== 'ul') { closeList(); html.push('<ul>'); listType = 'ul'; }
+        html.push('<li>' + inline(ulM[1]) + '</li>');
+        continue;
+      }
+
+      // Ordered list
+      const olM = line.match(/^\d+\. (.*)/);
+      if (olM) {
+        if (listType !== 'ol') { closeList(); html.push('<ol>'); listType = 'ol'; }
+        html.push('<li>' + inline(olM[1]) + '</li>');
+        continue;
+      }
+
+      // Empty line
+      if (line.trim() === '') {
+        closeList();
+        html.push('');
+        continue;
+      }
+
+      // Paragraph
+      closeList();
+      html.push('<p>' + inline(line) + '</p>');
+    }
+
+    closeList();
+    return html.join('\n');
+  }
 
   const vscode = acquireVsCodeApi();
 
@@ -1083,7 +1245,7 @@
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble';
     const content = document.createElement('div');
-    content.className = 'msg-content';
+    content.className = 'msg-content streaming';
     content.id = 'stream-content';
     bubble.appendChild(content);
 
@@ -1165,6 +1327,7 @@
     const sc = document.getElementById('stream-content');
     if (sc) {
       sc.removeAttribute('id');
+      sc.classList.remove('streaming');
       // Render Markdown from the streamed plain text
       const rawText = sc.textContent || '';
       if (rawText.trim()) {
@@ -1190,37 +1353,14 @@
   const COLLAPSE_THRESHOLD = 30; // lines
 
   /**
-   * Parse Markdown text and return sanitized HTML.
-   * Falls back to escaped plain text if marked.js was not injected.
+   * Parse Markdown text and return HTML using the built-in miniMd renderer.
    */
   function renderMarkdown(raw) {
-    if (typeof marked === 'undefined' || !marked.parse) {
-      // Fallback: return escaped text wrapped in <p>
-      return '<p>' + esc(raw) + '</p>';
-    }
-
     try {
-      // Configure marked for safe rendering
-      const html = marked.parse(raw, { breaks: true, gfm: true });
-      return sanitizeHtml(html);
+      return miniMd(raw);
     } catch (e) {
       return '<p>' + esc(raw) + '</p>';
     }
-  }
-
-  /**
-   * Sanitize rendered HTML: strip dangerous elements and attributes.
-   */
-  function sanitizeHtml(html) {
-    // Remove script / iframe / style / object / embed / form tags
-    html = html.replace(/<(script|iframe|style|object|embed|form)(\s[^>]*)?>.*?<\/\1>/gis, '');
-    html = html.replace(/<(script|iframe|style|object|embed|form)(\s[^>]*)?\/?>/gi, '');
-    // Remove event handler attributes (onclick, onerror, onload, etc.)
-    html = html.replace(/\s+on\w+\s*=\s*["'][^"']*["']/gi, '');
-    html = html.replace(/\s+on\w+\s*=\s*\S+/gi, '');
-    // Remove javascript: URLs
-    html = html.replace(/href\s*=\s*["']\s*javascript:/gi, 'href="#blocked:');
-    return html;
   }
 
   /**
@@ -1313,6 +1453,53 @@
     messagesEl.appendChild(row);
     scrollEnd();
   }
+
+  // ── Inline action approval cards ──────────────────────────────────────────
+
+  function showActionCard(id, prompt, actions) {
+    hideEmpty();
+    const row = document.createElement('div');
+    row.className = 'msg action-card';
+    row.id = 'action-' + id;
+
+    const btnsHtml = actions.map((a, idx) => {
+      const isDeny = idx === actions.length - 1 && actions.length > 1;
+      return '<button class="action-btn' + (isDeny ? ' deny-btn' : '') + '" ' +
+             'data-action="' + esc(a) + '" ' +
+             'onclick="respondAction(\'' + id + '\', \'' + a.replace(/'/g, "\\'") + '\')">' +
+             esc(a) + '</button>';
+    }).join('');
+
+    row.innerHTML =
+      '<div class="msg-header">' +
+        '<div class="msg-avatar">⚡</div>' +
+        '<span class="msg-sender">Action Required</span>' +
+        '<span class="msg-time">' + ts() + '</span>' +
+      '</div>' +
+      '<div class="msg-bubble"><div class="msg-content">' +
+        '<p>' + esc(prompt) + '</p>' +
+        '<div class="action-btns">' + btnsHtml + '</div>' +
+      '</div></div>';
+
+    messagesEl.appendChild(row);
+    scrollEnd();
+  }
+
+  window.respondAction = function(id, value) {
+    const card = document.getElementById('action-' + id);
+    if (card) {
+      const btns = card.querySelectorAll('.action-btn');
+      btns.forEach(b => {
+        b.disabled = true;
+        if (b.getAttribute('data-action') === value) b.classList.add('chosen');
+      });
+      const resolvedNote = document.createElement('div');
+      resolvedNote.className = 'action-resolved';
+      resolvedNote.textContent = 'You chose: ' + value;
+      card.querySelector('.action-btns').replaceWith(resolvedNote);
+    }
+    vscode.postMessage({ type: 'action_response', id, value });
+  };
 
   // ── Misc ───────────────────────────────────────────────────────────────────
 
@@ -1421,6 +1608,10 @@
       case 'wf_command_result':
         endStream();
         appendSystemMsg(m.message, false);
+        break;
+
+      case 'action_request':
+        showActionCard(m.id, m.prompt, m.actions);
         break;
     }
   });

@@ -1,5 +1,7 @@
 import { ConfigManager } from '../config/ConfigManager';
 import { ChatMessage } from '../types';
+import { SessionMemory } from '../memory/SessionMemory';
+import { PublishedKnowledge } from '../memory/PublishedKnowledge';
 
 const MAX_HISTORY_MESSAGES = 20;
 // Number of past Memory.md turns to inject as context on session start
@@ -17,7 +19,13 @@ export class MemoryManager {
   /** Track which agents have already had their persistent memory loaded this session. */
   private memoryLoaded = new Set<string>();
 
-  constructor(private readonly config: ConfigManager) {}
+  readonly sessionMemory: SessionMemory;
+  readonly publishedKnowledge: PublishedKnowledge;
+
+  constructor(private readonly config: ConfigManager) {
+    this.sessionMemory = new SessionMemory(config.rootDir);
+    this.publishedKnowledge = new PublishedKnowledge(config.rootDir);
+  }
 
   /**
    * Returns session history for agentId, loading persisted memory on first call.
@@ -63,6 +71,11 @@ export class MemoryManager {
   clearSession(agentId: string): void {
     this.sessionMessages.delete(agentId);
     this.memoryLoaded.delete(agentId);
+    this.sessionMemory.clearSession(agentId);
+  }
+
+  resetPublishedKnowledge(agentId: string): void {
+    this.publishedKnowledge.resetAll(agentId);
   }
 
   async persistTurn(

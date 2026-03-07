@@ -134,6 +134,17 @@ export class GeminiProvider implements ILLMProvider {
     }
   }
 
+  private collectHeaders(headers: Headers): Record<string, string> {
+    const out: Record<string, string> = {};
+    headers.forEach((value, key) => {
+      const lower = key.toLowerCase();
+      if (lower.includes('ratelimit') || lower === 'retry-after' || lower.includes('request-id')) {
+        out[lower] = value;
+      }
+    });
+    return out;
+  }
+
   private getDeveloperEndpointBase(): string {
     const raw = this.proxyUrl || this.baseUrl || 'https://generativelanguage.googleapis.com/v1beta';
     return this.stripTrailingSlash(raw);
@@ -260,6 +271,13 @@ export class GeminiProvider implements ILLMProvider {
       throw new Error('Bormagi: Gemini API client is not initialised for API key mode.');
     }
 
+    // The API-key SDK stream does not expose raw HTTP headers; emit this explicitly for observability.
+    yield {
+      type: 'provider_headers',
+      provider: this.providerType,
+      headers: { note: 'headers_unavailable_in_gemini_api_key_sdk_mode' }
+    };
+
     const requestOptions = this.baseUrl
       ? { baseUrl: this.stripTrailingSlash(this.baseUrl) }
       : undefined;
@@ -357,9 +375,20 @@ export class GeminiProvider implements ILLMProvider {
               res.on('error', (err: Error) => controller.error(err));
             }
           });
+
+          const responseHeaders: Record<string, string> = {};
+          for (const [key, value] of Object.entries(res.headers)) {
+            if (typeof value === 'string') {
+              responseHeaders[key] = value;
+            } else if (Array.isArray(value)) {
+              responseHeaders[key] = value.join(', ');
+            }
+          }
+
           resolve(new Response(readable, {
             status: res.statusCode ?? 0,
-            statusText: res.statusMessage ?? ''
+            statusText: res.statusMessage ?? '',
+            headers: responseHeaders
           }));
         }
       );
@@ -382,6 +411,11 @@ export class GeminiProvider implements ILLMProvider {
       headers,
       body: JSON.stringify(payload)
     });
+
+    const headerSnapshot = this.collectHeaders(response.headers);
+    if (Object.keys(headerSnapshot).length > 0) {
+      yield { type: 'provider_headers', provider: this.providerType, headers: headerSnapshot };
+    }
 
     if (!response.ok) {
       const errBody = await response.text().catch(() => '');

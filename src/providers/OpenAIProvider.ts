@@ -29,14 +29,22 @@ export class OpenAIProvider implements ILLMProvider {
     }
 
     if (options.proxyUrl) {
-      // openai SDK does not natively support proxy config; set NODE_EXTRA_CA_CERTS or
-      // use a custom fetch. Here we pass a simple httpAgent when running in Node.
-      // The proxy URL is stored for future use with a full HTTP agent setup.
-      // For now we surface it in the provider label so the user knows it is recorded.
+      // Proxy routing is not configured directly here; this label is surfaced for observability.
       this.providerType = `${this.providerType} (proxy: ${options.proxyUrl})`;
     }
 
     this.client = new OpenAI(clientOptions);
+  }
+
+  private collectHeaders(headers: { forEach: (cb: (value: string, key: string) => void) => void }): Record<string, string> {
+    const out: Record<string, string> = {};
+    headers.forEach((value, key) => {
+      const lower = key.toLowerCase();
+      if (lower.includes('ratelimit') || lower === 'retry-after' || lower.includes('request-id')) {
+        out[lower] = value;
+      }
+    });
+    return out;
   }
 
   async *stream(
@@ -54,7 +62,7 @@ export class OpenAIProvider implements ILLMProvider {
       messages: openaiMessages,
       max_tokens: maxTokens,
       stream: true,
-      // Request usage data in the final streaming chunk
+      // Include usage in the final streaming chunk.
       stream_options: { include_usage: true }
     };
 
@@ -69,14 +77,16 @@ export class OpenAIProvider implements ILLMProvider {
       }));
     }
 
-    // Use create() with stream:true — .stream() helper is not available in all SDK versions.
-    // Tool-call arguments arrive as fragments; accumulate them keyed by index.
-    const stream = await this.client.chat.completions.create(params);
+    const { data: stream, response } = await this.client.chat.completions.create(params).withResponse();
+    const headers = this.collectHeaders(response.headers);
+    if (Object.keys(headers).length > 0) {
+      yield { type: 'provider_headers', provider: this.providerType, headers };
+    }
 
     const toolCallAcc = new Map<number, { id: string; name: string; args: string }>();
 
     for await (const chunk of stream) {
-      // The final chunk (with empty choices[]) carries usage when stream_options.include_usage = true
+      // Final chunk with include_usage carries token usage.
       if (chunk.usage) {
         yield {
           type: 'token_usage',
@@ -102,9 +112,15 @@ export class OpenAIProvider implements ILLMProvider {
             toolCallAcc.set(idx, { id: tc.id ?? '', name: tc.function?.name ?? '', args: '' });
           }
           const acc = toolCallAcc.get(idx)!;
-          if (tc.id) acc.id = tc.id;
-          if (tc.function?.name) acc.name = tc.function.name;
-          if (tc.function?.arguments) acc.args += tc.function.arguments;
+          if (tc.id) {
+            acc.id = tc.id;
+          }
+          if (tc.function?.name) {
+            acc.name = tc.function.name;
+          }
+          if (tc.function?.arguments) {
+            acc.args += tc.function.arguments;
+          }
         }
       }
 

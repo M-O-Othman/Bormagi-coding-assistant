@@ -504,6 +504,29 @@
     .agent-row-info { flex: 1; min-width: 0; }
     .agent-row-name { font-weight: 600; font-size: 0.9em; }
     .agent-row-meta { color: var(--vscode-descriptionForeground); font-size: 0.8em; }
+    .agent-row-knowledge {
+      margin-top: 6px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .knowledge-chip {
+      display: inline-block;
+      font-size: 0.74em;
+      border-radius: 999px;
+      padding: 2px 8px;
+      border: 1px solid var(--vscode-panel-border);
+      background: var(--vscode-editorWidget-background);
+      color: var(--vscode-descriptionForeground);
+      max-width: 100%;
+      word-break: break-word;
+    }
+    .agent-row-knowledge-empty {
+      margin-top: 6px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.78em;
+      opacity: 0.8;
+    }
 
     .setup-action-row {
       display: flex;
@@ -1283,14 +1306,34 @@
       if (agents.length === 0) {
         el.innerHTML = '<p>No agents configured. Install predefined agents or create a new one.</p>';
       } else {
-        el.innerHTML = agents.map(a => `
-          <div class="agent-row">
-            <div class="agent-row-info">
-              <div class="agent-row-name">${esc(a.name)}</div>
-              <div class="agent-row-meta">${esc(a.category)} &nbsp;·&nbsp; ${esc(a.providerType)} / ${esc(a.model)}</div>
-            </div>
-            <button class="btn-ghost btn-sm" onclick="vscode.postMessage({type:'open_agent_settings',mode:'edit',agentId:'${esc(a.id)}'})">Edit</button>
-          </div>`).join('');
+        el.innerHTML = agents.map(a => {
+          const knowledge = a.knowledge || {};
+          const sourceFolders = Array.isArray(knowledge.sourceFolders) ? knowledge.sourceFolders : [];
+          const directContextItems = Array.isArray(knowledge.directContextItems) ? knowledge.directContextItems : [];
+          const retrievableCollections = Array.isArray(knowledge.retrievableCollections) ? knowledge.retrievableCollections : [];
+          const sharedCollections = Array.isArray(knowledge.sharedCollections) ? knowledge.sharedCollections : [];
+
+          const chips = [
+            ...sourceFolders.map(x => `<span class="knowledge-chip">folder: ${esc(x)}</span>`),
+            ...directContextItems.map(x => `<span class="knowledge-chip">direct: ${esc(x)}</span>`),
+            ...retrievableCollections.map(x => `<span class="knowledge-chip">collection: ${esc(x)}</span>`),
+            ...sharedCollections.map(x => `<span class="knowledge-chip">shared: ${esc(x)}</span>`)
+          ];
+
+          const knowledgeHtml = chips.length
+            ? `<div class="agent-row-knowledge">${chips.join('')}</div>`
+            : '<div class="agent-row-knowledge-empty">No knowledge items configured.</div>';
+
+          return `
+            <div class="agent-row">
+              <div class="agent-row-info">
+                <div class="agent-row-name">${esc(a.name)}</div>
+                <div class="agent-row-meta">${esc(a.category)} &nbsp;·&nbsp; ${esc(a.providerType)} / ${esc(a.model)}</div>
+                ${knowledgeHtml}
+              </div>
+              <button class="btn-ghost btn-sm" onclick="vscode.postMessage({type:'open_agent_settings',mode:'edit',agentId:'${esc(a.id)}'})">Edit</button>
+            </div>`;
+        }).join('');
       }
       if (msg.workspaceName) document.getElementById('hdrWorkspace').textContent = msg.workspaceName;
     }

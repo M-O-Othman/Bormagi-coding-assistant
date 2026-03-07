@@ -5,7 +5,6 @@ import { UndoManager } from '../agents/UndoManager';
 import { AuditLogger } from '../audit/AuditLogger';
 import { ConfigManager } from '../config/ConfigManager';
 import { DiffManager } from '../ui/DiffManager';
-import { ApprovalDialog } from '../ui/ApprovalDialog';
 import { StatusBar } from '../ui/StatusBar';
 import { ProviderType, ThoughtEvent } from '../types';
 import type { WorkflowEngine } from '../workflow/WorkflowEngine';
@@ -22,13 +21,14 @@ export type MessageToWebview =
   | { type: 'undo_result'; message: string }
   | { type: 'token_usage'; lastInputTokens: number; lastOutputTokens: number; sessionInputTokens: number; sessionOutputTokens: number; model: string }
   | { type: 'model_switched'; model: string }
-  | { type: 'wf_command_result'; message: string };
+  | { type: 'wf_command_result'; message: string }
+  | { type: 'action_request'; id: string; prompt: string; actions: string[] };
 
 export class ChatController {
   private _activeAgentId: string | undefined;
   private diffManager = new DiffManager();
-  private approvalDialog = new ApprovalDialog();
   private readonly _subscribers = new Set<(msg: MessageToWebview) => void>();
+  private readonly _pendingActions = new Map<string, (value: string | undefined) => void>();
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
   private currentModel = '';
@@ -118,7 +118,10 @@ export class ChatController {
         rawMessage,
         (delta) => this.post({ type: 'text_delta', agentId, delta }),
         (event) => this.post({ type: 'thought', agentId, event }),
-        async (prompt) => this.approvalDialog.request(prompt),
+        async (prompt) => {
+          const result = await this.requestInlineAction(prompt, ['Allow', 'Deny']);
+          return result === 'Allow';
+        },
         async (filePath, original, proposed) =>
           this.diffManager.showAndApprove(filePath, original, proposed),
         (usage) => {
@@ -364,10 +367,9 @@ export class ChatController {
       return;
     }
 
-    const confirmed = await vscode.window.showWarningMessage(
+    const confirmed = await this.requestInlineAction(
       `Resume task "${taskId}" in workflow "${workflowId}"?`,
-      { modal: true },
-      'Resume'
+      ['Resume', 'Cancel']
     );
     if (confirmed !== 'Resume') return;
 
@@ -397,17 +399,15 @@ export class ChatController {
       return;
     }
 
-    const finalReason = reason?.trim() || await vscode.window.showInputBox({
-      title: `Cancel task "${taskId}"`,
-      prompt: 'Enter cancellation reason (required)',
-      placeHolder: 'e.g. Superseded by new requirements'
-    });
-    if (!finalReason) return;
+    const finalReason = reason?.trim();
+    if (!finalReason) {
+      this.post({ type: 'wf_command_result', message: `Please include a reason: /wf-cancel ${taskId} <reason>` });
+      return;
+    }
 
-    const confirmed = await vscode.window.showWarningMessage(
-      `Cancel task "${taskId}"? This cannot be undone.`,
-      { modal: true },
-      'Cancel Task'
+    const confirmed = await this.requestInlineAction(
+      `Cancel task "${taskId}"? This cannot be undone.\nReason: ${finalReason}`,
+      ['Cancel Task', 'Abort']
     );
     if (confirmed !== 'Cancel Task') return;
 
@@ -438,10 +438,9 @@ export class ChatController {
       return;
     }
 
-    const confirmed = await vscode.window.showWarningMessage(
+    const confirmed = await this.requestInlineAction(
       `Reassign task "${taskId}" to agent "${newAgent.name}"?`,
-      { modal: true },
-      'Reassign'
+      ['Reassign', 'Cancel']
     );
     if (confirmed !== 'Reassign') return;
 
@@ -505,6 +504,24 @@ export class ChatController {
     const p = getAppData().pricing[model];
     if (!p) return 0;
     return (totalInputTokens / 1e6) * p.in + (totalOutputTokens / 1e6) * p.out;
+  }
+
+  /** Post an inline action card to the webview and await the user's choice. */
+  private requestInlineAction(prompt: string, actions: string[]): Promise<string | undefined> {
+    const id = Math.random().toString(36).slice(2);
+    return new Promise(resolve => {
+      this._pendingActions.set(id, resolve);
+      this.post({ type: 'action_request', id, prompt, actions });
+    });
+  }
+
+  /** Called by ChatViewProvider when the webview posts an action_response. */
+  resolveAction(id: string, value: string | undefined): void {
+    const resolver = this._pendingActions.get(id);
+    if (resolver) {
+      this._pendingActions.delete(id);
+      resolver(value);
+    }
   }
 
   private post(msg: MessageToWebview): void {

@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as vscode from 'vscode';
 import { Meeting, AgendaItem, MeetingRound, SummaryRound, OutputTag, InterruptRequest, ActionPolicy } from './types';
 import { MeetingStorage } from './MeetingStorage';
 import { loadMeetingGuardrails, MeetingGuardrailsConfig } from './MeetingGuardrails';
@@ -662,7 +663,11 @@ export class MeetingOrchestrator {
     onDelta?: (delta: string) => void
   ): Promise<string> {
     let full = '';
-    for await (const event of provider.stream(messages, [])) {
+    const maxOutputTokens = Math.max(
+      128,
+      vscode.workspace.getConfiguration('bormagi').get<number>('maxOutputTokens', 1200)
+    );
+    for await (const event of provider.stream(messages, [], maxOutputTokens)) {
       if (this.aborted) { break; }
       if (event.type === 'text') {
         full += event.delta;

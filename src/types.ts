@@ -57,6 +57,10 @@ export type AgentCategory =
   | 'AI / LLM Engineer Agent'
   | 'Custom Agent';
 
+export interface AgentKnowledgeConfig {
+  source_folders: string[];
+}
+
 export interface AgentConfig {
   id: string;
   name: string;
@@ -68,6 +72,7 @@ export interface AgentConfig {
   system_prompt_files: string[];
   mcp_servers: MCPServerConfig[];
   context_filter: ContextFilter;
+  knowledge?: AgentKnowledgeConfig;
 }
 
 // ─── Chat / messaging types ────────────────────────────────────────────────────
@@ -140,10 +145,13 @@ export interface LLMStreamOptions {
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
 }
 
 export type StreamEvent =
   | { type: 'text'; delta: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
+  | { type: 'provider_headers'; provider: string; headers: Record<string, string> }
   | { type: 'token_usage'; usage: TokenUsage }
   | { type: 'done' };

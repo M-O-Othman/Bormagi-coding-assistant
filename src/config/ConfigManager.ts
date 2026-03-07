@@ -16,6 +16,10 @@ export class ConfigManager {
     this.workspaceRoot = workspaceRoot;
   }
 
+  get rootDir(): string {
+    return this.workspaceRoot;
+  }
+
   get bormagiDir(): string {
     return path.join(this.workspaceRoot, BORMAGI_DIR);
   }

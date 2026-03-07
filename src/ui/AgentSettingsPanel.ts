@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AgentManager } from '../agents/AgentManager';
 import { SecretsManager } from '../config/SecretsManager';
 import { ConfigManager } from '../config/ConfigManager';
-import { AgentConfig, AgentCategory, ProviderConfig, ProviderType } from '../types';
+import { AgentConfig, ProviderConfig, ProviderType } from '../types';
 import { getAppData } from '../data/DataStore';
 
 type PanelMode = 'list' | 'new' | 'edit';
@@ -11,15 +11,18 @@ export class AgentSettingsPanel {
   private static current: AgentSettingsPanel | undefined;
   private readonly panel: vscode.WebviewPanel;
   private disposables: vscode.Disposable[] = [];
+  private focusAgentId: string | undefined;
 
   private constructor(
     panel: vscode.WebviewPanel,
     private readonly agentManager: AgentManager,
     private readonly secrets: SecretsManager,
     private readonly configManager: ConfigManager,
-    private initialMode: PanelMode
+    private initialMode: PanelMode,
+    initialFocusAgentId?: string
   ) {
     this.panel = panel;
+    this.focusAgentId = initialFocusAgentId;
     this.panel.webview.html = this.getHtml();
 
     this.panel.webview.onDidReceiveMessage(
@@ -39,11 +42,13 @@ export class AgentSettingsPanel {
     agentManager: AgentManager,
     secrets: SecretsManager,
     configManager: ConfigManager,
-    mode: PanelMode = 'list'
+    mode: PanelMode = 'list',
+    agentId?: string
   ): void {
     if (AgentSettingsPanel.current) {
       AgentSettingsPanel.current.panel.reveal(vscode.ViewColumn.One);
       AgentSettingsPanel.current.initialMode = mode;
+      AgentSettingsPanel.current.focusAgentId = agentId;
       void AgentSettingsPanel.current.sendAgentList();
       return;
     }
@@ -55,7 +60,7 @@ export class AgentSettingsPanel {
       { enableScripts: true, retainContextWhenHidden: true }
     );
 
-    AgentSettingsPanel.current = new AgentSettingsPanel(panel, agentManager, secrets, configManager, mode);
+    AgentSettingsPanel.current = new AgentSettingsPanel(panel, agentManager, secrets, configManager, mode, agentId);
   }
 
   private async sendAgentList(): Promise<void> {
@@ -68,13 +73,18 @@ export class AgentSettingsPanel {
     );
     const defaultProvider = await this.configManager.readDefaultProvider();
     const hasDefaultKey = await this.secrets.hasApiKey('__default__');
+    const mode = this.initialMode;
+    const focusAgentId = this.focusAgentId ?? null;
     this.panel.webview.postMessage({
       type: 'agent_list',
       agents: agentsWithKeyStatus,
-      mode: this.initialMode,
+      mode,
+      focusAgentId,
       defaultProvider: defaultProvider ?? null,
       hasDefaultKey
     });
+    this.initialMode = 'list';
+    this.focusAgentId = undefined;
   }
 
   private normaliseAuthMethod(provider: ProviderConfig): ProviderConfig {
@@ -344,6 +354,20 @@ export class AgentSettingsPanel {
     <label for="f-description">Description</label>
     <textarea id="f-description" rows="3" placeholder="Describe what this agent does…"></textarea>
 
+    <h2>Knowledge</h2>
+    <label for="f-knowledge-source-folders">Source Folders (one per line)</label>
+    <textarea id="f-knowledge-source-folders" rows="3" placeholder="docs&#10;knowledge"></textarea>
+    <p class="hint">Used by the current knowledge pipeline for indexing and retrieval.</p>
+
+    <label for="f-knowledge-direct-context">Direct Context Items (one per line)</label>
+    <textarea id="f-knowledge-direct-context" rows="2" placeholder="project/state-bundle.md"></textarea>
+
+    <label for="f-knowledge-retrievable">Retrievable Collections (one per line)</label>
+    <textarea id="f-knowledge-retrievable" rows="2" placeholder="architecture-docs"></textarea>
+
+    <label for="f-knowledge-shared">Shared Collections (one per line)</label>
+    <textarea id="f-knowledge-shared" rows="2" placeholder="organization-standards"></textarea>
+
     <hr/>
     <h2>LLM Provider</h2>
 
@@ -397,6 +421,24 @@ export class AgentSettingsPanel {
 
     function normaliseAuthMethod(raw) {
       return raw === 'gcp_adc' ? 'vertex_ai' : raw;
+    }
+
+    function parseLines(text) {
+      return String(text || '')
+        .split(/\\r?\\n/)
+        .map(x => x.trim())
+        .filter(Boolean);
+    }
+
+    function formatLines(items) {
+      return Array.isArray(items) ? items.join('\\n') : '';
+    }
+
+    function defaultContextFilter() {
+      return {
+        include_extensions: ['.ts','.tsx','.js','.jsx','.py','.java','.cs','.go','.rs','.html','.css','.md','.txt','.json','.yaml','.yml','.sql','.csv','.tsv'],
+        exclude_patterns: ['node_modules','dist','.git','build','__pycache__','.bormagi']
+      };
     }
 
     function syncDefaultAuthControls() {
@@ -514,6 +556,11 @@ export class AgentSettingsPanel {
           document.getElementById('f-name').value = a.name;
           document.getElementById('f-category').value = a.category;
           document.getElementById('f-description').value = a.description;
+          const knowledge = a.knowledge || {};
+          document.getElementById('f-knowledge-source-folders').value = formatLines(knowledge.source_folders);
+          document.getElementById('f-knowledge-direct-context').value = formatLines(knowledge.direct_context_items);
+          document.getElementById('f-knowledge-retrievable').value = formatLines(knowledge.retrievable_collections);
+          document.getElementById('f-knowledge-shared').value = formatLines(knowledge.shared_collections);
           document.getElementById('f-use-default').checked = !!a.useDefaultProvider;
           document.getElementById('f-provider').value = a.provider.type;
           onProviderChange();
@@ -532,6 +579,10 @@ export class AgentSettingsPanel {
         document.getElementById('f-name').value = '';
         document.getElementById('f-category').value = 'Custom Agent';
         document.getElementById('f-description').value = '';
+        document.getElementById('f-knowledge-source-folders').value = '';
+        document.getElementById('f-knowledge-direct-context').value = '';
+        document.getElementById('f-knowledge-retrievable').value = '';
+        document.getElementById('f-knowledge-shared').value = '';
         document.getElementById('f-use-default').checked = false;
         document.getElementById('f-provider').value = 'anthropic';
         onProviderChange();
@@ -572,17 +623,60 @@ export class AgentSettingsPanel {
         return;
       }
 
-      const config = {
-        id, name, category, description, enabled: true,
-        useDefaultProvider,
-        provider: { type: providerType, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod, vertex_location: vertexLocation },
-        system_prompt_files: ['system-prompt.md'],
-        mcp_servers: [],
-        context_filter: {
-          include_extensions: ['.ts','.tsx','.js','.jsx','.py','.java','.cs','.go','.rs','.html','.css','.md','.txt','.json','.yaml','.yml','.sql','.csv','.tsv'],
-          exclude_patterns: ['node_modules','dist','.git','build','__pycache__','.bormagi']
-        }
-      };
+      const sourceFolders = parseLines(document.getElementById('f-knowledge-source-folders').value);
+      const directContextItems = parseLines(document.getElementById('f-knowledge-direct-context').value);
+      const retrievableCollections = parseLines(document.getElementById('f-knowledge-retrievable').value);
+      const sharedCollections = parseLines(document.getElementById('f-knowledge-shared').value);
+
+      const existing = agents.find(x => x.id === id);
+      const config = existing
+        ? {
+            ...existing,
+            id,
+            name,
+            category,
+            description,
+            enabled: existing.enabled !== false,
+            useDefaultProvider,
+            provider: { type: providerType, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod, vertex_location: vertexLocation },
+            system_prompt_files: Array.isArray(existing.system_prompt_files) && existing.system_prompt_files.length > 0
+              ? existing.system_prompt_files
+              : ['system-prompt.md'],
+            mcp_servers: Array.isArray(existing.mcp_servers) ? existing.mcp_servers : [],
+            context_filter: existing.context_filter || defaultContextFilter()
+          }
+        : {
+            id,
+            name,
+            category,
+            description,
+            enabled: true,
+            useDefaultProvider,
+            provider: { type: providerType, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod, vertex_location: vertexLocation },
+            system_prompt_files: ['system-prompt.md'],
+            mcp_servers: [],
+            context_filter: defaultContextFilter()
+          };
+
+      delete config.hasApiKey;
+
+      const knowledge = (config.knowledge && typeof config.knowledge === 'object') ? { ...config.knowledge } : {};
+      knowledge.source_folders = sourceFolders;
+      if (directContextItems.length > 0) { knowledge.direct_context_items = directContextItems; } else { delete knowledge.direct_context_items; }
+      if (retrievableCollections.length > 0) { knowledge.retrievable_collections = retrievableCollections; } else { delete knowledge.retrievable_collections; }
+      if (sharedCollections.length > 0) { knowledge.shared_collections = sharedCollections; } else { delete knowledge.shared_collections; }
+
+      const hasKnowledge =
+        sourceFolders.length > 0 ||
+        directContextItems.length > 0 ||
+        retrievableCollections.length > 0 ||
+        sharedCollections.length > 0;
+
+      if (hasKnowledge) {
+        config.knowledge = knowledge;
+      } else {
+        delete config.knowledge;
+      }
 
       vscode.postMessage({ type: 'save_agent', config, apiKey: apiKey || undefined });
     }
@@ -603,7 +697,11 @@ export class AgentSettingsPanel {
       if (msg.type === 'agent_list') {
         agents = msg.agents;
         renderAgentList();
-        if (msg.mode === 'new') showForm(null);
+        if (msg.mode === 'new') {
+          showForm(null);
+        } else if (msg.mode === 'edit' && msg.focusAgentId) {
+          showForm(msg.focusAgentId);
+        }
         // Populate default provider fields
         if (msg.defaultProvider) {
           document.getElementById('dp-provider').value = msg.defaultProvider.type;
