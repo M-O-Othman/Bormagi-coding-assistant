@@ -8,6 +8,33 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { AgentConfig } from '../types';
 
+// ─── System context agent ──────────────────────────────────────────────────────
+
+/**
+ * The ID of the reserved system agent used by the context pipeline for
+ * mode classification, history compaction, and summarization.
+ *
+ * This agent is:
+ *  - always present in the registry (recreated with defaults if missing)
+ *  - configurable by the user (provider / model / system prompt)
+ *  - undeletable (remove() is a no-op for this ID; UI hides the delete button)
+ *
+ * Spec reference: §OQ-17 / §Section 16.
+ */
+export const CONTEXT_AGENT_ID = '__bormagi_context_agent__';
+
+/** Default registry entry for the system context agent. */
+const DEFAULT_CONTEXT_AGENT_ENTRY: AgentRegistryEntry = {
+  id: CONTEXT_AGENT_ID,
+  name: 'Bormagi Context Agent',
+  category: 'system',
+  capabilities: ['chat', 'context-pipeline'],
+  delegationPermissions: [],
+  acceptsFrom: [],
+  concurrencyLimit: 1,
+  knowledgeEnabled: false,
+};
+
 /** Registry entry for an agent (extends config with registry-level metadata). */
 export interface AgentRegistryEntry {
     id: string;
@@ -49,6 +76,19 @@ export class AgentRegistry {
                 console.warn('AgentRegistry: Failed to load, using empty registry');
             }
         }
+        // Always guarantee the system context agent is present after loading.
+        this.ensureContextAgent();
+    }
+
+    /**
+     * Remove an agent entry from the registry.
+     * This is a no-op for the system context agent (`CONTEXT_AGENT_ID`) — it
+     * cannot be deleted.
+     */
+    remove(agentId: string): void {
+        if (agentId === CONTEXT_AGENT_ID) { return; }
+        this.data.agents = this.data.agents.filter(a => a.id !== agentId);
+        this.save();
     }
 
     /** Persist registry to disk. */
@@ -89,8 +129,13 @@ export class AgentRegistry {
             }
         }
 
-        // Remove agents no longer in config
-        this.data.agents = this.data.agents.filter(a => currentIds.has(a.id));
+        // Remove agents no longer in config — but always keep the system context agent.
+        this.data.agents = this.data.agents.filter(
+          a => currentIds.has(a.id) || a.id === CONTEXT_AGENT_ID,
+        );
+
+        // Ensure the system context agent exists (recreate with defaults if missing).
+        this.ensureContextAgent();
         this.save();
     }
 
@@ -121,6 +166,18 @@ export class AgentRegistry {
     }
 
     // ─── Private ───────────────────────────────────────────────────────────
+
+    /**
+     * Ensure the system context agent entry exists in the registry.
+     * If it is absent (e.g., first run or accidental deletion from JSON),
+     * it is recreated with default values.
+     */
+    private ensureContextAgent(): void {
+        const exists = this.data.agents.some(a => a.id === CONTEXT_AGENT_ID);
+        if (!exists) {
+            this.data.agents.push({ ...DEFAULT_CONTEXT_AGENT_ENTRY });
+        }
+    }
 
     /** Infer capabilities from agent config. */
     private inferCapabilities(agent: AgentConfig): string[] {

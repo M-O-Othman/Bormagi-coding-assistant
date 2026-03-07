@@ -1,5 +1,8 @@
 // ─── Project & Agent configuration types ──────────────────────────────────────
 
+// Re-export context pipeline types for consumer convenience.
+export type { AssistantMode, ModeDecision } from './context/types';
+
 /** User role selected during onboarding wizard (NF2-UX-003). */
 export type UserRole = 'Developer' | 'Architect' | 'Business Analyst' | 'Reviewer';
 

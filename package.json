@@ -204,6 +204,249 @@
           ],
           "default": "api_key",
           "description": "Default auth method for the default provider."
+        },
+
+        "bormagi.contextPipeline.plans.storageLocation": {
+          "type": "string",
+          "enum": ["workspace-root", "bormagi-plans"],
+          "default": "workspace-root",
+          "description": "Where to write plan artifacts. 'workspace-root' writes PLAN-<ts>.md to the workspace root (default). 'bormagi-plans' writes only to .bormagi/plans/."
+        },
+        "bormagi.contextPipeline.plans.writePlanMd": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to write a human-readable PLAN-<timestamp>.md in addition to the machine-readable .bormagi/plans/plan-<timestamp>.json."
+        },
+
+        "bormagi.contextPipeline.budgets.plan.stablePrefix": {
+          "type": "number", "default": 1800,
+          "description": "Token budget for the stable system-prompt prefix (plan mode)."
+        },
+        "bormagi.contextPipeline.budgets.plan.memory": {
+          "type": "number", "default": 1200,
+          "description": "Token budget for session memory (plan mode)."
+        },
+        "bormagi.contextPipeline.budgets.plan.repoMap": {
+          "type": "number", "default": 2400,
+          "description": "Token budget for the repository map (plan mode)."
+        },
+        "bormagi.contextPipeline.budgets.plan.retrievedContext": {
+          "type": "number", "default": 4000,
+          "description": "Token budget for retrieved code context (plan mode)."
+        },
+        "bormagi.contextPipeline.budgets.plan.toolOutputs": {
+          "type": "number", "default": 1000,
+          "description": "Token budget for tool outputs (plan mode)."
+        },
+        "bormagi.contextPipeline.budgets.plan.conversationTail": {
+          "type": "number", "default": 1200,
+          "description": "Token budget for recent conversation history (plan mode)."
+        },
+        "bormagi.contextPipeline.budgets.plan.userInput": {
+          "type": "number", "default": 800,
+          "description": "Token budget reserved for the user's current input (plan mode)."
+        },
+        "bormagi.contextPipeline.budgets.plan.reservedMargin": {
+          "type": "number", "default": 2500,
+          "description": "Safety margin kept free for model output (plan mode)."
+        },
+
+        "bormagi.contextPipeline.budgets.edit.stablePrefix": {
+          "type": "number", "default": 1800,
+          "description": "Token budget for the stable system-prompt prefix (edit mode)."
+        },
+        "bormagi.contextPipeline.budgets.edit.memory": {
+          "type": "number", "default": 1200,
+          "description": "Token budget for session memory (edit mode)."
+        },
+        "bormagi.contextPipeline.budgets.edit.repoMap": {
+          "type": "number", "default": 1200,
+          "description": "Token budget for the repository map (edit mode)."
+        },
+        "bormagi.contextPipeline.budgets.edit.retrievedContext": {
+          "type": "number", "default": 7000,
+          "description": "Token budget for retrieved code context (edit mode)."
+        },
+        "bormagi.contextPipeline.budgets.edit.toolOutputs": {
+          "type": "number", "default": 1200,
+          "description": "Token budget for tool outputs (edit mode)."
+        },
+        "bormagi.contextPipeline.budgets.edit.conversationTail": {
+          "type": "number", "default": 1000,
+          "description": "Token budget for recent conversation history (edit mode)."
+        },
+        "bormagi.contextPipeline.budgets.edit.userInput": {
+          "type": "number", "default": 800,
+          "description": "Token budget reserved for the user's current input (edit mode)."
+        },
+        "bormagi.contextPipeline.budgets.edit.reservedMargin": {
+          "type": "number", "default": 3000,
+          "description": "Safety margin kept free for model output (edit mode)."
+        },
+
+        "bormagi.contextPipeline.budgets.debug.stablePrefix": {
+          "type": "number", "default": 1800,
+          "description": "Token budget for the stable system-prompt prefix (debug mode)."
+        },
+        "bormagi.contextPipeline.budgets.debug.memory": {
+          "type": "number", "default": 1200,
+          "description": "Token budget for session memory (debug mode)."
+        },
+        "bormagi.contextPipeline.budgets.debug.repoMap": {
+          "type": "number", "default": 1200,
+          "description": "Token budget for the repository map (debug mode)."
+        },
+        "bormagi.contextPipeline.budgets.debug.retrievedContext": {
+          "type": "number", "default": 5000,
+          "description": "Token budget for retrieved code context (debug mode)."
+        },
+        "bormagi.contextPipeline.budgets.debug.toolOutputs": {
+          "type": "number", "default": 2600,
+          "description": "Token budget for tool outputs (debug mode)."
+        },
+        "bormagi.contextPipeline.budgets.debug.conversationTail": {
+          "type": "number", "default": 1200,
+          "description": "Token budget for recent conversation history (debug mode)."
+        },
+        "bormagi.contextPipeline.budgets.debug.userInput": {
+          "type": "number", "default": 800,
+          "description": "Token budget reserved for the user's current input (debug mode)."
+        },
+        "bormagi.contextPipeline.budgets.debug.reservedMargin": {
+          "type": "number", "default": 3000,
+          "description": "Safety margin kept free for model output (debug mode)."
+        },
+
+        "bormagi.contextPipeline.budgets.review.stablePrefix": {
+          "type": "number", "default": 1800,
+          "description": "Token budget for the stable system-prompt prefix (review mode)."
+        },
+        "bormagi.contextPipeline.budgets.review.memory": {
+          "type": "number", "default": 1000,
+          "description": "Token budget for session memory (review mode)."
+        },
+        "bormagi.contextPipeline.budgets.review.repoMap": {
+          "type": "number", "default": 1000,
+          "description": "Token budget for the repository map (review mode)."
+        },
+        "bormagi.contextPipeline.budgets.review.retrievedContext": {
+          "type": "number", "default": 5000,
+          "description": "Token budget for retrieved code context (review mode)."
+        },
+        "bormagi.contextPipeline.budgets.review.toolOutputs": {
+          "type": "number", "default": 2200,
+          "description": "Token budget for tool outputs (review mode)."
+        },
+        "bormagi.contextPipeline.budgets.review.conversationTail": {
+          "type": "number", "default": 1000,
+          "description": "Token budget for recent conversation history (review mode)."
+        },
+        "bormagi.contextPipeline.budgets.review.userInput": {
+          "type": "number", "default": 800,
+          "description": "Token budget reserved for the user's current input (review mode)."
+        },
+        "bormagi.contextPipeline.budgets.review.reservedMargin": {
+          "type": "number", "default": 3000,
+          "description": "Safety margin kept free for model output (review mode)."
+        },
+
+        "bormagi.contextPipeline.budgets.explain.stablePrefix": {
+          "type": "number", "default": 1800,
+          "description": "Token budget for the stable system-prompt prefix (explain mode)."
+        },
+        "bormagi.contextPipeline.budgets.explain.memory": {
+          "type": "number", "default": 1000,
+          "description": "Token budget for session memory (explain mode)."
+        },
+        "bormagi.contextPipeline.budgets.explain.repoMap": {
+          "type": "number", "default": 2200,
+          "description": "Token budget for the repository map (explain mode)."
+        },
+        "bormagi.contextPipeline.budgets.explain.retrievedContext": {
+          "type": "number", "default": 3500,
+          "description": "Token budget for retrieved code context (explain mode)."
+        },
+        "bormagi.contextPipeline.budgets.explain.toolOutputs": {
+          "type": "number", "default": 800,
+          "description": "Token budget for tool outputs (explain mode)."
+        },
+        "bormagi.contextPipeline.budgets.explain.conversationTail": {
+          "type": "number", "default": 1200,
+          "description": "Token budget for recent conversation history (explain mode)."
+        },
+        "bormagi.contextPipeline.budgets.explain.userInput": {
+          "type": "number", "default": 800,
+          "description": "Token budget reserved for the user's current input (explain mode)."
+        },
+        "bormagi.contextPipeline.budgets.explain.reservedMargin": {
+          "type": "number", "default": 2500,
+          "description": "Safety margin kept free for model output (explain mode)."
+        },
+
+        "bormagi.contextPipeline.budgets.search.stablePrefix": {
+          "type": "number", "default": 1600,
+          "description": "Token budget for the stable system-prompt prefix (search mode)."
+        },
+        "bormagi.contextPipeline.budgets.search.memory": {
+          "type": "number", "default": 800,
+          "description": "Token budget for session memory (search mode)."
+        },
+        "bormagi.contextPipeline.budgets.search.repoMap": {
+          "type": "number", "default": 2600,
+          "description": "Token budget for the repository map (search mode)."
+        },
+        "bormagi.contextPipeline.budgets.search.retrievedContext": {
+          "type": "number", "default": 3200,
+          "description": "Token budget for retrieved code context (search mode)."
+        },
+        "bormagi.contextPipeline.budgets.search.toolOutputs": {
+          "type": "number", "default": 800,
+          "description": "Token budget for tool outputs (search mode)."
+        },
+        "bormagi.contextPipeline.budgets.search.conversationTail": {
+          "type": "number", "default": 800,
+          "description": "Token budget for recent conversation history (search mode)."
+        },
+        "bormagi.contextPipeline.budgets.search.userInput": {
+          "type": "number", "default": 800,
+          "description": "Token budget reserved for the user's current input (search mode)."
+        },
+        "bormagi.contextPipeline.budgets.search.reservedMargin": {
+          "type": "number", "default": 2200,
+          "description": "Safety margin kept free for model output (search mode)."
+        },
+
+        "bormagi.contextPipeline.budgets.test-fix.stablePrefix": {
+          "type": "number", "default": 1800,
+          "description": "Token budget for the stable system-prompt prefix (test-fix mode)."
+        },
+        "bormagi.contextPipeline.budgets.test-fix.memory": {
+          "type": "number", "default": 1200,
+          "description": "Token budget for session memory (test-fix mode)."
+        },
+        "bormagi.contextPipeline.budgets.test-fix.repoMap": {
+          "type": "number", "default": 1200,
+          "description": "Token budget for the repository map (test-fix mode)."
+        },
+        "bormagi.contextPipeline.budgets.test-fix.retrievedContext": {
+          "type": "number", "default": 5000,
+          "description": "Token budget for retrieved code context (test-fix mode)."
+        },
+        "bormagi.contextPipeline.budgets.test-fix.toolOutputs": {
+          "type": "number", "default": 2800,
+          "description": "Token budget for tool outputs (test-fix mode)."
+        },
+        "bormagi.contextPipeline.budgets.test-fix.conversationTail": {
+          "type": "number", "default": 1000,
+          "description": "Token budget for recent conversation history (test-fix mode)."
+        },
+        "bormagi.contextPipeline.budgets.test-fix.userInput": {
+          "type": "number", "default": 800,
+          "description": "Token budget reserved for the user's current input (test-fix mode)."
+        },
+        "bormagi.contextPipeline.budgets.test-fix.reservedMargin": {
+          "type": "number", "default": 3200,
+          "description": "Safety margin kept free for model output (test-fix mode)."
         }
       }
     },
