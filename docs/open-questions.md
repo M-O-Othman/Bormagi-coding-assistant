@@ -138,11 +138,13 @@ The spec says "old transcript-based path may remain temporarily as a fallback."
 
 **Answer: C** — Hard cutover. The new context pipeline fully replaces the old transcript-based path with no fallback.
 
-### OQ-15: Retrieval semantic search
+### OQ-15: Retrieval semantic search ✅
 The existing `EmbeddingService` + `VectorStore` support knowledge-base documents. Should the new repo map retrieval also use embeddings for semantic search over code?
 - **A** Yes — extend the existing embedding/vector infrastructure to index code files
 - **B** No — start with lexical search only for the repo map (simpler, faster to ship)
 - **C** Lexical now, semantic search as a follow-on phase
+
+**Answer: A** — Extend the existing `EmbeddingService` + `VectorStore` to also index code files from the repo map, enabling semantic search alongside lexical search in the `RetrievalOrchestrator`.
 
 ### OQ-16: Mode budgets — are the token numbers in the spec final?
 The spec defines `MODE_BUDGETS` with specific token counts per slot (e.g., edit mode gets 7000 tokens for `retrievedContext`). These are relative to a specific model context window.
