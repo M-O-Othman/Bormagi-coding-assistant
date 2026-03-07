@@ -63,10 +63,12 @@ The spec shows `.assistant/AGENTS.md` as an example. The project already uses `.
 
 **Answer: A** — Use `.bormagi/instructions/` for all instruction scopes.
 
-### OQ-7: Directory-scoped instruction files
+### OQ-7: Directory-scoped instruction files ✅
 For path-scoped guidance (e.g., a file in `apps/web/` inherits `apps/web/.assistant.md`):
 - **A** Support per-directory instruction files walked from workspace root to active file
 - **B** Only repo-root and global scopes for now (simpler)
+
+**Answer: B** — Only repo-root (`.bormagi/instructions/repo.md`) and global (`.bormagi/instructions/global.md`) scopes for now.
 
 ---
 
