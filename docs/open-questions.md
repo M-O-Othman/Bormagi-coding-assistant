@@ -81,11 +81,13 @@ For path-scoped guidance (e.g., a file in `apps/web/` inherits `apps/web/.assist
 
 **Answer: B** — Compaction triggers automatically at threshold, but user sees a notification first.
 
-### OQ-9: Compaction user notification
+### OQ-9: Compaction user notification ✅
 If compaction is automatic (A or B above), should the user see:
 - **A** No notification (silent)
 - **B** A brief status bar message ("Context compacted — session summary preserved")
 - **C** A notification with a "View Summary" action link
+
+**Answer: C** — Show a VS Code notification with a "View Summary" action that opens the compacted history summary.
 
 ---
 
