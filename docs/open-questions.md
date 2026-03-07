@@ -55,11 +55,13 @@ The spec mandates LSP for symbol extraction. The codebase is TypeScript-first.
 
 ## Section C — Instruction Files (FR-4A)
 
-### OQ-6: Instruction file naming convention
+### OQ-6: Instruction file naming convention ✅
 The spec shows `.assistant/AGENTS.md` as an example. The project already uses `.bormagi/`.
 - **A** Use `.bormagi/instructions/` for all scopes (consistent with existing structure)
 - **B** Use the spec's `.assistant/` directory (matches emerging industry standard)
 - **C** Support both (`.bormagi/instructions/` and `.assistant/`) and merge them
+
+**Answer: A** — Use `.bormagi/instructions/` for all instruction scopes.
 
 ### OQ-7: Directory-scoped instruction files
 For path-scoped guidance (e.g., a file in `apps/web/` inherits `apps/web/.assistant.md`):
