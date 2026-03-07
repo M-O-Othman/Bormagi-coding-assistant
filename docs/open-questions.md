@@ -93,10 +93,12 @@ If compaction is automatic (A or B above), should the user see:
 
 ## Section E — Hooks (FR-15A)
 
-### OQ-10: Hook configuration file location
+### OQ-10: Hook configuration file location ✅
 - **A** `.bormagi/hooks.json` (alongside existing config)
 - **B** `.bormagi/config/hooks.json`
 - **C** A new top-level `.assistant/hooks.json`
+
+**Answer: B** — Store hook configuration at `.bormagi/config/hooks.json`.
 
 ### OQ-11: Hook execution scope
 - **A** Hooks run in-process (Node.js function calls, fast, sandboxed to extension)
