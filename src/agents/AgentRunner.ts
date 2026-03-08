@@ -101,8 +101,23 @@ export class AgentRunner {
       this.execWrapper = new ExecWrapper(
         this.policyEngine,
         this.approvalService,
-        // Dummy callback for UI prompt, to be wired fully later (default to YES for now to test)
-        async (cmd, reason, rule) => ({ allow: true, scope: 'once' }),
+        // Interactive user prompt for execution policy overrides
+        async (cmd, reason, rule) => {
+          const res = await vscode.window.showWarningMessage(
+            `Sandbox Policy: Agent wants to run a shell command.\nCommand: ${cmd}\nMatched Rule: ${rule}`,
+            { modal: true },
+            'Allow Once',
+            'Allow for Task',
+            'Allow for Project',
+            'Deny'
+          );
+
+          if (res === 'Allow Once') return { allow: true, scope: 'once' };
+          if (res === 'Allow for Task') return { allow: true, scope: 'task' };
+          if (res === 'Allow for Project') return { allow: true, scope: 'project' };
+
+          return { allow: false, scope: 'once' };
+        },
         // Real execute via MCP
         async (cmd) => {
           try {

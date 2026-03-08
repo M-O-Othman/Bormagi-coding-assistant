@@ -52,3 +52,5 @@ Expected quality bar:
 - The plan must be concrete, sequenced, technically actionable, and test-aware.
 - The implementation must be production-quality, coherent with the existing architecture, and consistent with project conventions.
 - Where the existing implementation is weak or incorrect, explain the issue clearly and fix it systematically rather than patching symptoms.
+Check for any unwired code or incomplete planned tasks /TODOs and report to user 
+Push to remote github branch master
