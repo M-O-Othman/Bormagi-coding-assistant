@@ -1,0 +1,231 @@
+// ─── Prompt Assembler ─────────────────────────────────────────────────────────
+//
+// Builds the full system prompt for the LLM from discrete context sections.
+//
+// Section order (spec §13):
+//   1. system          — role and identity
+//   2. rules           — effective instructions (global.md + repo.md)
+//   3. memory          — session memory candidates
+//   4. repoMap         — serialised repo map slice
+//   5. task            — user's current request
+//   6. editable        — files the model is allowed to modify
+//   7. reference       — read-only code snippets
+//   8. toolArtifacts   — normalised tool output
+//   9. conversationTail — recent turns (from envelope)
+//  10. outputContract  — mode-specific structured output instructions
+//
+// Spec reference: §FR-6 + §FR-13.
+
+import type {
+  AssistantMode,
+  ContextCandidate,
+  ContextEnvelope,
+  EffectiveInstructions,
+  RepoMap,
+} from './types';
+import { serializeRepoMapSlice } from '../index/RepoMapStore';
+import { getModeBudget } from '../config/ModeBudgets';
+
+// ─── Assembly inputs ──────────────────────────────────────────────────────────
+
+export interface PromptAssemblyArgs {
+  /** Role/identity preamble — usually from the agent's system prompt. */
+  systemPreamble:  string;
+  /** Merged instruction layers from `InstructionResolver`. */
+  instructions:    EffectiveInstructions;
+  /** Composed and budget-enforced context envelope. */
+  envelope:        ContextEnvelope;
+  /** Repo map for the workspace (may be null if not yet built). */
+  repoMap:         RepoMap | null;
+  /** The user's raw current message. */
+  userMessage:     string;
+  /** Current assistant mode — drives the output contract. */
+  mode:            AssistantMode;
+  /** Agent name — used in the identity section. */
+  agentName?:      string;
+  /** Project name — used in the identity section. */
+  projectName?:    string;
+}
+
+// ─── Section formatters ───────────────────────────────────────────────────────
+
+function sectionHeader(title: string): string {
+  return `\n\n## ${title}\n`;
+}
+
+function formatCandidateBlock(c: ContextCandidate, label: string): string {
+  const pathStr = c.path ? ` — \`${c.path}\`` : '';
+  return `### ${label}${pathStr}\n\`\`\`\n${c.content.trim()}\n\`\`\``;
+}
+
+function formatEditableFiles(candidates: ContextCandidate[]): string {
+  if (candidates.length === 0) { return ''; }
+  const blocks = candidates.map((c, i) => formatCandidateBlock(c, `Editable File ${i + 1}`));
+  return `${sectionHeader('Files to Modify')}${blocks.join('\n\n')}`;
+}
+
+function formatReferenceContext(candidates: ContextCandidate[]): string {
+  if (candidates.length === 0) { return ''; }
+  const blocks = candidates.map((c, i) => {
+    const kindLabel = c.kind === 'repo-map' ? 'Repo Map' : `Reference ${i + 1}`;
+    return formatCandidateBlock(c, kindLabel);
+  });
+  return `${sectionHeader('Reference Context')}${blocks.join('\n\n')}`;
+}
+
+function formatMemory(candidates: ContextCandidate[]): string {
+  if (candidates.length === 0) { return ''; }
+  const content = candidates.map(c => c.content.trim()).join('\n\n');
+  return `${sectionHeader('Session Memory')}${content}`;
+}
+
+function formatToolOutputs(candidates: ContextCandidate[]): string {
+  if (candidates.length === 0) { return ''; }
+  const blocks = candidates.map((c, i) =>
+    `### Tool Output ${i + 1}\n${c.content.trim()}`,
+  );
+  return `${sectionHeader('Tool Outputs')}${blocks.join('\n\n')}`;
+}
+
+function formatRepoMapSection(repoMap: RepoMap, maxTokens: number): string {
+  if (maxTokens <= 0) { return ''; }
+  const slice = serializeRepoMapSlice(repoMap, { maxTokens });
+  if (!slice.trim()) { return ''; }
+  return `${sectionHeader('Repository Overview')}${slice}`;
+}
+
+// ─── Output contracts (mode-specific) ────────────────────────────────────────
+
+const OUTPUT_CONTRACTS: Record<AssistantMode, string> = {
+  plan: `## Output Contract
+Respond with a structured plan containing:
+- **Assumptions**: list any assumptions made
+- **Impacted Files**: list each file that will need modification
+- **Plan Steps**: numbered implementation steps
+- **Risks**: potential issues or open questions
+Do NOT write code in this response — produce the plan only.`,
+
+  edit: `## Output Contract
+Respond with:
+- **Changed Files**: list every file modified
+- **Patch Summary**: concise description of each change
+- **Validation Notes**: how to verify the change is correct
+Apply edits directly to the provided editable files.`,
+
+  debug: `## Output Contract
+Respond with:
+- **Root Cause Hypothesis**: what is causing the issue and why
+- **Evidence**: specific lines/values that confirm the hypothesis
+- **Proposed Fix**: concrete code change to resolve the issue`,
+
+  review: `## Output Contract
+Respond with a structured review:
+- **Findings** (grouped by severity: Critical / Major / Minor / Info)
+- **Suggested Changes**: specific, actionable recommendations
+- **Confidence**: overall confidence level in the review (High / Medium / Low)`,
+
+  explain: `## Output Contract
+Provide a clear, structured explanation:
+- Start with a one-sentence summary
+- Explain the key concepts in plain language
+- Reference specific lines or symbols where relevant
+- Avoid unnecessary jargon`,
+
+  search: `## Output Contract
+List each matching result with:
+- File path and line number
+- A brief description of what was found
+- Why it matches the search query
+Sort results by relevance.`,
+
+  'test-fix': `## Output Contract
+Respond with:
+- **Failure Analysis**: what the test expects vs. what it receives
+- **Root Cause**: why the implementation produces the wrong result
+- **Fix**: the minimal code change that makes the test pass
+- **Confidence**: High / Medium / Low`,
+};
+
+// ─── Identity preamble ────────────────────────────────────────────────────────
+
+function buildIdentityPreamble(
+  mode: AssistantMode,
+  agentName: string,
+  projectName: string,
+  basePreamble: string,
+): string {
+  const modeLabel = mode.charAt(0).toUpperCase() + mode.slice(1);
+  const header = `# ${agentName}${projectName ? ` — ${projectName}` : ''} (${modeLabel} mode)`;
+  return basePreamble ? `${header}\n\n${basePreamble}` : header;
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Assemble the full system prompt from all context sections.
+ *
+ * The returned string is intended to be used as the `system` message in the
+ * LLM request.  The caller is responsible for budget enforcement before calling
+ * this function (via `enforcePreflightBudget`).
+ *
+ * @param args  All context inputs.
+ * @returns     Complete system prompt string.
+ */
+export function assemblePrompt(args: PromptAssemblyArgs): string {
+  const {
+    systemPreamble,
+    instructions,
+    envelope,
+    repoMap,
+    userMessage,
+    mode,
+    agentName  = 'Bormagi',
+    projectName = '',
+  } = args;
+
+  const budget = getModeBudget(mode);
+  const parts: string[] = [];
+
+  // 1. Identity / system preamble
+  parts.push(buildIdentityPreamble(mode, agentName, projectName, systemPreamble));
+
+  // 2. Rules / instructions
+  if (instructions.merged.trim()) {
+    parts.push(`${sectionHeader('Instructions')}${instructions.merged.trim()}`);
+  }
+
+  // 3. Memory
+  parts.push(formatMemory(envelope.memory));
+
+  // 4. Repo map
+  if (repoMap && budget.repoMap > 0) {
+    parts.push(formatRepoMapSection(repoMap, budget.repoMap));
+  }
+
+  // 5. Current task
+  if (userMessage.trim()) {
+    parts.push(`${sectionHeader('Current Task')}\n${userMessage.trim()}`);
+  }
+
+  // 6. Editable files
+  parts.push(formatEditableFiles(envelope.editable));
+
+  // 7. Reference context
+  parts.push(formatReferenceContext(envelope.reference));
+
+  // 8. Tool outputs
+  parts.push(formatToolOutputs(envelope.toolOutputs));
+
+  // 9. Output contract
+  parts.push(`\n\n${OUTPUT_CONTRACTS[mode]}`);
+
+  return parts.filter(p => p.trim()).join('');
+}
+
+/**
+ * Build only the output-contract section for `mode`.
+ * Exposed for testing and for callers that compose partial prompts.
+ */
+export function getOutputContract(mode: AssistantMode): string {
+  return OUTPUT_CONTRACTS[mode];
+}
