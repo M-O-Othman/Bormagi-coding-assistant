@@ -28,14 +28,14 @@ const MOCK_PROFILE: ModelProfile = {
 };
 
 const MOCK_BUDGET: ModeBudget = {
-  stablePrefix:     1800,
-  memory:           1200,
-  repoMap:          1200,
+  stablePrefix: 1800,
+  memory: 1200,
+  repoMap: 1200,
   retrievedContext: 7000,
-  toolOutputs:      1200,
+  toolOutputs: 1200,
   conversationTail: 1000,
-  userInput:         800,
-  reservedMargin:   3000,
+  userInput: 800,
+  reservedMargin: 3000,
 };
 
 function makeCandidate(overrides: Partial<ContextCandidate> = {}): ContextCandidate {
@@ -53,9 +53,9 @@ function makeCandidate(overrides: Partial<ContextCandidate> = {}): ContextCandid
 
 function makeEnvelope(overrides: Partial<ContextEnvelope> = {}): ContextEnvelope {
   return {
-    editable:    [],
-    reference:   [],
-    memory:      [],
+    editable: [],
+    reference: [],
+    memory: [],
     toolOutputs: [],
     ...overrides,
   };
@@ -125,13 +125,12 @@ describe('estimateTokens', () => {
 describe('estimateEnvelopeTokens', () => {
   test('adds fixed budget slots to envelope token sum', () => {
     const envelope = makeEnvelope({
-      editable:  [makeCandidate({ tokenEstimate: 200 })],
+      editable: [makeCandidate({ tokenEstimate: 200 })],
       reference: [makeCandidate({ tokenEstimate: 100 })],
     });
     const result = estimateEnvelopeTokens(envelope, MOCK_BUDGET, MOCK_PROFILE);
     const expected =
       MOCK_BUDGET.stablePrefix +
-      MOCK_BUDGET.memory +
       MOCK_BUDGET.userInput +
       MOCK_PROFILE.estimatedToolOverheadTokens +
       200 + 100; // envelope
@@ -141,7 +140,7 @@ describe('estimateEnvelopeTokens', () => {
   test('empty envelope totals only fixed slots', () => {
     const result = estimateEnvelopeTokens(makeEnvelope(), MOCK_BUDGET, MOCK_PROFILE);
     expect(result).toBe(
-      MOCK_BUDGET.stablePrefix + MOCK_BUDGET.memory + MOCK_BUDGET.userInput +
+      MOCK_BUDGET.stablePrefix + MOCK_BUDGET.userInput +
       MOCK_PROFILE.estimatedToolOverheadTokens,
     );
   });
@@ -194,7 +193,7 @@ describe('enforcePreflightBudget', () => {
       recommendedInputBudget: 100,
     };
     const bigEnvelope = makeEnvelope({
-      editable:  Array.from({ length: 50 }, (_, i) => makeCandidate({ id: `e${i}`, tokenEstimate: 500 })),
+      editable: Array.from({ length: 50 }, (_, i) => makeCandidate({ id: `e${i}`, tokenEstimate: 500 })),
       reference: Array.from({ length: 50 }, (_, i) => makeCandidate({ id: `r${i}`, kind: 'snippet', tokenEstimate: 500, score: 0.5 })),
       toolOutputs: Array.from({ length: 10 }, (_, i) => makeCandidate({ id: `t${i}`, kind: 'tool-output', tokenEstimate: 1000 })),
     });
@@ -206,8 +205,8 @@ describe('enforcePreflightBudget', () => {
     const tinyProfile: ModelProfile = { ...MOCK_PROFILE, recommendedInputBudget: 100 };
     const mem = makeCandidate({ id: 'm1', kind: 'memory', tokenEstimate: 5 });
     const bigEnvelope = makeEnvelope({
-      editable:    Array.from({ length: 50 }, (_, i) => makeCandidate({ id: `e${i}`, tokenEstimate: 500 })),
-      reference:   Array.from({ length: 50 }, (_, i) => makeCandidate({ id: `r${i}`, kind: 'snippet', tokenEstimate: 500, score: 0.5 })),
+      editable: Array.from({ length: 50 }, (_, i) => makeCandidate({ id: `e${i}`, tokenEstimate: 500 })),
+      reference: Array.from({ length: 50 }, (_, i) => makeCandidate({ id: `r${i}`, kind: 'snippet', tokenEstimate: 500, score: 0.5 })),
       toolOutputs: Array.from({ length: 10 }, (_, i) => makeCandidate({ id: `t${i}`, kind: 'tool-output', tokenEstimate: 1000 })),
       memory: [mem],
     });

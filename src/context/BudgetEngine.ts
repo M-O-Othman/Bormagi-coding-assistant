@@ -79,7 +79,6 @@ export function estimateEnvelopeTokens(
 
   return (
     budget.stablePrefix +
-    budget.memory +
     budget.userInput +
     profile.estimatedToolOverheadTokens +
     envelopeTokens
@@ -232,9 +231,9 @@ function degradeToPlanOnly(envelope: ContextEnvelope): ContextEnvelope {
 
 function cloneEnvelope(envelope: ContextEnvelope): ContextEnvelope {
   return {
-    editable:    [...envelope.editable],
-    reference:   [...envelope.reference],
-    memory:      [...envelope.memory],
+    editable: [...envelope.editable],
+    reference: [...envelope.reference],
+    memory: [...envelope.memory],
     toolOutputs: [...envelope.toolOutputs],
   };
 }

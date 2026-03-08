@@ -380,7 +380,8 @@ export class AgentRunner {
     const envelope = buildContextEnvelope(candidates, mode);
 
     // 7. Enforce token budget — prunes envelope sections if over the soft limit.
-    enforcePreflightBudget(envelope, budget, profile);
+    const enforcement = enforcePreflightBudget(envelope, budget, profile);
+    const effectiveEnvelope = enforcement.envelope;
 
     // 8. Assemble full system prompt.
     //    systemPreamble comes from the agent's configured prompt files (unchanged path).
@@ -390,7 +391,7 @@ export class AgentRunner {
     const assembledSystem = assemblePrompt({
       systemPreamble,
       instructions,
-      envelope,
+      envelope: effectiveEnvelope,
       repoMap,
       userMessage,
       mode,
@@ -428,8 +429,8 @@ export class AgentRunner {
       const systemTokens = estimateTokens(fullSystem);
       const tokenHealth: 'healthy' | 'busy' | 'near-limit' =
         systemTokens > profile.recommendedInputBudget * 0.9 ? 'near-limit'
-        : systemTokens > profile.recommendedInputBudget * 0.7 ? 'busy'
-        : 'healthy';
+          : systemTokens > profile.recommendedInputBudget * 0.7 ? 'busy'
+            : 'healthy';
 
       const ctxItems: Array<{ id: string; itemType: string; label: string; source: string; reasonIncluded: string; estimatedTokens?: number; removable: boolean }> = [];
 
