@@ -27,6 +27,12 @@ import { createWorkflowEngine } from './workflow/WorkflowEngine';
 import { WorkflowStorage } from './workflow/WorkflowStorage';
 import { ArtifactRegistry } from './workflow/ArtifactRegistry';
 import { KnowledgeManager } from './knowledge/KnowledgeManager';
+import { AgentRegistry } from './agents/AgentRegistry';
+import { FileMessageBus } from './collaboration/FileMessageBus';
+import { DelegationManager } from './collaboration/DelegationManager';
+import { DecisionManager } from './memory/DecisionManager';
+import { PromotionEngine } from './memory/PromotionEngine';
+import { Consolidator } from './memory/Consolidator';
 
 let configManager: ConfigManager | undefined;
 let secretsManager: SecretsManager | undefined;
@@ -60,6 +66,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     workspaceRoot = pick.folder.uri.fsPath;
   }
 
+  // ─── Phase 2 & 3: Collaboration & Semantic Memory Services ─────────
+  const agentRegistry = new AgentRegistry(workspaceRoot);
+  agentRegistry.load();
+
+  const fileMessageBus = new FileMessageBus(workspaceRoot);
+  const delegationManager = new DelegationManager(fileMessageBus, agentRegistry);
+  const decisionManager = new DecisionManager(workspaceRoot);
+
   // ─── Core services ────────────────────────────────────────────────────────
   configManager = new ConfigManager(workspaceRoot);
   secretsManager = new SecretsManager(context.secrets);
@@ -69,14 +83,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   agentManager = new AgentManager(configManager, secretsManager, mcpHost);
   statusBar = new StatusBar();
 
-  const memoryManager     = new MemoryManager(configManager);
-  const undoManager       = new UndoManager();
-  const skillManager      = new SkillManager(configManager);
-  const promptComposer    = new PromptComposer(configManager);
-  const knowledgeManager  = new KnowledgeManager(workspaceRoot);
+  const memoryManager = new MemoryManager(configManager);
+  const undoManager = new UndoManager();
+  const skillManager = new SkillManager(configManager);
+  const promptComposer = new PromptComposer(configManager);
+  const knowledgeManager = new KnowledgeManager(workspaceRoot);
+
+  const promotionEngine = new PromotionEngine(memoryManager.sessionMemory, memoryManager.publishedKnowledge);
+  const consolidator = new Consolidator(workspaceRoot, memoryManager.sessionMemory, promotionEngine, decisionManager);
+
   const runner = new AgentRunner(
     agentManager, mcpHost, promptComposer, memoryManager,
-    undoManager, skillManager, auditLogger, configManager, workspaceRoot, knowledgeManager
+    undoManager, skillManager, auditLogger, configManager, workspaceRoot, knowledgeManager,
+    delegationManager, consolidator, decisionManager
   );
   chatController = new ChatController(agentManager, configManager, auditLogger, statusBar, runner, undoManager);
 

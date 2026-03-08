@@ -33,6 +33,12 @@ Agents can generate Word documents and PowerPoint presentations directly from yo
 ### 6. Predefined Agents
 Bormagi comes with a set of predefined agents that can be installed for immediate use. These agents are ready-made to assist with common development tasks, such as coding, architecture decisions, and documentation.
 
+### 7. Agent Knowledge Base & Semantic Memory
+Agents feature Local File-Based Vector Retrieval (RAG). Before an agent responds, they automatically query their designated Knowledge Base (`.bormagi/memory/vectors/`) for injected context. Fact extraction happens automatically at the end of sessions to persist learnings.
+
+### 8. Multi-Agent Collaboration
+Agents can delegate sub-tasks to each other or broadcast shared knowledge using the local file-based Message Bus (`.bormagi/shared/bus/`). Agents enforce permissions and constraints defined in the `AgentRegistry`.
+
 ## Getting Started
 
 1. **Install the Extension**: You can download Bormagi from the Visual Studio Code Marketplace or install it using a `.vsix` file.

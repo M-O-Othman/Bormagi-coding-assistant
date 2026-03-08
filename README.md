@@ -43,6 +43,8 @@ No admin permissions are required. Install from the VS Code Marketplace or from 
 18. [Recent Enhancements — Meeting Productivity](#recent-enhancements-meeting-productivity--all-complete)
     [Recent Enhancements — NF2 batch](#recent-enhancements-nf2-batch--all-complete)
 19. [Building Agents](#building-agents)
+20. [Agent Knowledge Base & Memory](#agent-knowledge-base--memory)
+21. [Multi-Agent Collaboration](#multi-agent-collaboration)
 
 ---
 
@@ -797,6 +799,31 @@ Custom MCP servers can be added per-agent in `config.json` under `mcp_servers`.
 - **Sensitive files** (`.env`, `*.key`, `*credentials*`) are excluded from workspace context sent to LLMs.
 - **Workflow overrides** (forcing a stage gate, reassigning a task) require a mandatory reason which is recorded in the workflow event log alongside the acting identity.
 - `.bormagi/` is excluded from source control via `.gitignore`.
+
+---
+
+## Agent Knowledge Base & Memory
+
+### Local Knowledge Base (RAG)
+Agents automatically query a dedicated Local Vector Store containing their specific knowledge domains prior to building their LLM `system` prompt. This ensures answers are grounded on approved codebase documents or facts explicitly promoted to published knowledge.
+
+### Semantic Memory & Decision Logs
+Behind the scenes, Bormagi uses an automated `Consolidator` that runs at the end of every active session loop.
+- Extracts `ActionItems` and specific coding `Decisions`.
+- Records `DecisionRecords` into an append-only log locally in `.bormagi/memory/decisions/`.
+- Promotes `TurnMemory` facts automatically into permanent `PublishedKnowledge`.
+
+---
+
+## Multi-Agent Collaboration
+
+### Inter-Agent Message Bus
+Bormagi employs a local file-backed message bus using `chokidar` for reliable multi-agent orchestration. The inbox system lives in `.bormagi/shared/bus/<agent-id>`.
+
+### Task Delegation & Knowledge Sharing
+Through newly exposed built-in MCP tools (`delegate_task` and `share_knowledge`), internal agents can communicate with one another:
+- **Task Delegation**: Trigger a sub-task on another agent programmatically (delegation rules enforced via `AgentRegistry`).
+- **Knowledge Share**: Broadcast semantic facts directly to the file-bus, establishing a dynamic global context available to all agents.
 
 ---
 

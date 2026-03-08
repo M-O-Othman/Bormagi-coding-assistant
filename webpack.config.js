@@ -41,7 +41,8 @@ const mcpServersConfig = {
     'filesystem-server': './src/mcp/builtin/filesystem-server.ts',
     'terminal-server': './src/mcp/builtin/terminal-server.ts',
     'git-server': './src/mcp/builtin/git-server.ts',
-    'gcp-server': './src/mcp/builtin/gcp-server.ts'
+    'gcp-server': './src/mcp/builtin/gcp-server.ts',
+    'collaboration-server': './src/mcp/builtin/collaboration-server.ts'
   },
   output: {
     path: path.resolve(__dirname, 'dist', 'mcp-servers'),

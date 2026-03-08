@@ -12,7 +12,7 @@ export class AgentManager {
     private readonly config: ConfigManager,
     private readonly secrets: SecretsManager,
     private readonly mcpHost: MCPHost
-  ) {}
+  ) { }
 
   async loadAgents(): Promise<void> {
     this.agents.clear();
@@ -82,6 +82,7 @@ export class AgentManager {
     await this.mcpHost.startBuiltin('terminal', workspaceRoot);
     await this.mcpHost.startBuiltin('git', workspaceRoot);
     await this.mcpHost.startBuiltin('gcp', workspaceRoot);
+    await this.mcpHost.startBuiltin('collaboration', workspaceRoot);
 
     // Start any custom MCP servers defined for this agent
     for (const serverConfig of agentConfig.mcp_servers) {
@@ -129,12 +130,12 @@ export class AgentManager {
     const updated: ProjectConfig = existing
       ? { ...existing, agents: agentIds }
       : {
-          project: {
-            name: path.basename(this.config.bormagiDir.replace('/.bormagi', '').replace('\\.bormagi', '')),
-            created_at: new Date().toISOString()
-          },
-          agents: agentIds
-        };
+        project: {
+          name: path.basename(this.config.bormagiDir.replace('/.bormagi', '').replace('\\.bormagi', '')),
+          created_at: new Date().toISOString()
+        },
+        agents: agentIds
+      };
     await this.config.writeProjectConfig(updated);
   }
 }

@@ -25,6 +25,12 @@ import {
 import type { ApprovalCallback, DiffCallback, ThoughtCallback } from './execution/ToolDispatcher';
 import { getAppData } from '../data/DataStore';
 import { KnowledgeManager } from '../knowledge/KnowledgeManager';
+import { RetrievalService } from '../knowledge/RetrievalService';
+import type { EvidencePack } from '../knowledge/types';
+import { TurnMemory } from '../memory/TurnMemory';
+import { Consolidator } from '../memory/Consolidator';
+import { DecisionManager } from '../memory/DecisionManager';
+import { DelegationManager } from '../collaboration/DelegationManager';
 
 // ─── Context pipeline imports ──────────────────────────────────────────────────
 import { classifyMode } from '../context/ModeClassifier';
@@ -74,7 +80,10 @@ export class AgentRunner {
     private readonly auditLogger: AuditLogger,
     private readonly configManager: ConfigManager,
     private readonly workspaceRoot: string,
-    private readonly knowledgeManager?: KnowledgeManager
+    private readonly knowledgeManager?: KnowledgeManager,
+    private readonly delegationManager?: DelegationManager,
+    private readonly consolidator?: Consolidator,
+    private readonly decisionManager?: DecisionManager
   ) {
     this.toolDispatcher = new ToolDispatcher(mcpHost, undoManager, auditLogger, workspaceRoot);
     this.enhancedMemory = new EnhancedSessionMemory(workspaceRoot);
@@ -139,20 +148,27 @@ export class AgentRunner {
 
     await this.agentManager.startMCPServersForAgent(agentId, this.workspaceRoot);
 
+    // ─── Semantic Session Setup ───────────────────────────────────────────────
+    // We instantiate a TurnMemory to track episodic context for this specific run
+    const turnMemory = new TurnMemory();
+    const currentTurn = turnMemory.startTurn(userMessage);
+
     // ─── Knowledge retrieval ──────────────────────────────────────────────────
     // Surface a thought notification when knowledge chunks are found; the context
     // pipeline (signal 3/lexical + signal 6/semantic in RetrievalOrchestrator)
     // is responsible for injecting retrieved content into the assembled prompt.
+    let kbEvidence: EvidencePack | null = null;
     const kbFolders = agentConfig.knowledge?.source_folders ?? [];
     if (kbFolders.length > 0 && this.knowledgeManager) {
       try {
         if (await this.knowledgeManager.hasKnowledgeBase(agentId)) {
-          const evidence = await this.knowledgeManager.query(agentId, userMessage, 5);
-          if (evidence.chunks.length > 0) {
+          kbEvidence = await this.knowledgeManager.query(agentId, userMessage, 5);
+          if (kbEvidence.chunks.length > 0) {
+            turnMemory.addEvidenceSources(kbEvidence.trace.sources);
             onThought({
               type: 'thinking',
-              label: `Knowledge: ${evidence.chunks.length} chunks from ${evidence.trace.sources.join(', ')}`,
-              detail: `Latency: ${evidence.trace.latencyMs}ms · Sources: ${evidence.trace.sources.join(', ')}`,
+              label: `Knowledge: ${kbEvidence.chunks.length} chunks from ${kbEvidence.trace.sources.join(', ')}`,
+              detail: `Latency: ${kbEvidence.trace.latencyMs}ms · Sources: ${kbEvidence.trace.sources.join(', ')}`,
               timestamp: new Date(),
             });
           }
@@ -230,6 +246,11 @@ export class AgentRunner {
       projectName,
     });
     let fullSystem = skillsSection ? `${assembledSystem}\n\n${skillsSection}` : assembledSystem;
+
+    if (kbEvidence && kbEvidence.chunks.length > 0) {
+      const formattedEvidence = RetrievalService.formatEvidenceForPrompt(kbEvidence);
+      fullSystem = `${fullSystem}\n\n${formattedEvidence}\n\nCRITICAL INSTRUCTION: You MUST base your response on the [Evidence from Knowledge Base] provided above. If the evidence provides information about the user's query, you must use it and cite the sources.`;
+    }
 
     // ─── Phase-5: capability injection + stable prefix cache ──────────────────
     if (enhancedPipeline) {
@@ -451,6 +472,7 @@ export class AgentRunner {
           const toolResult = await this.toolDispatcher.dispatch(
             event, agentId, onApproval, onDiff, onThought
           );
+          turnMemory.addToolResult(event.name, String(toolResult));
           messages.push({ role: 'user', content: `[Tool result: ${event.name}]\n${toolResult}` });
           calledATool = true;
           continueLoop = true;
@@ -497,6 +519,16 @@ export class AgentRunner {
         recentEditedFiles: this.enhancedMemory.getState(agentId).recentEditedFiles,
         pendingToolArtifacts: toolsUsed,
       }));
+
+      // End turn and extract semantic memories
+      turnMemory.endTurn();
+      if (this.consolidator) {
+        try {
+          await this.consolidator.consolidateSession(agentId, requestId, turnMemory);
+        } catch (err) {
+          console.warn(`AgentRunner: Failed to consolidate semantic memory for ${agentId}:`, err);
+        }
+      }
     }
   }
 

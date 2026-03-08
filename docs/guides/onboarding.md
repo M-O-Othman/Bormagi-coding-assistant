@@ -248,9 +248,12 @@ bormagi-extension/
 │   ├── audit/           AuditLogger (JSONL event log)
 │   ├── chat/            ChatController, ChatViewProvider (webview)
 │   ├── config/          ConfigManager (reads/writes .bormagi/ config files)
-│   ├── mcp/             MCPHost, built-in MCP servers (filesystem, git, terminal, gcp)
+│   ├── mcp/             MCPHost, built-in MCP servers (filesystem, git, terminal, gcp, collaboration)
 │   ├── meeting/         MeetingOrchestrator, MeetingStorage, types
 │   │                    See "Meeting module" note below
+│   ├── memory/          TurnMemory, Consolidator, DecisionManager, EnhancedSessionMemory
+│   ├── collaboration/   FileMessageBus, DelegationManager
+│   ├── knowledge/       KnowledgeManager, RetrievalService (Vector/RAG Storage)
 │   ├── providers/       ProviderFactory, OpenAI / Anthropic / Gemini / DeepSeek / Qwen adapters
 │   ├── skills/          SkillManager (loads .claude/skills/)
 │   ├── ui/              MeetingPanel, AgentSettingsPanel
@@ -293,6 +296,8 @@ bormagi-extension/
 | `.bormagi/agents/<id>/` | Per-agent memory and overrides |
 | `.bormagi/audit.jsonl` | Append-only structured audit log |
 | `.bormagi/Memory.md` | Long-term conversation memory (Markdown) |
+| `.bormagi/memory/` | Semantic memory, decision logs, local vector DB for RAG |
+| `.bormagi/shared/bus/` | Async inter-agent `.json` message bus |
 | `.bormagi/workflows/<id>/` | Workflow state (JSON + JSONL) |
 | `.bormagi/virtual-meetings/<id>/` | Meeting state + minutes |
 
