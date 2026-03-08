@@ -185,8 +185,8 @@ export async function buildRepoMap(
     maxFiles:         options.maxFiles         ?? DEFAULT_OPTIONS.maxFiles,
     maxFileSizeBytes: options.maxFileSizeBytes ?? DEFAULT_OPTIONS.maxFileSizeBytes,
     userIncludes:     options.userIncludes     ?? [],
-    allowlistFile:    options.allowlistFile,
-    ignoreFile:       options.ignoreFile,
+    allowlistFile:    options.allowlistFile ?? '',
+    ignoreFile:       options.ignoreFile    ?? '',
   };
 
   // 1. Walk the directory tree.
@@ -235,8 +235,8 @@ export async function incrementalUpdateRepoMap(
     maxFiles:         options.maxFiles         ?? DEFAULT_OPTIONS.maxFiles,
     maxFileSizeBytes: options.maxFileSizeBytes ?? DEFAULT_OPTIONS.maxFileSizeBytes,
     userIncludes:     options.userIncludes     ?? [],
-    allowlistFile:    options.allowlistFile,
-    ignoreFile:       options.ignoreFile,
+    allowlistFile:    options.allowlistFile ?? '',
+    ignoreFile:       options.ignoreFile    ?? '',
   };
 
   // Index existing entries by path for fast lookup.

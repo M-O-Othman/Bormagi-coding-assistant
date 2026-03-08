@@ -288,18 +288,20 @@ export interface ExecutionPlan {
 // ─── Instruction Layers ───────────────────────────────────────────────────────
 
 export interface InstructionLayer {
-  id: string;
   /** "global" = .bormagi/instructions/global.md; "repo" = .bormagi/instructions/repo.md */
-  scope: "global" | "repo";
-  sourcePath: string;
+  role: "global" | "repo";
+  filePath: string;
   content: string;
   tokenEstimate: number;
+  /** True when the backing file does not exist on disk. */
+  missing: boolean;
 }
 
 export interface EffectiveInstructions {
   layers: InstructionLayer[];
-  mergedText: string;
-  tokenEstimate: number;
+  /** Merged, token-bounded text of all layers. */
+  merged: string;
+  totalTokenEstimate: number;
 }
 
 // ─── Capability / Skill Loading ───────────────────────────────────────────────
@@ -338,19 +340,22 @@ export interface PromptSections {
 // ─── Tool Artifact Normalization ──────────────────────────────────────────────
 
 export interface TestFailureArtifact {
-  suite: string;
-  testName: string;
-  message: string;
-  file?: string;
-  line?: number;
-  stackFrames?: Array<{ file: string; line: number; functionName?: string }>;
+  /** Individual test failures extracted from the runner output. */
+  failures: Array<{ testName: string; message: string }>;
+  /** Source files referenced in failing tests or stack traces. */
+  failingFiles: string[];
+  /** Bounded raw output excerpt for full context. */
+  rawExcerpt: string;
+  /** Condensed stack trace (first 10 frames). */
+  stackTrace: string;
+  tokenEstimate: number;
 }
 
 export interface SearchHitArtifact {
-  path: string;
+  filePath: string;
   line: number;
-  preview: string;
-  symbol?: string;
+  snippet: string;
+  tokenEstimate: number;
 }
 
 // ─── Checkpoint ───────────────────────────────────────────────────────────────
