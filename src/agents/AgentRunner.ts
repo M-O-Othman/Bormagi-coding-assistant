@@ -25,7 +25,21 @@ import {
 import type { ApprovalCallback, DiffCallback, ThoughtCallback } from './execution/ToolDispatcher';
 import { getAppData } from '../data/DataStore';
 import { KnowledgeManager } from '../knowledge/KnowledgeManager';
-import { RetrievalService } from '../knowledge/RetrievalService';
+
+// ─── Context pipeline imports ──────────────────────────────────────────────────
+import { classifyMode } from '../context/ModeClassifier';
+import { getModeBudget } from '../config/ModeBudgets';
+import { getActiveModelProfile } from '../config/ModelProfiles';
+import { enforcePreflightBudget, estimateEnvelopeTokens, estimateTokens } from '../context/BudgetEngine';
+import { resolveInstructions } from '../context/InstructionResolver';
+import { retrieveCandidates } from '../retrieval/RetrievalOrchestrator';
+import { buildContextEnvelope } from '../context/ContextEnvelope';
+import { assemblePrompt } from '../context/PromptAssembler';
+import { loadRepoMap } from '../index/RepoMapStore';
+import { shouldCompact, compact, formatCompactedHistory } from '../context/ContextCompactor';
+import { saveCheckpoint, buildCheckpointState } from '../memory/SessionCheckpoint';
+import { EnhancedSessionMemory } from '../memory/EnhancedSessionMemory';
+import type { AssistantMode, CompactionInput } from '../context/types';
 
 // Re-export callback types so callers that previously imported from this module continue to work.
 export type { ApprovalCallback, DiffCallback, ThoughtCallback };
@@ -42,6 +56,7 @@ export class AgentRunner {
   private readonly toolDispatcher: ToolDispatcher;
   private readonly bootstrapInjected = new Set<string>();
   private readonly contextCache = new Map<string, WorkspaceContextSnapshot>();
+  readonly enhancedMemory: EnhancedSessionMemory;
 
   constructor(
     private readonly agentManager: AgentManager,
@@ -56,6 +71,7 @@ export class AgentRunner {
     private readonly knowledgeManager?: KnowledgeManager
   ) {
     this.toolDispatcher = new ToolDispatcher(mcpHost, undoManager, auditLogger, workspaceRoot);
+    this.enhancedMemory = new EnhancedSessionMemory(workspaceRoot);
   }
 
   async run(
@@ -117,14 +133,15 @@ export class AgentRunner {
     await this.agentManager.startMCPServersForAgent(agentId, this.workspaceRoot);
 
     // ─── Knowledge retrieval ──────────────────────────────────────────────────
-    let knowledgeEvidence: string | undefined;
+    // Surface a thought notification when knowledge chunks are found; the context
+    // pipeline (signal 3/lexical + signal 6/semantic in RetrievalOrchestrator)
+    // is responsible for injecting retrieved content into the assembled prompt.
     const kbFolders = agentConfig.knowledge?.source_folders ?? [];
     if (kbFolders.length > 0 && this.knowledgeManager) {
       try {
         if (await this.knowledgeManager.hasKnowledgeBase(agentId)) {
           const evidence = await this.knowledgeManager.query(agentId, userMessage, 5);
           if (evidence.chunks.length > 0) {
-            knowledgeEvidence = RetrievalService.formatEvidenceForPrompt(evidence);
             onThought({
               type: 'thinking',
               label: `Knowledge: ${evidence.chunks.length} chunks from ${evidence.trace.sources.join(', ')}`,
@@ -138,41 +155,76 @@ export class AgentRunner {
       }
     }
 
-    // Build system prompt and session context.
+    // ─── Context pipeline ─────────────────────────────────────────────────────
+
     const projectConfig = await this.configManager.readProjectConfig();
     const projectName = projectConfig?.project.name ?? '';
-    const systemPrompt = await this.promptComposer.compose(agentConfig, projectName, knowledgeEvidence);
+
+    // 1. Classify mode from user message and log to audit.
+    const modeDecision = classifyMode(userMessage);
+    const mode: AssistantMode = modeDecision.mode;
+    const requestId = `${agentId}-${Date.now()}`;
+    await this.auditLogger.logModeClassified(
+      requestId,
+      mode,
+      modeDecision.confidence,
+      modeDecision.userOverride,
+      modeDecision.reason,
+    );
+
+    // 2. Load mode budget and model profile.
+    const budget = getModeBudget(mode);
+    const profile = getActiveModelProfile(effectiveProvider);
+
+    // 3. Resolve instructions from .bormagi/instructions/{global,repo}.md.
+    const instructions = resolveInstructions(this.workspaceRoot);
+
+    // 4. Load repo map from .bormagi/repo-map.json (null if not yet built).
+    const repoMap = loadRepoMap(this.workspaceRoot);
+
+    // 5. Gather, score, and rank context candidates.
+    const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath;
+    const retrievalQuery = { text: userMessage, mode, activeFile };
+    const candidates = await retrieveCandidates(
+      retrievalQuery,
+      { workspaceRoot: this.workspaceRoot, repoMap, activeFilePath: activeFile, agentId },
+      budget.retrievedContext,
+    );
+
+    // 6. Partition candidates into envelope slots (editable / reference / memory / toolOutputs).
+    const envelope = buildContextEnvelope(candidates, mode);
+
+    // 7. Enforce token budget — prunes envelope sections if over the soft limit.
+    enforcePreflightBudget(envelope, budget, profile);
+
+    // 8. Assemble full system prompt.
+    //    systemPreamble comes from the agent's configured prompt files (unchanged path).
+    const systemPreamble = await this.promptComposer.compose(agentConfig, projectName);
     await this.skillManager.loadAll();
     const skillsSection = this.skillManager.buildSkillsPromptSection();
-    const fullSystem = skillsSection ? `${systemPrompt}\n\n${skillsSection}` : systemPrompt;
+    const assembledSystem = assemblePrompt({
+      systemPreamble,
+      instructions,
+      envelope,
+      repoMap,
+      userMessage,
+      mode,
+      agentName: agentConfig.name,
+      projectName,
+    });
+    const fullSystem = skillsSection ? `${assembledSystem}\n\n${skillsSection}` : assembledSystem;
 
+    // 9. Build conversation messages (system + history + user turn).
+    //    Bootstrap injection and ad-hoc retrieval context are now handled by the
+    //    context pipeline above, so those intermediate messages are no longer needed.
     const sessionHistory = await this.memoryManager.getSessionHistoryWithMemory(agentId);
-    const workspaceCtx = await this.getWorkspaceContext(agentId, agentConfig);
-    const retrievalContext = this.buildTaskRetrievalContext(workspaceCtx.files, userMessage);
-
     const messages: ChatMessage[] = [
       { role: 'system', content: fullSystem },
-      ...sessionHistory
+      ...sessionHistory,
     ];
 
-    let bootstrapContext = '';
-    if (!this.bootstrapInjected.has(agentId) && workspaceCtx.repoSummary) {
-      bootstrapContext = `[Bootstrap phase: repository summary]\n${workspaceCtx.repoSummary}`;
-      const bootstrapUser: ChatMessage = { role: 'user', content: bootstrapContext };
-      const bootstrapAck: ChatMessage = {
-        role: 'assistant',
-        content: 'Repository summary loaded. I will focus on task-scoped snippets for each request.'
-      };
-
-      messages.push(bootstrapUser, bootstrapAck);
-      this.memoryManager.addMessage(agentId, bootstrapUser);
-      this.memoryManager.addMessage(agentId, bootstrapAck);
-      this.bootstrapInjected.add(agentId);
-    }
-
-    if (retrievalContext) {
-      messages.push({ role: 'user', content: retrievalContext });
-    }
+    const bootstrapContext = ''; // kept for measureRequestSize compat — pipeline handles context
+    const retrievalContext = ''; // kept for measureRequestSize compat — pipeline handles context
 
     const userMsg: ChatMessage = { role: 'user', content: userMessage };
     messages.push(userMsg);
@@ -202,9 +254,53 @@ export class AgentRunner {
       });
     }
 
-    // Model stream loop.
+    // ─── Context compaction ───────────────────────────────────────────────────
+    // Estimate history token count and compact proactively when it approaches
+    // the model's soft input budget (80 % threshold, ≥ 6 messages).
+    const historyTokens = estimateTokens(sessionHistory.map(m => m.content).join(' '));
     const providerConfig = { ...agentConfig, provider: effectiveProvider };
     const provider = ProviderFactory.create(providerConfig, apiKey);
+
+    if (shouldCompact(historyTokens, profile, sessionHistory.length)) {
+      onThought({
+        type: 'thinking',
+        label: 'Compacting conversation history…',
+        detail: `History: ~${historyTokens} tokens, threshold: ${Math.floor(profile.recommendedInputBudget * 0.8)}`,
+        timestamp: new Date(),
+      });
+
+      const compactionInput: CompactionInput = {
+        transcript: sessionHistory.map(m => ({ role: m.role as 'user' | 'assistant' | 'tool', content: m.content })),
+        recentArtifacts: this.enhancedMemory.getState(agentId).recentEditedFiles.slice(0, 10),
+        activeMode: mode,
+        currentGoal: this.enhancedMemory.getState(agentId).currentGoal,
+      };
+
+      const compactionResult = await compact(compactionInput, provider, mode);
+      const triggerPct = Math.round((historyTokens / profile.recommendedInputBudget) * 100);
+      await this.auditLogger.logCompactionTriggered(
+        agentId,
+        triggerPct,
+        historyTokens,
+        0, // tokensAfter not measured here — summary is compact by design
+        requestId,
+      );
+
+      // Replace history with compact summary as a single assistant turn.
+      const compactMsg: ChatMessage = {
+        role: 'assistant',
+        content: compactionResult.narrative,
+      };
+      // Rebuild messages: system + compact summary + user turn.
+      messages.splice(1, messages.length - 1, compactMsg, userMsg);
+
+      onThought({
+        type: 'thinking',
+        label: `Compaction complete — ${compactionResult.droppedMessages} messages condensed`,
+        timestamp: new Date(),
+      });
+    }
+
     const maxOutputTokens = Math.max(
       128,
       vscode.workspace.getConfiguration('bormagi').get<number>('maxOutputTokens', 1200)
@@ -242,7 +338,7 @@ export class AgentRunner {
             totalChars: size.totalChars,
             totalBytes: size.totalBytes,
             estimatedInputTokens: size.estimatedInputTokens,
-            contextCacheHit: workspaceCtx.cacheHit
+            contextCacheHit: false
           }, null, 2),
           timestamp: new Date()
         });
@@ -262,7 +358,7 @@ export class AgentRunner {
             totalChars: size.totalChars,
             totalBytes: size.totalBytes,
             estimatedInputTokens: size.estimatedInputTokens,
-            contextCacheHit: workspaceCtx.cacheHit
+            contextCacheHit: false
           }
         );
 
@@ -323,6 +419,20 @@ export class AgentRunner {
       const assistantMsg: ChatMessage = { role: 'assistant', content: fullResponse };
       this.memoryManager.addMessage(agentId, assistantMsg);
       await this.memoryManager.persistTurn(agentId, userMessage, fullResponse, toolsUsed);
+
+      // Update enhanced session memory with the files touched this turn.
+      for (const file of toolsUsed.filter(t => t.includes('write') || t.includes('edit'))) {
+        this.enhancedMemory.recordEditedFile(agentId, file);
+      }
+      await this.enhancedMemory.persistState(agentId);
+
+      // Save a session checkpoint so the session can be resumed after restart.
+      await saveCheckpoint(this.workspaceRoot, buildCheckpointState(requestId, {
+        activeMode:            mode,
+        currentPlan:           this.enhancedMemory.getState(agentId).currentPlan,
+        recentEditedFiles:     this.enhancedMemory.getState(agentId).recentEditedFiles,
+        pendingToolArtifacts:  toolsUsed,
+      }));
     }
   }
 

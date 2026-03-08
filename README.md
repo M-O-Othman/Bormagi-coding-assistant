@@ -909,4 +909,96 @@ JSON Schema (Draft 07): [`schemas/agent-completion.schema.json`](schemas/agent-c
 
 ---
 
+## Context Pipeline Configuration
+
+Bormagi's context pipeline intelligently allocates token budget across seven
+assistant modes.  Every budget slot and pipeline setting can be overridden in
+your VS Code user settings (`Ctrl+,`) or workspace settings
+(`.vscode/settings.json`).
+
+### Assistant Modes
+
+The pipeline auto-detects the most appropriate mode from your message using
+rules-based keyword matching.  You can also explicitly set the mode from the
+Bormagi status bar item (bottom-right corner of VS Code).
+
+| Mode | Emoji | When it applies |
+|------|-------|-----------------|
+| `plan` | 📋 | Designing architecture, writing proposals |
+| `edit` | ✏️ | Implementing, refactoring, or modifying code |
+| `debug` | 🐛 | Fixing bugs, errors, crashes, or regressions |
+| `review` | 🔍 | Code reviews, security audits, PR feedback |
+| `explain` | 💡 | Understanding existing code or concepts |
+| `search` | 🔎 | Finding files, symbols, or patterns |
+| `test-fix` | 🧪 | Making failing tests pass |
+
+### Token Budget Slots
+
+Each mode has eight independent token budget slots.  The values below are the
+defaults (spec §FR-6).
+
+| Setting key suffix | Description | edit default |
+|--------------------|-------------|--------------|
+| `stablePrefix` | System-prompt and instruction prefix | 1800 |
+| `memory` | Session memory (facts, preferences) | 1200 |
+| `repoMap` | Repository structural overview | 1200 |
+| `retrievedContext` | Retrieved code snippets and symbols | 7000 |
+| `toolOutputs` | Tool call results (terminal, tests, etc.) | 1200 |
+| `conversationTail` | Recent conversation history | 1000 |
+| `userInput` | Reserved for the user's current message | 800 |
+| `reservedMargin` | Safety margin held back for model output | 3000 |
+
+To override a slot, add an entry like this to your settings:
+
+```jsonc
+// .vscode/settings.json
+{
+  // Give the edit mode more room for retrieved code
+  "bormagi.contextPipeline.budgets.edit.retrievedContext": 10000,
+
+  // Reduce the plan-mode repo map if your repo is large
+  "bormagi.contextPipeline.budgets.plan.repoMap": 1500
+}
+```
+
+Setting keys follow the pattern:
+`bormagi.contextPipeline.budgets.<mode>.<slot>`
+
+Where `<mode>` is one of `plan`, `edit`, `debug`, `review`, `explain`,
+`search`, `test-fix` and `<slot>` is one of the eight slot names above.
+
+### Plan Artifact Settings
+
+When Bormagi detects a multi-file task in plan mode it automatically creates a
+timestamped plan artifact.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `bormagi.contextPipeline.plans.storageLocation` | `"workspace-root"` | `"workspace-root"` writes `PLAN-<ts>.md` to the project root; `"bormagi-plans"` writes only to `.bormagi/plans/`. |
+| `bormagi.contextPipeline.plans.writePlanMd` | `true` | When `true`, writes a human-readable markdown plan alongside the machine-readable JSON. |
+
+Example:
+
+```jsonc
+{
+  "bormagi.contextPipeline.plans.storageLocation": "bormagi-plans",
+  "bormagi.contextPipeline.plans.writePlanMd": false
+}
+```
+
+### Budget Enforcement
+
+When an assembled context exceeds the model's soft token limit the pipeline
+automatically applies the following remediations in order until the context fits:
+
+1. Drop the lowest-ranked reference snippets (30 % at a time)
+2. Reduce repository map detail (file paths only, no symbols)
+3. Truncate large tool outputs to a head + tail excerpt
+4. Keep only the most recent conversation turns up to the `conversationTail` limit
+5. *(last resort)* Switch to plan-only mode — no code edits returned
+
+You will see a VS Code notification when compaction triggers.
+
+---
+
 *Bormagi — professional AI coding agents for your workspace.*

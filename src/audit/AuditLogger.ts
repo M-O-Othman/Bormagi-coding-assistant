@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { ConfigManager } from '../config/ConfigManager';
 import { MCPToolResult } from '../types';
+import type { AssistantMode, RequestTelemetry } from '../context/types';
+import type { BudgetCheckResult } from '../context/types';
 
 const GENESIS_HASH = '0'.repeat(64);
 
@@ -235,6 +237,97 @@ export class AuditLogger {
     await this.log({ event: 'WF_APPROVAL_GRANTED', workflowId, checkpointId, grantedBy });
   }
 
+  // ─── Context pipeline events ───────────────────────────────────────────────
+
+  /** Log when a conversation is compacted to free context window space. */
+  async logCompactionTriggered(
+    agentId: string,
+    triggerPct: number,
+    tokensBefore: number,
+    tokensAfter: number,
+    summaryId: string,
+  ): Promise<void> {
+    await this.log({
+      event: 'COMPACTION_TRIGGERED',
+      agent: agentId,
+      triggerPct,
+      tokensBefore,
+      tokensAfter,
+      summaryId,
+    });
+  }
+
+  /** Log when budget enforcement degrades context (one or more actions applied). */
+  async logBudgetDegraded(
+    requestId: string,
+    mode: AssistantMode,
+    actionsApplied: BudgetCheckResult['actions'],
+    estimatedTokensBefore: number,
+    estimatedTokensAfter: number,
+  ): Promise<void> {
+    await this.log({
+      event: 'BUDGET_DEGRADED',
+      requestId,
+      mode,
+      actionsApplied,
+      estimatedTokensBefore,
+      estimatedTokensAfter,
+    });
+  }
+
+  /** Log a prompt-cache hit (avoids redundant token processing). */
+  async logCacheHit(
+    agentId: string,
+    cacheKey: string,
+    segmentKind: string,
+    savedTokens: number,
+  ): Promise<void> {
+    await this.log({
+      event: 'CACHE_HIT',
+      agent: agentId,
+      cacheKey,
+      segmentKind,
+      savedTokens,
+    });
+  }
+
+  /** Log a prompt-cache miss (segment must be re-processed). */
+  async logCacheMiss(
+    agentId: string,
+    cacheKey: string,
+    segmentKind: string,
+  ): Promise<void> {
+    await this.log({
+      event: 'CACHE_MISS',
+      agent: agentId,
+      cacheKey,
+      segmentKind,
+    });
+  }
+
+  /** Log the outcome of mode classification for a user request. */
+  async logModeClassified(
+    requestId: string,
+    mode: AssistantMode,
+    confidence: number,
+    userOverride: boolean,
+    reason: string,
+  ): Promise<void> {
+    await this.log({
+      event: 'MODE_CLASSIFIED',
+      requestId,
+      mode,
+      confidence,
+      userOverride,
+      reason,
+    });
+  }
+
+  /** Log a full request telemetry snapshot at the end of the pipeline run. */
+  async logRequestTelemetry(telemetry: RequestTelemetry): Promise<void> {
+    await this.log({ event: 'REQUEST_TELEMETRY', ...telemetry });
+  }
+
   // ─── NF2-AI-002: Prompt injection detection ────────────────────────────────
 
   /**
@@ -250,4 +343,5 @@ export class AuditLogger {
       note: 'Offending content stripped from structured completion payload.',
     });
   }
+
 }
