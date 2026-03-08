@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(npx jest --testPathPattern=\"mode-classifier|ModePromptLoader|prompt-assembler\" --no-coverage)",
+      "Bash(npx jest:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(grep:*)"
+    ]
+  }
+}
