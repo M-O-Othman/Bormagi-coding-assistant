@@ -329,8 +329,12 @@ export class AgentRunner {
     }
 
     // 2. Load mode budget and model profile.
+    //    Cap recommendedInputBudget to maxTokens to respect API rate limits.
     const budget = getModeBudget(mode);
-    const profile = getActiveModelProfile(effectiveProvider);
+    const _baseProfile = getActiveModelProfile(effectiveProvider);
+    const profile = maxTokens < _baseProfile.recommendedInputBudget
+      ? { ..._baseProfile, recommendedInputBudget: maxTokens }
+      : _baseProfile;
 
     // 3. Load repo map from .bormagi/repo-map.json (null if not yet built).
     const repoMap = loadRepoMap(this.workspaceRoot);
@@ -341,7 +345,7 @@ export class AgentRunner {
     const candidates = await retrieveCandidates(
       retrievalQuery,
       { workspaceRoot: this.workspaceRoot, repoMap, activeFilePath: activeFile, agentId },
-      budget.retrievedContext,
+      Math.min(budget.retrievedContext, Math.floor(maxTokens * 0.2)),
     );
 
     // 5. Build candidate paths for YAML instruction glob matching
@@ -462,6 +466,22 @@ export class AgentRunner {
       onContextUpdate(ctxItems, tokenHealth);
     }
 
+    // Hard-cap fullSystem to leave headroom for conversation history and tools.
+    // Keeps the total request under the rate-limit ceiling (maxTokens).
+    const systemBudget = Math.floor(maxTokens * 0.6);
+    const systemTokenEstimate = estimateTokens(fullSystem);
+    if (systemTokenEstimate > systemBudget) {
+      const charsPerToken = 4;
+      fullSystem =
+        fullSystem.slice(0, systemBudget * charsPerToken) +
+        '\n\n[System prompt truncated to fit rate limit budget]';
+      onThought({
+        type: 'thinking',
+        label: `System prompt trimmed: ~${systemTokenEstimate} → ~${systemBudget} tokens (rate limit: ${maxTokens})`,
+        timestamp: new Date(),
+      });
+    }
+
     // 9. Build conversation messages (system + history + user turn).
     //    Bootstrap injection and ad-hoc retrieval context are now handled by the
     //    context pipeline above, so those intermediate messages are no longer needed.
@@ -483,6 +503,33 @@ export class AgentRunner {
 
     if (enhancedPipeline && this.currentCheckpointId) {
       messages.push({ role: 'system', content: `[System Notice]: A Git Checkpoint was successfully created before this task began (ID: ${this.currentCheckpointId}).` });
+    }
+
+    // Hard trim history to enforce the maxTokens rate-limit ceiling.
+    // Drop oldest non-system turns until the total estimated token count fits.
+    {
+      const rateLimitCeiling = Math.floor(maxTokens * 0.9);
+      const totalEst = estimateTokens(messages.map(m => m.content).join(' '));
+      if (totalEst > rateLimitCeiling) {
+        let removed = 0;
+        // Find first non-system message index (skip the system prompt at index 0).
+        let i = 1;
+        while (i < messages.length - 1 && estimateTokens(messages.map(m => m.content).join(' ')) > rateLimitCeiling) {
+          if (messages[i].role !== 'system') {
+            messages.splice(i, 1);
+            removed++;
+          } else {
+            i++;
+          }
+        }
+        if (removed > 0) {
+          onThought({
+            type: 'thinking',
+            label: `History trimmed: dropped ${removed} oldest turn(s) to fit rate limit (${maxTokens} tokens)`,
+            timestamp: new Date(),
+          });
+        }
+      }
     }
 
     // Secret scan before sending context to the model.

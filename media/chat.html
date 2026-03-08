@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; style-src {{CSP_SOURCE}}; script-src {{CSP_SOURCE}} 'nonce-{{NONCE}}';" />
+    content="default-src 'none'; style-src {{CSP_SOURCE}} 'unsafe-inline'; script-src {{CSP_SOURCE}} 'nonce-{{NONCE}}';" />
   <title>Bormagi</title>
   <link rel="stylesheet" href="{{CHAT_CSS_URI}}" />
 </head>
@@ -135,7 +135,7 @@
   <!-- ── INPUT ───────────────────────────────────────────────────────────────── -->
   <div id="input-area">
     <!-- Mode pill + menu -->
-    <div id="mode-pill-wrap" style="position:relative">
+    <div id="mode-pill-wrap">
       <button id="mode-pill">💬 Ask <span class="mode-chevron">▾</span></button>
       <div id="mode-menu"></div>
     </div>
