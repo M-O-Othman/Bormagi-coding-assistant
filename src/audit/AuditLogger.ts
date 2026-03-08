@@ -343,4 +343,5 @@ export class AuditLogger {
       note: 'Offending content stripped from structured completion payload.',
     });
   }
+
 }

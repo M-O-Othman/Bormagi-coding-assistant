@@ -30,13 +30,16 @@ import { KnowledgeManager } from '../knowledge/KnowledgeManager';
 import { classifyMode } from '../context/ModeClassifier';
 import { getModeBudget } from '../config/ModeBudgets';
 import { getActiveModelProfile } from '../config/ModelProfiles';
-import { enforcePreflightBudget, estimateEnvelopeTokens } from '../context/BudgetEngine';
+import { enforcePreflightBudget, estimateEnvelopeTokens, estimateTokens } from '../context/BudgetEngine';
 import { resolveInstructions } from '../context/InstructionResolver';
 import { retrieveCandidates } from '../retrieval/RetrievalOrchestrator';
 import { buildContextEnvelope } from '../context/ContextEnvelope';
 import { assemblePrompt } from '../context/PromptAssembler';
 import { loadRepoMap } from '../index/RepoMapStore';
-import type { AssistantMode } from '../context/types';
+import { shouldCompact, compact, formatCompactedHistory } from '../context/ContextCompactor';
+import { saveCheckpoint, buildCheckpointState } from '../memory/SessionCheckpoint';
+import { EnhancedSessionMemory } from '../memory/EnhancedSessionMemory';
+import type { AssistantMode, CompactionInput } from '../context/types';
 
 // Re-export callback types so callers that previously imported from this module continue to work.
 export type { ApprovalCallback, DiffCallback, ThoughtCallback };
@@ -53,6 +56,7 @@ export class AgentRunner {
   private readonly toolDispatcher: ToolDispatcher;
   private readonly bootstrapInjected = new Set<string>();
   private readonly contextCache = new Map<string, WorkspaceContextSnapshot>();
+  readonly enhancedMemory: EnhancedSessionMemory;
 
   constructor(
     private readonly agentManager: AgentManager,
@@ -67,6 +71,7 @@ export class AgentRunner {
     private readonly knowledgeManager?: KnowledgeManager
   ) {
     this.toolDispatcher = new ToolDispatcher(mcpHost, undoManager, auditLogger, workspaceRoot);
+    this.enhancedMemory = new EnhancedSessionMemory(workspaceRoot);
   }
 
   async run(
@@ -249,9 +254,53 @@ export class AgentRunner {
       });
     }
 
-    // Model stream loop.
+    // ─── Context compaction ───────────────────────────────────────────────────
+    // Estimate history token count and compact proactively when it approaches
+    // the model's soft input budget (80 % threshold, ≥ 6 messages).
+    const historyTokens = estimateTokens(sessionHistory.map(m => m.content).join(' '));
     const providerConfig = { ...agentConfig, provider: effectiveProvider };
     const provider = ProviderFactory.create(providerConfig, apiKey);
+
+    if (shouldCompact(historyTokens, profile, sessionHistory.length)) {
+      onThought({
+        type: 'thinking',
+        label: 'Compacting conversation history…',
+        detail: `History: ~${historyTokens} tokens, threshold: ${Math.floor(profile.recommendedInputBudget * 0.8)}`,
+        timestamp: new Date(),
+      });
+
+      const compactionInput: CompactionInput = {
+        transcript: sessionHistory.map(m => ({ role: m.role as 'user' | 'assistant' | 'tool', content: m.content })),
+        recentArtifacts: this.enhancedMemory.getState(agentId).recentEditedFiles.slice(0, 10),
+        activeMode: mode,
+        currentGoal: this.enhancedMemory.getState(agentId).currentGoal,
+      };
+
+      const compactionResult = await compact(compactionInput, provider, mode);
+      const triggerPct = Math.round((historyTokens / profile.recommendedInputBudget) * 100);
+      await this.auditLogger.logCompactionTriggered(
+        agentId,
+        triggerPct,
+        historyTokens,
+        0, // tokensAfter not measured here — summary is compact by design
+        requestId,
+      );
+
+      // Replace history with compact summary as a single assistant turn.
+      const compactMsg: ChatMessage = {
+        role: 'assistant',
+        content: compactionResult.narrative,
+      };
+      // Rebuild messages: system + compact summary + user turn.
+      messages.splice(1, messages.length - 1, compactMsg, userMsg);
+
+      onThought({
+        type: 'thinking',
+        label: `Compaction complete — ${compactionResult.droppedMessages} messages condensed`,
+        timestamp: new Date(),
+      });
+    }
+
     const maxOutputTokens = Math.max(
       128,
       vscode.workspace.getConfiguration('bormagi').get<number>('maxOutputTokens', 1200)
@@ -370,6 +419,20 @@ export class AgentRunner {
       const assistantMsg: ChatMessage = { role: 'assistant', content: fullResponse };
       this.memoryManager.addMessage(agentId, assistantMsg);
       await this.memoryManager.persistTurn(agentId, userMessage, fullResponse, toolsUsed);
+
+      // Update enhanced session memory with the files touched this turn.
+      for (const file of toolsUsed.filter(t => t.includes('write') || t.includes('edit'))) {
+        this.enhancedMemory.recordEditedFile(agentId, file);
+      }
+      await this.enhancedMemory.persistState(agentId);
+
+      // Save a session checkpoint so the session can be resumed after restart.
+      await saveCheckpoint(this.workspaceRoot, buildCheckpointState(requestId, {
+        activeMode:            mode,
+        currentPlan:           this.enhancedMemory.getState(agentId).currentPlan,
+        recentEditedFiles:     this.enhancedMemory.getState(agentId).recentEditedFiles,
+        pendingToolArtifacts:  toolsUsed,
+      }));
     }
   }
 
