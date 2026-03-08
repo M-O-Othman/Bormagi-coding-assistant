@@ -182,6 +182,7 @@ export class AgentRunner {
     onDiffSummary?: DiffSummaryCallback,
     onCheckpointCreated?: CheckpointCreatedCallback,
     onContextUpdate?: ContextUpdateCallback,
+    userMode?: import('../context/types').AssistantMode,
   ): Promise<void> {
     const agentConfig = this.agentManager.getAgent(agentId);
     if (!agentConfig) {
@@ -285,9 +286,9 @@ export class AgentRunner {
     const projectConfig = await this.configManager.readProjectConfig();
     const projectName = projectConfig?.project.name ?? '';
 
-    // 1. Classify mode from user message and log to audit.
+    // 1. Classify mode — use explicitly set userMode if provided, otherwise auto-detect.
     const modeDecision = classifyMode(userMessage);
-    const mode: AssistantMode = modeDecision.mode;
+    const mode: AssistantMode = userMode ?? modeDecision.mode;
     const requestId = `${agentId}-${Date.now()}`;
     const vsConfig = vscode.workspace.getConfiguration('bormagi');
     const enhancedPipeline = vsConfig.get<boolean>('contextPipeline.enabled', false);

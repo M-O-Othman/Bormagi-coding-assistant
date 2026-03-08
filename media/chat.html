@@ -17,16 +17,15 @@
     <span id="brand">Bormagi</span>
 
     <div id="agent-selector-wrap">
-      <select id="agent-selector" onchange="onDropdownChange()">
+      <select id="agent-selector">
         <option value="">— Select agent —</option>
       </select>
     </div>
 
     <span id="git-status" title="Current branch"></span>
-    <span id="checkpoint-pill" title="Click to view checkpoint history"
-      onclick="vscode.postMessage({ type: 'open_checkpoints' })"></span>
+    <span id="checkpoint-pill" title="Click to view checkpoint history"></span>
 
-    <button class="tb-btn" onclick="refreshAgents()" title="Refresh agents list">
+    <button class="tb-btn" id="btn-refresh-agents" title="Refresh agents list">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
         <path d="M13.5 8a5.5 5.5 0 1 1-1.1-3.3l-1.2.9A4 4 0 1 0 12 8h-2l2.5-2.5L15 8h-1.5z" />
       </svg>
@@ -35,14 +34,14 @@
     <span id="provider-pill"></span>
 
     <!-- Primary actions (always visible) -->
-    <button class="tb-btn" onclick="clearChat()" title="Clear conversation">
+    <button class="tb-btn" id="btn-clear-chat" title="Clear conversation">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
         <path
           d="M10.12 1H5.88L5 2H2v1h12V2h-3l-.88-1zM4 5v9a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V5H4zm2 2h1v6H6V7zm3 0h1v6H9V7z" />
       </svg>
     </button>
 
-    <button class="tb-btn" onclick="openAgentSettings()" title="Setup agents — add API keys, edit prompts">
+    <button class="tb-btn" id="btn-agent-settings" title="Setup agents — add API keys, edit prompts">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
         <path
           d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z" />
@@ -51,7 +50,7 @@
       </svg>
     </button>
 
-    <button class="tb-btn" onclick="openMeeting()" title="Start Virtual Meeting">
+    <button class="tb-btn" id="btn-open-meeting" title="Start Virtual Meeting">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
         <path d="M7 14s-1 0-1-1 1-4 5-4 5 3 5 4-1 1-1 1H7zm4-6a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" />
         <path fill-rule="evenodd"
@@ -61,7 +60,7 @@
     </button>
 
     <!-- Log drawer toggle -->
-    <button class="tb-btn" id="log-toggle-btn" onclick="toggleDrawer()" title="Tool log">
+    <button class="tb-btn" id="log-toggle-btn" title="Tool log">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
         <path d="M2 2h12v1H2V2zm0 3h12v1H2V5zm0 3h8v1H2V8zm0 3h6v1H2v-1z" />
       </svg>
@@ -69,7 +68,7 @@
 
     <!-- Secondary actions (overflow menu) -->
     <div id="overflow-wrap">
-      <button class="tb-btn" onclick="toggleOverflow()" title="More actions">
+      <button class="tb-btn" id="btn-overflow" title="More actions">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
           <circle cx="4" cy="8" r="1.5" />
           <circle cx="8" cy="8" r="1.5" />
@@ -77,14 +76,14 @@
         </svg>
       </button>
       <div id="overflow-dropdown">
-        <button class="ovf-item" onclick="exportConversation(); closeOverflow()">
+        <button class="ovf-item" id="btn-export">
           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
             <path
               d="M13 1H3a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm-1 12H4V3h8v10zM6 6h4v1H6zm0 2h4v1H6zm0 2h3v1H6z" />
           </svg>
           Export conversation
         </button>
-        <button class="ovf-item" onclick="openDashboard(); closeOverflow()">
+        <button class="ovf-item" id="btn-dashboard">
           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
             <path
               d="M1 1h6v6H1V1zm1 1v4h4V2H2zm7-1h6v6H9V1zm1 1v4h4V2h-4zM1 9h6v6H1V9zm1 1v4h4v-4H2zm7-1h6v6H9V9zm1 1v4h4v-4h-4z" />
@@ -126,7 +125,7 @@
 
   <!-- ── CONTEXT RAIL ─────────────────────────────────────────────────────────── -->
   <div id="context-rail">
-    <div id="context-rail-header" onclick="toggleContextRail()">
+    <div id="context-rail-header">
       <span id="context-rail-title">Active Context</span>
       <span id="context-rail-chevron">▼</span>
     </div>
@@ -142,7 +141,7 @@
     </div>
     <div id="input-box">
       <textarea id="user-input" rows="1" placeholder="Message… /help for slash commands · Shift+Enter for new line"></textarea>
-      <button id="send-btn" onclick="sendMessage()" title="Send (Enter)">
+      <button id="send-btn" title="Send (Enter)">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
           <path d="M1.5 1.5l13 6.5-13 6.5V9.75l9.5-1.75-9.5-1.75V1.5z" />
         </svg>
@@ -156,14 +155,14 @@
   <div id="status-bar">
     <span id="sb-dot"></span>
     <span id="sb-text"></span>
-    <button id="sb-dismiss" title="Dismiss" onclick="dismissStatus()">×</button>
+    <button id="sb-dismiss" title="Dismiss">×</button>
   </div>
 
   <!-- ── LOG DRAWER ────────────────────────────────────────────────────── -->
   <div id="log-drawer">
     <div id="log-drawer-hd">
       <span>Tool Log</span>
-      <button id="log-close" title="Close log" onclick="toggleDrawer()">×</button>
+      <button id="log-close" title="Close log">×</button>
     </div>
     <div id="log-feed">
       <div id="log-empty">No tool calls yet</div>

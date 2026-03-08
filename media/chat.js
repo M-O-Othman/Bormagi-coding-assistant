@@ -1091,10 +1091,13 @@
           showActionCard(m.id, m.prompt, m.actions, { kind: m.kind, reason: m.reason, scope: m.scope, risk: m.risk });
           break;
 
-        case 'mode_changed':
+        case 'mode_changed': {
           currentMode = m.mode;
-          updateModePill(m.modeLabel || m.mode);
+          // Prefer the full emoji label from MODES; fall back to backend modeLabel
+          const _modeEntry = MODES.find(x => x.id === m.mode);
+          updateModePill(_modeEntry ? _modeEntry.label : (m.modeLabel || m.mode));
           break;
+        }
 
         case 'compaction_notice': {
           const row = document.createElement('div');
@@ -1284,4 +1287,24 @@
       }
     }
     initModePicker();
+
+    // ── Wire toolbar button event listeners (CSP: no inline handlers allowed) ──
+    agentSel.addEventListener('change', onDropdownChange);
+    sendBtn.addEventListener('click', sendMessage);
+
+    document.getElementById('btn-refresh-agents')?.addEventListener('click', refreshAgents);
+    document.getElementById('btn-clear-chat')?.addEventListener('click', clearChat);
+    document.getElementById('btn-agent-settings')?.addEventListener('click', openAgentSettings);
+    document.getElementById('btn-open-meeting')?.addEventListener('click', openMeeting);
+    document.getElementById('log-toggle-btn')?.addEventListener('click', toggleDrawer);
+    document.getElementById('log-close')?.addEventListener('click', toggleDrawer);
+    document.getElementById('sb-dismiss')?.addEventListener('click', dismissStatus);
+    document.getElementById('btn-overflow')?.addEventListener('click', toggleOverflow);
+    document.getElementById('btn-export')?.addEventListener('click', () => { exportConversation(); closeOverflow(); });
+    document.getElementById('btn-dashboard')?.addEventListener('click', () => { openDashboard(); closeOverflow(); });
+    document.getElementById('checkpoint-pill')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'open_checkpoints' });
+    });
+    document.getElementById('context-rail-header')?.addEventListener('click', toggleContextRail);
+
     vscode.postMessage({ type: 'refresh_agents' });

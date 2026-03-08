@@ -282,6 +282,8 @@ export class ChatController {
         (items, tokenHealth) => {
           this.post({ type: 'context_update', items, tokenHealth });
         },
+        // userMode — pass explicitly selected mode so AgentRunner doesn't auto-override it
+        this.currentMode as import('../context/types').AssistantMode,
       );
     } catch (err) {
       this.post({ type: 'error', message: String(err) });
