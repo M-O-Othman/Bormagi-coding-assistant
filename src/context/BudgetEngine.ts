@@ -52,9 +52,9 @@ export function checkBudget(
 
 // ─── Token estimation ─────────────────────────────────────────────────────────
 
-/** Rough token estimate: ~4 chars per token (GPT/Claude heuristic). */
+/** Rough token estimate: ~3.5 chars per token (conservative GPT/Claude heuristic). */
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  return Math.ceil(text.length / 3.5);
 }
 
 /** Sum token estimates across a flat array of candidates. */

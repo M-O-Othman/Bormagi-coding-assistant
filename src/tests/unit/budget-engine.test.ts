@@ -107,12 +107,12 @@ describe('checkBudget', () => {
 
 describe('estimateTokens', () => {
   test('estimates ~4 chars per token', () => {
-    expect(estimateTokens('a'.repeat(400))).toBe(100);
+    expect(estimateTokens('a'.repeat(400))).toBe(Math.ceil(400 / 3.5));
   });
 
   test('rounds up for fractional tokens', () => {
     expect(estimateTokens('abc')).toBe(1);   // 3/4 → ceil → 1
-    expect(estimateTokens('abcde')).toBe(2); // 5/4 → ceil → 2
+    expect(estimateTokens('a'.repeat(5))).toBe(Math.ceil(5 / 3.5)); // 2
   });
 
   test('returns 0 for empty string', () => {

@@ -250,6 +250,15 @@ export class AgentRunner {
 
     const providerParams = { apiKey: apiKey ?? '', ...effectiveProvider };
     const maxTokens = vscode.workspace.getConfiguration('bormagi').get<number>('advanced.maxTokens') || 30000;
+    // Ensure the output tokens matches the value we deducted from the safety ceiling
+    const vsConfig = vscode.workspace.getConfiguration('bormagi');
+    const actualMaxOutputTokens = Math.max(
+      vsConfig.get<number>('maxOutputTokens', 1200),
+      // Bormagi's default for some operations if not set is 1200
+      1200
+    );
+    // Deduct maxOutputTokens to ensure input + output stays under the rate limit
+    const safeInputTokens = Math.max(1000, maxTokens - actualMaxOutputTokens);
 
     // ─── Semantic Session Setup ───────────────────────────────────────────────
     // We instantiate a TurnMemory to track episodic context for this specific run
@@ -309,7 +318,6 @@ export class AgentRunner {
     }
     const mode: AssistantMode = userMode ?? modeDecision.mode;
     const requestId = `${agentId}-${Date.now()}`;
-    const vsConfig = vscode.workspace.getConfiguration('bormagi');
     const enhancedPipeline = vsConfig.get<boolean>('contextPipeline.enabled', false);
 
     // ─── Phase-1: Git Capabilities & Pre-Edit State (FR-001, FR-006, FR-020) ─
@@ -351,8 +359,8 @@ export class AgentRunner {
     //    Cap recommendedInputBudget to maxTokens to respect API rate limits.
     const budget = getModeBudget(mode);
     const _baseProfile = getActiveModelProfile(effectiveProvider);
-    const profile = maxTokens < _baseProfile.recommendedInputBudget
-      ? { ..._baseProfile, recommendedInputBudget: maxTokens }
+    const profile = safeInputTokens < _baseProfile.recommendedInputBudget
+      ? { ..._baseProfile, recommendedInputBudget: safeInputTokens }
       : _baseProfile;
 
     // 3. Load repo map from .bormagi/repo-map.json (null if not yet built).
@@ -364,7 +372,7 @@ export class AgentRunner {
     const candidates = await retrieveCandidates(
       retrievalQuery,
       { workspaceRoot: this.workspaceRoot, repoMap, activeFilePath: activeFile, agentId },
-      Math.min(budget.retrievedContext, Math.floor(maxTokens * 0.2)),
+      Math.min(budget.retrievedContext, Math.floor(safeInputTokens * 0.2)),
     );
 
     // 5. Build candidate paths for YAML instruction glob matching
@@ -487,8 +495,8 @@ export class AgentRunner {
     }
 
     // Hard-cap fullSystem to leave headroom for conversation history and tools.
-    // Keeps the total request under the rate-limit ceiling (maxTokens).
-    const systemBudget = Math.floor(maxTokens * 0.6);
+    // Keeps the total request under the rate-limit ceiling (safeInputTokens).
+    const systemBudget = Math.floor(safeInputTokens * 0.6);
     const systemTokenEstimate = estimateTokens(fullSystem);
     if (systemTokenEstimate > systemBudget) {
       const charsPerToken = 4;
@@ -497,7 +505,7 @@ export class AgentRunner {
         '\n\n[System prompt truncated to fit rate limit budget]';
       onThought({
         type: 'thinking',
-        label: `System prompt trimmed: ~${systemTokenEstimate} → ~${systemBudget} tokens (rate limit: ${maxTokens})`,
+        label: `System prompt trimmed: ~${systemTokenEstimate} → ~${systemBudget} tokens (rate limit: ${safeInputTokens})`,
         timestamp: new Date(),
       });
     }
@@ -528,7 +536,7 @@ export class AgentRunner {
     // Hard trim history to enforce the maxTokens rate-limit ceiling.
     // Drop oldest non-system turns until the total estimated token count fits.
     {
-      const rateLimitCeiling = Math.floor(maxTokens * 0.9);
+      const rateLimitCeiling = Math.floor(safeInputTokens * 0.85);
       const totalEst = estimateTokens(messages.map(m => m.content).join(' '));
       if (totalEst > rateLimitCeiling) {
         let removed = 0;
@@ -545,7 +553,7 @@ export class AgentRunner {
         if (removed > 0) {
           onThought({
             type: 'thinking',
-            label: `History trimmed: dropped ${removed} oldest turn(s) to fit rate limit (${maxTokens} tokens)`,
+            label: `History trimmed: dropped ${removed} oldest turn(s) to fit rate limit (${safeInputTokens} tokens)`,
             timestamp: new Date(),
           });
         }
@@ -702,7 +710,7 @@ export class AgentRunner {
         isFirstModelRequest = false;
       }
 
-      for await (const event of provider.stream(messages, tools, maxOutputTokens)) {
+      for await (const event of provider.stream(messages, tools, actualMaxOutputTokens)) {
         if (event.type === 'provider_headers') {
           const importantHeaders = this.selectImportantHeaders(event.headers);
           await this.auditLogger.logLLMResponseHeaders(
