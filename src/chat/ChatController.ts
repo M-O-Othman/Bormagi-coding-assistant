@@ -30,7 +30,8 @@ export type MessageToWebview =
   | { type: 'plan_artifact'; plan: { id: string; objective: string; milestones: Array<{ id: string; title: string; tasks: string[]; validations: string[]; status: string }>; decisions: string[]; blockers: string[] } }
   | { type: 'diff_summary'; changedFiles: string[]; intent: string; risks?: string[]; checkpointRef?: string }
   | { type: 'checkpoint_created'; checkpointId: string; label: string; changedFiles: string[] }
-  | { type: 'resume_state'; taskTitle: string; mode: string; lastSummary: string; nextAction: string; selectedFiles: string[]; checkpointId?: string; planId?: string; blockers: string[] };
+  | { type: 'resume_state'; taskTitle: string; mode: string; lastSummary: string; nextAction: string; selectedFiles: string[]; checkpointId?: string; planId?: string; blockers: string[] }
+  | { type: 'context_update'; items: Array<{ id: string; itemType: string; label: string; source: string; reasonIncluded: string; estimatedTokens?: number; removable: boolean }>; tokenHealth: 'healthy' | 'busy' | 'near-limit' };
 
 // Human-readable mode labels for UI display
 const MODE_LABELS: Record<string, string> = {
@@ -99,6 +100,13 @@ export class ChatController {
         // Suppress errors during polling
       }
     }, 5000);
+  }
+
+  dispose(): void {
+    if (this.gitPollInterval) {
+      clearInterval(this.gitPollInterval);
+      this.gitPollInterval = undefined;
+    }
   }
 
   /** Inject workflow engine after construction (called from extension.ts when workflow is enabled). */
@@ -240,7 +248,40 @@ export class ChatController {
             sessionOutputTokens: this.sessionOutputTokens,
             model
           });
-        }
+        },
+        // onCompaction
+        (droppedCount, preservedItems) => {
+          this.post({ type: 'compaction_notice', droppedCount, preservedItems });
+        },
+        // onPlanCreated
+        (plan) => {
+          this.post({
+            type: 'plan_artifact',
+            plan: {
+              id: plan.id,
+              objective: plan.objective,
+              milestones: plan.milestones.map(m => ({
+                id: m.id, title: m.title, tasks: m.tasks,
+                validations: m.validations, status: m.status,
+              })),
+              decisions: plan.decisions ?? [],
+              blockers: plan.blockers ?? [],
+            },
+          });
+        },
+        // onDiffSummary
+        (changedFiles, intent, checkpointRef) => {
+          this.post({ type: 'diff_summary', changedFiles, intent, checkpointRef });
+        },
+        // onCheckpointCreated
+        (checkpointId, label, changedFiles) => {
+          this.post({ type: 'checkpoint_created', checkpointId, label, changedFiles });
+          void this.auditLogger.logCheckpointEvent('created', checkpointId, changedFiles, agentId);
+        },
+        // onContextUpdate
+        (items, tokenHealth) => {
+          this.post({ type: 'context_update', items, tokenHealth });
+        },
       );
     } catch (err) {
       this.post({ type: 'error', message: String(err) });
@@ -285,6 +326,10 @@ export class ChatController {
         }
         break;
       }
+      case 'remove_context_item':
+        // Acknowledged — item already removed optimistically in the UI.
+        // Future: persist exclusion list to workspace state.
+        break;
     }
   }
 

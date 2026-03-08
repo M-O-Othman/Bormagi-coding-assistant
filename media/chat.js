@@ -386,15 +386,43 @@
 
     // ── Append thought event ───────────────────────────────────────────────────
 
+    // ── Tool category icons ────────────────────────────────────────────────────
+
+    const TOOL_CATEGORY_ICONS = {
+      read:    '📄',
+      edit:    '✏️',
+      write:   '✏️',
+      search:  '🔎',
+      run:     '▶️',
+      git:     '🌿',
+      fetch:   '🌐',
+      error:   '⚠️',
+      thinking:'◎',
+    };
+
+    function getThoughtIcon(event) {
+      if (event.type === 'error') return TOOL_CATEGORY_ICONS.error;
+      if (event.type === 'thinking') return TOOL_CATEGORY_ICONS.thinking;
+      const label = (event.label || '').toLowerCase();
+      if (label.includes('read') || label.includes('file')) return TOOL_CATEGORY_ICONS.read;
+      if (label.includes('write') || label.includes('edit') || label.includes('patch')) return TOOL_CATEGORY_ICONS.edit;
+      if (label.includes('search') || label.includes('grep') || label.includes('find')) return TOOL_CATEGORY_ICONS.search;
+      if (label.includes('run') || label.includes('exec') || label.includes('command')) return TOOL_CATEGORY_ICONS.run;
+      if (label.includes('git') || label.includes('commit') || label.includes('branch')) return TOOL_CATEGORY_ICONS.git;
+      if (label.includes('fetch') || label.includes('http') || label.includes('request')) return TOOL_CATEGORY_ICONS.fetch;
+      return event.type === 'tool_result' ? '←' : '→';
+    }
+
     function appendThought(event) {
       if (!currentThoughtStrip) return;
 
       const body = currentThoughtStrip.querySelector('.thought-body');
       const counter = currentThoughtStrip.querySelector('.thought-hd-label');
 
-      const icon = event.type === 'tool_call' ? '→' :
-        event.type === 'tool_result' ? '←' :
-          event.type === 'thinking' ? '◎' : '⚠';
+      const icon = getThoughtIcon(event);
+      const detail = event.detail ? String(event.detail) : '';
+      const isLong = detail.length > 300;
+      const detailId = 'td-' + Math.random().toString(36).slice(2);
 
       const item = document.createElement('div');
       item.className = 'thought-item';
@@ -402,9 +430,13 @@
         '<div class="thought-item-row">' +
         '<span class="t-icon">' + icon + '</span>' +
         '<span class="t-label">' + esc(event.label) + '</span>' +
+        (event.durationMs != null ? '<span class="t-duration">' + event.durationMs + 'ms</span>' : '') +
         '</div>' +
-        (event.detail
-          ? '<div class="thought-detail">' + esc(String(event.detail).slice(0, 600)) + '</div>'
+        (detail
+          ? '<div class="thought-detail' + (isLong ? ' thought-detail-collapsed' : '') + '" id="' + detailId + '">' +
+            esc(isLong ? detail.slice(0, 300) + '…' : detail) +
+            '</div>' +
+            (isLong ? '<button class="thought-expand-btn" onclick="toggleThoughtDetail(\'' + detailId + '\',this,' + JSON.stringify(esc(detail)) + ')">Show more</button>' : '')
           : '');
 
       body.appendChild(item);
@@ -416,6 +448,14 @@
       // Mirror to log drawer
       appendToDrawer(event);
     }
+
+    window.toggleThoughtDetail = function (id, btn, fullText) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const collapsed = el.classList.toggle('thought-detail-collapsed');
+      el.innerHTML = collapsed ? fullText.slice(0, 300) + '…' : fullText;
+      btn.textContent = collapsed ? 'Show more' : 'Show less';
+    };
 
     // ── End stream ─────────────────────────────────────────────────────────────
 
@@ -559,7 +599,10 @@
 
     // ── Inline action approval cards ──────────────────────────────────────────
 
-    function showActionCard(id, prompt, actions) {
+    const RISK_COLORS = { low: 'var(--vscode-terminal-ansiGreen,#23d18b)', medium: 'var(--vscode-editorWarning-foreground,#cca700)', high: 'var(--vscode-inputValidation-errorBorder,#f14c4c)' };
+
+    function showActionCard(id, prompt, actions, meta) {
+      // meta: { kind, reason, scope, risk, alternatives }
       hideEmpty();
       const row = document.createElement('div');
       row.className = 'msg action-card';
@@ -573,14 +616,30 @@
           esc(a) + '</button>';
       }).join('');
 
+      const riskColor = meta?.risk ? RISK_COLORS[meta.risk] || '' : '';
+      const riskBadge = meta?.risk
+        ? '<span class="action-risk-badge" style="color:' + riskColor + '">● ' + meta.risk.toUpperCase() + '</span>'
+        : '';
+      const kindBadge = meta?.kind
+        ? '<span class="action-kind-badge">' + esc(meta.kind) + '</span>'
+        : '';
+      const reasonHtml = meta?.reason
+        ? '<div class="action-meta-row"><b>Reason:</b> ' + esc(meta.reason) + '</div>'
+        : '';
+      const scopeHtml = meta?.scope?.length
+        ? '<div class="action-meta-row"><b>Scope:</b> ' + meta.scope.map(s => '<code>' + esc(s) + '</code>').join(', ') + '</div>'
+        : '';
+
       row.innerHTML =
         '<div class="msg-header">' +
         '<div class="msg-avatar">⚡</div>' +
         '<span class="msg-sender">Action Required</span>' +
+        (kindBadge || riskBadge ? '<span style="display:flex;gap:4px;margin-left:auto">' + kindBadge + riskBadge + '</span>' : '') +
         '<span class="msg-time">' + ts() + '</span>' +
         '</div>' +
         '<div class="msg-bubble"><div class="msg-content">' +
         '<p>' + esc(prompt) + '</p>' +
+        reasonHtml + scopeHtml +
         '<div class="action-btns">' + btnsHtml + '</div>' +
         '</div></div>';
 
@@ -614,16 +673,32 @@
 
     // ── Misc ───────────────────────────────────────────────────────────────────
 
+    const EXAMPLE_PROMPTS = [
+      'Explain how authentication works in this repo',
+      'Fix the failing tests in the checkout flow',
+      '/plan migrate from Express to Fastify',
+      'Review this diff for security risks',
+    ];
+
     function buildEmptyState() {
+      const chips = EXAMPLE_PROMPTS.map(p =>
+        '<button class="example-chip" onclick="useExamplePrompt(' + JSON.stringify(p) + ')">' + esc(p) + '</button>'
+      ).join('');
       return '<div id="empty-state">' +
         '<div class="empty-icon">◈</div>' +
         '<div class="empty-title">Bormagi — AI Coding Assistant</div>' +
         '<div class="empty-sub">Ask a question, describe a bug, or request a code change.</div>' +
-        '<div class="empty-sub" style="margin-top:8px;font-size:10px;opacity:0.5">' +
-        'Try: "explain this function" · "fix the failing test" · "/plan add auth"' +
-        '</div>' +
+        '<div class="example-chips">' + chips + '</div>' +
         '</div>';
     }
+
+    window.useExamplePrompt = function (text) {
+      const input = document.getElementById('user-input');
+      if (!input) return;
+      input.value = text;
+      input.focus();
+      input.dispatchEvent(new Event('input'));
+    };
 
     function clearChat() {
       messagesEl.innerHTML = buildEmptyState();
@@ -708,6 +783,9 @@
       updateModePill(modeLabel || modeId);
       document.getElementById('mode-menu').classList.remove('open');
       vscode.postMessage({ type: 'set_mode', mode: modeId });
+      // Persist selection across webview reloads
+      const state = vscode.getState() || {};
+      vscode.setState({ ...state, mode: modeId });
     }
 
     function updateModePill(label) {
@@ -753,6 +831,64 @@
         activePlan = null;
       }
     }
+
+    // ── Context update (full rail from backend) ────────────────────────────────
+
+    function showContextUpdate(items, tokenHealth) {
+      const rail = document.getElementById('context-rail');
+      const body = document.getElementById('context-rail-body');
+      const titleEl = document.getElementById('context-rail-title');
+      if (!rail || !body) return;
+
+      // Update header with token health badge
+      const healthClass = 'th-' + (tokenHealth || 'healthy');
+      const healthLabel = tokenHealth === 'near-limit' ? 'Near limit' : tokenHealth === 'busy' ? 'Busy' : 'Healthy';
+      if (titleEl) {
+        titleEl.innerHTML =
+          'Active Context &nbsp;<span class="token-health-badge ' + healthClass + '">' + healthLabel + '</span>';
+      }
+
+      body.innerHTML = '';
+      items.forEach(item => {
+        const el = document.createElement('div');
+        el.className = 'ctx-rail-item ctx-rail-item-full';
+        el.dataset.itemId = item.id;
+
+        const typeIcon = item.itemType === 'file' ? '📄'
+          : item.itemType === 'instruction' ? '📜'
+          : item.itemType === 'reference' ? '🔗'
+          : item.itemType === 'checkpoint' ? '🔖'
+          : item.itemType === 'mode' ? '◈'
+          : '◆';
+
+        const tokBadge = item.estimatedTokens
+          ? '<span class="ctx-tok-badge">' + (item.estimatedTokens > 999 ? Math.round(item.estimatedTokens / 1000) + 'k' : item.estimatedTokens) + '</span>'
+          : '';
+        const removeBtn = item.removable
+          ? '<button class="ctx-remove-btn" title="Remove from context" onclick="removeContextItem(' + JSON.stringify(item.id) + ')">×</button>'
+          : '';
+
+        el.innerHTML =
+          '<span class="ctx-rail-item-icon">' + typeIcon + '</span>' +
+          '<span class="ctx-rail-item-label" title="' + esc(item.source) + '">' + esc(item.label) + '</span>' +
+          tokBadge +
+          removeBtn;
+
+        body.appendChild(el);
+      });
+
+      rail.classList.add('visible');
+    }
+
+    window.removeContextItem = function (itemId) {
+      vscode.postMessage({ type: 'remove_context_item', itemId });
+      // Optimistically remove from rail
+      const rail = document.getElementById('context-rail-body');
+      if (rail) {
+        const el = rail.querySelector('[data-item-id="' + itemId + '"]');
+        if (el) el.remove();
+      }
+    };
 
     function refreshContextRail() {
       if (!activePlan) { hideContextRail(); return; }
@@ -952,7 +1088,7 @@
           break;
 
         case 'action_request':
-          showActionCard(m.id, m.prompt, m.actions);
+          showActionCard(m.id, m.prompt, m.actions, { kind: m.kind, reason: m.reason, scope: m.scope, risk: m.risk });
           break;
 
         case 'mode_changed':
@@ -1004,6 +1140,10 @@
 
         case 'diff_summary':
           showDiffSummary(m);
+          break;
+
+        case 'context_update':
+          showContextUpdate(m.items, m.tokenHealth);
           break;
 
         case 'resume_state': {
@@ -1135,6 +1275,13 @@
       feed.scrollTop = feed.scrollHeight;
     }
 
-    // Boot
+    // Boot — restore persisted state
+    const _savedState = vscode.getState();
+    if (_savedState?.mode) {
+      const _saved = MODES.find(m => m.id === _savedState.mode);
+      if (_saved) {
+        currentMode = _saved.id;
+      }
+    }
     initModePicker();
     vscode.postMessage({ type: 'refresh_agents' });

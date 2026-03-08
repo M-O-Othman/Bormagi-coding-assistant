@@ -66,6 +66,14 @@ import { loadManifests, maybeLoadCapability, defaultCapabilitiesDir } from '../c
 export type { ApprovalCallback, DiffCallback, ThoughtCallback };
 export type TextCallback = (delta: string) => void;
 export type TokenUsageCallback = (usage: TokenUsage) => void;
+export type CompactionCallback = (droppedCount: number, preservedItems: string[]) => void;
+export type PlanCreatedCallback = (plan: import('../context/types').ExecutionPlan) => void;
+export type DiffSummaryCallback = (changedFiles: string[], intent: string, checkpointRef?: string) => void;
+export type CheckpointCreatedCallback = (checkpointId: string, label: string, changedFiles: string[]) => void;
+export type ContextUpdateCallback = (
+  items: Array<{ id: string; itemType: string; label: string; source: string; reasonIncluded: string; estimatedTokens?: number; removable: boolean }>,
+  tokenHealth: 'healthy' | 'busy' | 'near-limit',
+) => void;
 
 interface WorkspaceContextSnapshot {
   files: ScannedFile[];
@@ -168,7 +176,12 @@ export class AgentRunner {
     onThought: ThoughtCallback,
     onApproval: ApprovalCallback,
     onDiff: DiffCallback,
-    onTokenUsage?: TokenUsageCallback
+    onTokenUsage?: TokenUsageCallback,
+    onCompaction?: CompactionCallback,
+    onPlanCreated?: PlanCreatedCallback,
+    onDiffSummary?: DiffSummaryCallback,
+    onCheckpointCreated?: CheckpointCreatedCallback,
+    onContextUpdate?: ContextUpdateCallback,
   ): Promise<void> {
     const agentConfig = this.agentManager.getAgent(agentId);
     if (!agentConfig) {
@@ -294,6 +307,7 @@ export class AgentRunner {
       const checkpt = await this.checkpointManager.createCheckpoint('task_start', `Start Task: ${userMessage.substring(0, 25)}`);
       this.currentCheckpointId = checkpt.id;
       turnMemory.addToolResult('system_checkpoint', `A Git Checkpoint was successfully created before this task began (ID: ${checkpt.id}).`);
+      onCheckpointCreated?.(checkpt.id, `Task start: ${userMessage.substring(0, 40)}`, []);
     }
 
     await this.auditLogger.logModeClassified(
@@ -308,7 +322,8 @@ export class AgentRunner {
     if (enhancedPipeline) {
       await this.hookEngine.onSessionStart({ mode });
       if (shouldCreatePlan(userMessage, modeDecision)) {
-        createPlan(this.workspaceRoot, userMessage.slice(0, 200), [], mode);
+        const newPlan = createPlan(this.workspaceRoot, userMessage.slice(0, 200), [], mode);
+        onPlanCreated?.(newPlan);
       }
     }
 
@@ -382,6 +397,68 @@ export class AgentRunner {
       } else {
         await this.auditLogger.logCacheMiss(agentId, segment.cacheKey, 'system-preamble');
       }
+    }
+
+    // ─── Emit context_update ──────────────────────────────────────────────────
+    if (onContextUpdate) {
+      const systemTokens = estimateTokens(fullSystem);
+      const tokenHealth: 'healthy' | 'busy' | 'near-limit' =
+        systemTokens > profile.recommendedInputBudget * 0.9 ? 'near-limit'
+        : systemTokens > profile.recommendedInputBudget * 0.7 ? 'busy'
+        : 'healthy';
+
+      const ctxItems: Array<{ id: string; itemType: string; label: string; source: string; reasonIncluded: string; estimatedTokens?: number; removable: boolean }> = [];
+
+      // Mode
+      ctxItems.push({ id: 'mode', itemType: 'mode', label: mode, source: 'system', reasonIncluded: 'Active assistant mode', removable: false });
+
+      // Instruction layers
+      for (const layer of instructions.layers) {
+        if (!layer.missing) {
+          ctxItems.push({
+            id: `layer:${layer.role}`,
+            itemType: 'instruction',
+            label: layer.role === 'global' ? 'Global instructions' : layer.role === 'repo' ? 'Repo instructions' : `Instructions (${layer.role})`,
+            source: layer.filePath,
+            reasonIncluded: 'Durable instruction layer',
+            estimatedTokens: layer.tokenEstimate,
+            removable: true,
+          });
+        }
+      }
+
+      // Editable files (selected context)
+      for (const c of envelope.editable.slice(0, 8)) {
+        ctxItems.push({
+          id: `file:${c.id}`,
+          itemType: 'file',
+          label: c.path ? c.path.split(/[\\/]/).pop() ?? c.path : c.id,
+          source: c.path ?? c.id,
+          reasonIncluded: c.reasons[0] ?? 'Editable context',
+          estimatedTokens: c.tokenEstimate,
+          removable: true,
+        });
+      }
+
+      // Reference files
+      for (const c of envelope.reference.slice(0, 4)) {
+        ctxItems.push({
+          id: `ref:${c.id}`,
+          itemType: 'reference',
+          label: c.path ? c.path.split(/[\\/]/).pop() ?? c.path : c.id,
+          source: c.path ?? c.id,
+          reasonIncluded: c.reasons[0] ?? 'Reference context',
+          estimatedTokens: c.tokenEstimate,
+          removable: true,
+        });
+      }
+
+      // Active checkpoint
+      if (this.currentCheckpointId) {
+        ctxItems.push({ id: `cp:${this.currentCheckpointId}`, itemType: 'checkpoint', label: `Checkpoint ${this.currentCheckpointId.slice(0, 8)}`, source: 'git', reasonIncluded: 'Latest checkpoint', removable: false });
+      }
+
+      onContextUpdate(ctxItems, tokenHealth);
     }
 
     // 9. Build conversation messages (system + history + user turn).
@@ -473,6 +550,12 @@ export class AgentRunner {
         label: `Compaction complete — ${compactionResult.droppedMessages} messages condensed`,
         timestamp: new Date(),
       });
+      const preservedItems: string[] = [];
+      if (compactionResult.structured.currentObjective) preservedItems.push('objective');
+      if (compactionResult.structured.decisions?.length) preservedItems.push('decisions');
+      if (compactionResult.structured.recentArtifacts?.length) preservedItems.push('artifacts');
+      if (compactionResult.structured.pendingNextSteps?.length) preservedItems.push('next steps');
+      onCompaction?.(compactionResult.droppedMessages, preservedItems);
 
       // ─── Phase-5: after-compaction hook ──────────────────────────────────
       if (enhancedPipeline) {
@@ -646,7 +729,8 @@ export class AgentRunner {
       await this.enhancedMemory.persistState(agentId);
 
       // Phase 3: Commit Proposal (FR-032)
-      if (enhancedPipeline && toolsUsed.some(t => t.includes('write') || t.includes('edit'))) {
+      const editedTools = toolsUsed.filter(t => t.includes('write') || t.includes('edit'));
+      if (enhancedPipeline && editedTools.length > 0) {
         const proposal = await this.commitGenerator.generate(this.workspaceRoot, fullResponse.substring(0, 500));
         onThought({
           type: 'thinking',
@@ -654,7 +738,10 @@ export class AgentRunner {
           detail: proposal.body,
           timestamp: new Date()
         });
-        // We don't auto-commit, but we provide the proposal in the summary if needed.
+        // Emit diff summary for 2+ changed files (OQ-8 B)
+        if (editedTools.length >= 2) {
+          onDiffSummary?.(editedTools, proposal.title, this.currentCheckpointId ?? undefined);
+        }
       }
 
       // Save a session checkpoint so the session can be resumed after restart.
