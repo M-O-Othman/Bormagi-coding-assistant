@@ -40,6 +40,10 @@ import { shouldCompact, compact, formatCompactedHistory } from '../context/Conte
 import { saveCheckpoint, buildCheckpointState } from '../memory/SessionCheckpoint';
 import { EnhancedSessionMemory } from '../memory/EnhancedSessionMemory';
 import type { AssistantMode, CompactionInput } from '../context/types';
+import { HookEngine } from '../context/HookEngine';
+import { shouldCreatePlan, createPlan } from '../context/PlanManager';
+import { StablePrefixCache } from '../context/StablePrefixCache';
+import { loadManifests, maybeLoadCapability, defaultCapabilitiesDir } from '../context/CapabilityRegistry';
 
 // Re-export callback types so callers that previously imported from this module continue to work.
 export type { ApprovalCallback, DiffCallback, ThoughtCallback };
@@ -57,6 +61,8 @@ export class AgentRunner {
   private readonly bootstrapInjected = new Set<string>();
   private readonly contextCache = new Map<string, WorkspaceContextSnapshot>();
   readonly enhancedMemory: EnhancedSessionMemory;
+  private readonly stablePrefixCache = new StablePrefixCache();
+  private readonly hookEngine: HookEngine;
 
   constructor(
     private readonly agentManager: AgentManager,
@@ -72,6 +78,7 @@ export class AgentRunner {
   ) {
     this.toolDispatcher = new ToolDispatcher(mcpHost, undoManager, auditLogger, workspaceRoot);
     this.enhancedMemory = new EnhancedSessionMemory(workspaceRoot);
+    this.hookEngine = new HookEngine(workspaceRoot);
   }
 
   async run(
@@ -164,6 +171,8 @@ export class AgentRunner {
     const modeDecision = classifyMode(userMessage);
     const mode: AssistantMode = modeDecision.mode;
     const requestId = `${agentId}-${Date.now()}`;
+    const vsConfig = vscode.workspace.getConfiguration('bormagi');
+    const enhancedPipeline = vsConfig.get<boolean>('contextPipeline.enabled', false);
     await this.auditLogger.logModeClassified(
       requestId,
       mode,
@@ -171,6 +180,14 @@ export class AgentRunner {
       modeDecision.userOverride,
       modeDecision.reason,
     );
+
+    // ─── Phase-5: session-start hook + plan creation ───────────────────────────
+    if (enhancedPipeline) {
+      await this.hookEngine.onSessionStart({ mode });
+      if (shouldCreatePlan(userMessage, modeDecision)) {
+        createPlan(this.workspaceRoot, userMessage.slice(0, 200), [], mode);
+      }
+    }
 
     // 2. Load mode budget and model profile.
     const budget = getModeBudget(mode);
@@ -212,7 +229,26 @@ export class AgentRunner {
       agentName: agentConfig.name,
       projectName,
     });
-    const fullSystem = skillsSection ? `${assembledSystem}\n\n${skillsSection}` : assembledSystem;
+    let fullSystem = skillsSection ? `${assembledSystem}\n\n${skillsSection}` : assembledSystem;
+
+    // ─── Phase-5: capability injection + stable prefix cache ──────────────────
+    if (enhancedPipeline) {
+      const capDir = vsConfig.get<string>('contextPipeline.capabilities.dir', '') ||
+                     defaultCapabilitiesDir(this.workspaceRoot);
+      const capBudget = vsConfig.get<number>('contextPipeline.capabilities.maxBudgetTokens', 1500);
+      const manifests = loadManifests(capDir);
+      const capability = await maybeLoadCapability(manifests, userMessage, mode, capBudget, requestId);
+      if (capability) {
+        fullSystem = `${fullSystem}\n\n## Capability: ${capability.name}\n${capability.instructions}`;
+      }
+
+      const { segment, hit } = this.stablePrefixCache.getOrRegister('system', fullSystem);
+      if (hit) {
+        await this.auditLogger.logCacheHit(agentId, segment.cacheKey, 'system-preamble', estimateTokens(fullSystem));
+      } else {
+        await this.auditLogger.logCacheMiss(agentId, segment.cacheKey, 'system-preamble');
+      }
+    }
 
     // 9. Build conversation messages (system + history + user turn).
     //    Bootstrap injection and ad-hoc retrieval context are now handled by the
@@ -299,11 +335,21 @@ export class AgentRunner {
         label: `Compaction complete — ${compactionResult.droppedMessages} messages condensed`,
         timestamp: new Date(),
       });
+
+      // ─── Phase-5: after-compaction hook ──────────────────────────────────
+      if (enhancedPipeline) {
+        await this.hookEngine.onAfterCompaction({ mode });
+      }
+    }
+
+    // ─── Phase-5: before-final hook ───────────────────────────────────────────
+    if (enhancedPipeline) {
+      await this.hookEngine.runHooks('before-final', { mode });
     }
 
     const maxOutputTokens = Math.max(
       128,
-      vscode.workspace.getConfiguration('bormagi').get<number>('maxOutputTokens', 1200)
+      vsConfig.get<number>('maxOutputTokens', 1200)
     );
 
     let fullResponse = '';
@@ -406,6 +452,10 @@ export class AgentRunner {
           messages.push({ role: 'user', content: `[Tool result: ${event.name}]\n${toolResult}` });
           calledATool = true;
           continueLoop = true;
+          // ─── Phase-5: after-edit hook for file-mutation tools ──────────────
+          if (enhancedPipeline && (event.name.includes('write') || event.name.includes('edit'))) {
+            await this.hookEngine.onAfterEdit([event.name], { mode });
+          }
         }
       }
 
