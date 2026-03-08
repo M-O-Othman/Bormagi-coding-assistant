@@ -206,6 +206,27 @@
           "description": "Default auth method for the default provider."
         },
 
+        "bormagi.contextPipeline.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable the enhanced context pipeline (HookEngine, PlanManager, StablePrefixCache, CapabilityRegistry). Defaults to false until regression validation confirms no quality loss."
+        },
+        "bormagi.contextPipeline.hooks.configPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to hooks configuration JSON file (relative to workspace root, or absolute). Defaults to .bormagi/hooks.json when empty."
+        },
+        "bormagi.contextPipeline.capabilities.dir": {
+          "type": "string",
+          "default": "",
+          "description": "Directory containing capability manifest files. Defaults to .bormagi/capabilities/ when empty."
+        },
+        "bormagi.contextPipeline.capabilities.maxBudgetTokens": {
+          "type": "number",
+          "default": 1500,
+          "description": "Maximum tokens a single dynamically-loaded capability may consume in the system prompt."
+        },
+
         "bormagi.contextPipeline.plans.storageLocation": {
           "type": "string",
           "enum": ["workspace-root", "bormagi-plans"],
