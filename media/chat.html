@@ -785,6 +785,12 @@
     </select>
   </div>
 
+  <button class="tb-btn" onclick="refreshAgents()" title="Refresh agents list">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.1-3.3l-1.2.9A4 4 0 1 0 12 8h-2l2.5-2.5L15 8h-1.5z"/>
+    </svg>
+  </button>
+
   <span id="provider-pill"></span>
 
   <!-- Primary actions (always visible) -->
@@ -824,10 +830,6 @@
       </svg>
     </button>
     <div id="overflow-dropdown">
-      <button class="ovf-item" onclick="refreshAgents(); closeOverflow()">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.5 8a5.5 5.5 0 1 1-1.1-3.3l-1.2.9A4 4 0 1 0 12 8h-2l2.5-2.5L15 8h-1.5z"/></svg>
-        Refresh agents
-      </button>
       <button class="ovf-item" onclick="exportConversation(); closeOverflow()">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13 1H3a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm-1 12H4V3h8v10zM6 6h4v1H6zm0 2h4v1H6zm0 2h3v1H6z"/></svg>
         Export conversation
@@ -1028,6 +1030,7 @@
   let currentContentEl    = null;   // .msg-content being streamed
   let currentThoughtStrip = null;   // .thought-strip of current row
   let currentCursor       = null;   // blinking cursor node
+  let streamBuffer        = '';     // raw markdown as it streams in
   let isStreaming         = false;
   let activeAgentId       = null;
   let activeAgentName     = null;
@@ -1225,6 +1228,7 @@
 
     const label    = activeAgentId || 'Agent';
     const initials = label.slice(0, 2).toUpperCase();
+    streamBuffer   = '';
 
     const row = document.createElement('div');
     row.className = 'msg assistant';
@@ -1278,6 +1282,7 @@
 
   function appendDelta(delta) {
     if (!currentContentEl || !currentCursor) return;
+    streamBuffer += delta;
     currentCursor.insertAdjacentText('beforebegin', delta);
     scrollEnd();
   }
@@ -1329,12 +1334,13 @@
       sc.removeAttribute('id');
       sc.classList.remove('streaming');
       // Render Markdown from the streamed plain text
-      const rawText = sc.textContent || '';
+      const rawText = (streamBuffer || sc.textContent || '').replace(/\r\n/g, '\n');
       if (rawText.trim()) {
         sc.innerHTML = renderMarkdown(rawText);
         postProcessCodeBlocks(sc);
       }
     }
+    streamBuffer = '';
     if (currentCursor) { currentCursor.remove(); currentCursor = null; }
 
     // Hide strip if no tool calls were made

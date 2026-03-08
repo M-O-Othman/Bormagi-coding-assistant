@@ -234,7 +234,7 @@ export class AgentRunner {
     // ─── Phase-5: capability injection + stable prefix cache ──────────────────
     if (enhancedPipeline) {
       const capDir = vsConfig.get<string>('contextPipeline.capabilities.dir', '') ||
-                     defaultCapabilitiesDir(this.workspaceRoot);
+        defaultCapabilitiesDir(this.workspaceRoot);
       const capBudget = vsConfig.get<number>('contextPipeline.capabilities.maxBudgetTokens', 1500);
       const manifests = loadManifests(capDir);
       const capability = await maybeLoadCapability(manifests, userMessage, mode, capBudget, requestId);
@@ -356,6 +356,8 @@ export class AgentRunner {
     const toolsUsed: string[] = [];
     let continueLoop = true;
     let isFirstModelRequest = true;
+    let iterationCount = 0;
+    const maxToolIterations = vsConfig.get<number>('agent.maxToolIterations', 10);
 
     while (continueLoop) {
       continueLoop = false;
@@ -459,6 +461,18 @@ export class AgentRunner {
         }
       }
 
+      iterationCount++;
+      if (iterationCount >= maxToolIterations) {
+        onThought({
+          type: 'error',
+          label: `Max tool iterations reached (${maxToolIterations})`,
+          detail: 'The agent exceeded the maximum allowed tool iterations for a single request. Forcing loop exit to prevent runaway orchestration.',
+          timestamp: new Date()
+        });
+        continueLoop = false;
+        fullResponse += `\n\n[System]: The agent exceeded the maximum allowed tool iterations (${maxToolIterations}) and the operation was terminated early to prevent an infinite loop.`;
+      }
+
       if (!calledATool) {
         continueLoop = false;
       }
@@ -478,10 +492,10 @@ export class AgentRunner {
 
       // Save a session checkpoint so the session can be resumed after restart.
       await saveCheckpoint(this.workspaceRoot, buildCheckpointState(requestId, {
-        activeMode:            mode,
-        currentPlan:           this.enhancedMemory.getState(agentId).currentPlan,
-        recentEditedFiles:     this.enhancedMemory.getState(agentId).recentEditedFiles,
-        pendingToolArtifacts:  toolsUsed,
+        activeMode: mode,
+        currentPlan: this.enhancedMemory.getState(agentId).currentPlan,
+        recentEditedFiles: this.enhancedMemory.getState(agentId).recentEditedFiles,
+        pendingToolArtifacts: toolsUsed,
       }));
     }
   }
