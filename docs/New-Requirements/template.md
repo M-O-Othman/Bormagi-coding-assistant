@@ -1,7 +1,7 @@
-Review the feature specification defined in the relevant file under `docs/New-Requirements/5.ai_coding_assistant_sandbox_separated_work_environment_spec.md` and assess the current implementation status of that feature across the codebase.
+Review the feature specification defined in the relevant file under `docs/New-Requirements/6.ai_coding_assistant_git_github_integration_spec.md` and assess the current implementation status of that feature across the codebase.
 
 The feature might has been implemented partially and with quality issues. Your task is to evaluate it thoroughly, identify what is complete, incomplete, incorrect, missing, or implemented in a way that does not fully satisfy the specification, while ensuring that no existing working functionality is broken.
-**feature-name:**5.ai_coding_assistant_sandbox_separated_work_environment
+**feature-name:**6.ai_coding_assistant_git_github_integration
 
 **Follow this process strictly:**
 
