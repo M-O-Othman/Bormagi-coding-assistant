@@ -34,6 +34,11 @@ import { DecisionManager } from './memory/DecisionManager';
 import { PromotionEngine } from './memory/PromotionEngine';
 import { Consolidator } from './memory/Consolidator';
 
+// ─── Sandbox Imports ──────────────────────────────────────────────────
+import { PolicyEngine } from './sandbox/PolicyEngine';
+import { ApprovalService } from './sandbox/ApprovalService';
+import { SandboxManager } from './sandbox/SandboxManager';
+
 let configManager: ConfigManager | undefined;
 let secretsManager: SecretsManager | undefined;
 let agentManager: AgentManager | undefined;
@@ -92,10 +97,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const promotionEngine = new PromotionEngine(memoryManager.sessionMemory, memoryManager.publishedKnowledge);
   const consolidator = new Consolidator(workspaceRoot, memoryManager.sessionMemory, promotionEngine, decisionManager);
 
+  // ─── Sandbox Instantiation ─────────────────────────────────────────────────
+  const policyEngine = new PolicyEngine(workspaceRoot);
+  const approvalService = new ApprovalService(workspaceRoot);
+  const sandboxManager = new SandboxManager(workspaceRoot);
+
   const runner = new AgentRunner(
     agentManager, mcpHost, promptComposer, memoryManager,
     undoManager, skillManager, auditLogger, configManager, workspaceRoot, knowledgeManager,
-    delegationManager, consolidator, decisionManager
+    delegationManager, consolidator, decisionManager,
+    policyEngine, approvalService, sandboxManager
   );
   chatController = new ChatController(agentManager, configManager, auditLogger, statusBar, runner, undoManager);
 
@@ -200,6 +211,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           `Bormagi: Audit log integrity FAILED — broken at line${broken.length > 1 ? 's' : ''}: ` +
           `${broken.join(', ')}. ${ok} OK, ${legacy} legacy.`
         );
+      }
+    }),
+
+    // ─── Phase 4: Sandbox Promotion UX ──────────────────────────────────────────
+    vscode.commands.registerCommand('bormagi.promoteSandbox', async () => {
+      const sandboxDir = path.join(workspaceRoot, '.bormagi', 'sandboxes');
+      if (!fs.existsSync(sandboxDir)) {
+        vscode.window.showInformationMessage('No active sandboxes to promote.');
+        return;
+      }
+
+      const sandboxes = fs.readdirSync(sandboxDir);
+      if (sandboxes.length === 0) {
+        vscode.window.showInformationMessage('No active sandboxes to promote.');
+        return;
+      }
+
+      if (sandboxes.length === 1) {
+        await sandboxManager.promote(sandboxes[0]);
+        vscode.window.showInformationMessage(`Sandbox '${sandboxes[0]}' changes applied to workspace. Review in the Source Control tab.`);
+        return;
+      }
+
+      const pick = await vscode.window.showQuickPick(sandboxes, { title: 'Bormagi — Select Sandbox to Apply' });
+      if (pick) {
+        await sandboxManager.promote(pick);
+        vscode.window.showInformationMessage(`Sandbox '${pick}' changes applied to workspace.`);
       }
     })
   );

@@ -7,6 +7,9 @@ import { generateDocx, generatePptx } from '../../utils/DocumentGenerator';
 import type { MCPToolCall, ThoughtEvent } from '../../types';
 import { getAppData } from '../../data/DataStore';
 
+import { ExecWrapper } from '../../sandbox/ExecWrapper';
+import { SandboxHandle } from '../../sandbox/types';
+
 export type ApprovalCallback = (prompt: string) => Promise<boolean>;
 export type DiffCallback = (filePath: string, originalContent: string, newContent: string) => Promise<boolean>;
 export type ThoughtCallback = (event: ThoughtEvent) => void;
@@ -16,12 +19,32 @@ export type ThoughtCallback = (event: ThoughtEvent) => void;
  * Encapsulates approval gating, write-file diff flow, and document generation.
  */
 export class ToolDispatcher {
+  private _activeSandbox: SandboxHandle | null = null;
+
   constructor(
     private readonly mcpHost: MCPHost,
     private readonly undoManager: UndoManager,
     private readonly auditLogger: AuditLogger,
-    private readonly workspaceRoot: string
-  ) {}
+    private readonly workspaceRoot: string,
+    private readonly execWrapper?: ExecWrapper | null
+  ) { }
+
+  public set activeSandbox(sandbox: SandboxHandle | null) {
+    this._activeSandbox = sandbox;
+  }
+
+  private getEffectivePath(originalPath: string): string {
+    if (!this._activeSandbox) return originalPath;
+    if (path.isAbsolute(originalPath)) {
+      // Absolute paths not allowed to be re-mapped easily, but let's assume they are relative to workspaceRoot
+      // The prompt tells Agents to use relative paths.
+      const rel = path.relative(this.workspaceRoot, originalPath);
+      const sandboxRel = path.relative(this.workspaceRoot, this._activeSandbox.workspacePath);
+      return path.join(sandboxRel, rel);
+    }
+    const sandboxRel = path.relative(this.workspaceRoot, this._activeSandbox.workspacePath);
+    return path.join(sandboxRel, originalPath).replace(/\\/g, '/');
+  }
 
   /**
    * Dispatch a tool-use event to its handler.
@@ -36,9 +59,9 @@ export class ToolDispatcher {
     onThought: ThoughtCallback
   ): Promise<string> {
     onThought({
-      type:      'tool_call',
-      label:     `Tool: ${toolEvent.name}`,
-      detail:    JSON.stringify(toolEvent.input, null, 2),
+      type: 'tool_call',
+      label: `Tool: ${toolEvent.name}`,
+      detail: JSON.stringify(toolEvent.input, null, 2),
       timestamp: new Date(),
     });
 
@@ -48,7 +71,7 @@ export class ToolDispatcher {
     if (approvalTools.has(toolEvent.name)) {
       const inp = toolEvent.input as { command?: string; message?: string; title?: string; filename?: string };
       const detail = inp.command ?? inp.message ?? inp.filename ?? inp.title ?? JSON.stringify(toolEvent.input);
-      const verb   = (toolEvent.name === 'create_document' || toolEvent.name === 'create_presentation')
+      const verb = (toolEvent.name === 'create_document' || toolEvent.name === 'create_presentation')
         ? 'create' : 'run';
       approved = await onApproval(`Agent wants to ${verb}:\n\n${detail}\n\nAllow?`);
       await this.auditLogger.logCommand(detail, agentId, approved);
@@ -58,10 +81,32 @@ export class ToolDispatcher {
 
     if (!approved) {
       result = 'User denied this action.';
+    } else if (toolEvent.name === 'run_command' && this.execWrapper) {
+      const inp = toolEvent.input as { command: string; cwd?: string };
+      // Override cwd if sandboxed
+      let cmd = inp.command;
+      if (this._activeSandbox) {
+        const sandboxRel = path.relative(this.workspaceRoot, this._activeSandbox.workspacePath);
+        cmd = `cd ${sandboxRel} && ${cmd}`;
+      }
+      try {
+        const res = await this.execWrapper.guardedCommand(
+          'current-task',
+          'local-user',
+          this._activeSandbox ? 'local_worktree_sandbox' : 'host',
+          cmd,
+          'Requested by agent'
+        );
+        result = `Exit Code: ${res.exitCode}\nSTDOUT:\n${res.stdout}\nSTDERR:\n${res.stderr}`;
+      } catch (err: any) {
+        result = `Command failed: ${err.message}`;
+      }
     } else if (toolEvent.name === 'write_file') {
+      const inp = toolEvent.input as { path: string; content: string };
+      inp.path = this.getEffectivePath(inp.path);
       result = await this.handleWriteFile(
         agentId,
-        toolEvent.input as { path: string; content: string },
+        inp,
         onDiff
       );
     } else if (toolEvent.name === 'get_diagnostics') {
@@ -77,7 +122,12 @@ export class ToolDispatcher {
     } else {
       const serverName = toolServerMap[toolEvent.name];
       if (serverName) {
-        const tc: MCPToolCall = { name: toolEvent.name, input: toolEvent.input };
+        // Rewrite path for read/list tools dynamically if needed
+        const inp = { ...toolEvent.input } as Record<string, any>;
+        if (inp.path) inp.path = this.getEffectivePath(inp.path);
+        if (inp.directory) inp.directory = this.getEffectivePath(inp.directory);
+
+        const tc: MCPToolCall = { name: toolEvent.name, input: inp };
         const mcpResult = await this.mcpHost.callTool(serverName, tc);
         result = mcpResult.content.map(c => c.text).join('\n');
       } else {
@@ -86,9 +136,9 @@ export class ToolDispatcher {
     }
 
     onThought({
-      type:      'tool_result',
-      label:     `Result: ${toolEvent.name}`,
-      detail:    result.slice(0, 500),
+      type: 'tool_result',
+      label: `Result: ${toolEvent.name}`,
+      detail: result.slice(0, 500),
       timestamp: new Date(),
     });
 
@@ -112,7 +162,14 @@ export class ToolDispatcher {
       fileExisted = false;
     }
 
-    const approved = await onDiff(filePath, originalContent, args.content);
+    let approved = false;
+    // Bypass individual file approvals if we are operating purely inside an isolated sandbox
+    if (this._activeSandbox) {
+      approved = true;
+    } else {
+      approved = await onDiff(filePath, originalContent, args.content);
+    }
+
     if (!approved) {
       return 'User declined the file change.';
     }
@@ -120,7 +177,7 @@ export class ToolDispatcher {
     this.undoManager.recordFileWrite(agentId, filePath, originalContent, fileExisted);
 
     const mcpResult = await this.mcpHost.callTool('filesystem', {
-      name:  'write_file',
+      name: 'write_file',
       input: { path: args.path, content: args.content },
     });
 
@@ -133,7 +190,7 @@ export class ToolDispatcher {
     const lines: string[] = [];
 
     if (args.path) {
-      const uri   = vscode.Uri.file(path.join(this.workspaceRoot, args.path));
+      const uri = vscode.Uri.file(path.join(this.workspaceRoot, args.path));
       const diags = vscode.languages.getDiagnostics(uri);
       for (const d of diags) {
         lines.push(`${args.path} [${SEVERITY[d.severity] ?? d.severity}] ${d.message} (L${d.range.start.line + 1})`);
@@ -153,7 +210,7 @@ export class ToolDispatcher {
   private async handleCreateDocument(
     args: { filename: string; title?: string; content_markdown: string }
   ): Promise<string> {
-    const safeName  = path.basename(args.filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safeName = path.basename(args.filename).replace(/[^a-zA-Z0-9._-]/g, '_');
     const finalPath = path.join(this.workspaceRoot, safeName.endsWith('.docx') ? safeName : safeName + '.docx');
     try {
       await generateDocx(args.title ?? '', args.content_markdown, finalPath);
@@ -166,7 +223,7 @@ export class ToolDispatcher {
   private async handleCreatePresentation(
     args: { filename: string; slides_markdown: string }
   ): Promise<string> {
-    const safeName  = path.basename(args.filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safeName = path.basename(args.filename).replace(/[^a-zA-Z0-9._-]/g, '_');
     const finalPath = path.join(this.workspaceRoot, safeName.endsWith('.pptx') ? safeName : safeName + '.pptx');
     try {
       await generatePptx(args.slides_markdown, finalPath);

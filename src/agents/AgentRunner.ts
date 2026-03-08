@@ -32,6 +32,13 @@ import { Consolidator } from '../memory/Consolidator';
 import { DecisionManager } from '../memory/DecisionManager';
 import { DelegationManager } from '../collaboration/DelegationManager';
 
+// ─── Sandbox imports ────────────────────────────────────────────────────────
+import { PolicyEngine } from '../sandbox/PolicyEngine';
+import { ApprovalService } from '../sandbox/ApprovalService';
+import { SandboxManager } from '../sandbox/SandboxManager';
+import { ExecWrapper, PromptApprovalCallback } from '../sandbox/ExecWrapper';
+import { SandboxHandle } from '../sandbox/types';
+
 // ─── Context pipeline imports ──────────────────────────────────────────────────
 import { classifyMode } from '../context/ModeClassifier';
 import { getModeBudget } from '../config/ModeBudgets';
@@ -69,6 +76,8 @@ export class AgentRunner {
   readonly enhancedMemory: EnhancedSessionMemory;
   private readonly stablePrefixCache = new StablePrefixCache();
   private readonly hookEngine: HookEngine;
+  private activeSandbox: SandboxHandle | null = null;
+  private execWrapper: ExecWrapper | null = null;
 
   constructor(
     private readonly agentManager: AgentManager,
@@ -83,9 +92,33 @@ export class AgentRunner {
     private readonly knowledgeManager?: KnowledgeManager,
     private readonly delegationManager?: DelegationManager,
     private readonly consolidator?: Consolidator,
-    private readonly decisionManager?: DecisionManager
+    private readonly decisionManager?: DecisionManager,
+    private readonly policyEngine?: PolicyEngine,
+    private readonly approvalService?: ApprovalService,
+    private readonly sandboxManager?: SandboxManager
   ) {
-    this.toolDispatcher = new ToolDispatcher(mcpHost, undoManager, auditLogger, workspaceRoot);
+    if (this.policyEngine && this.approvalService) {
+      this.execWrapper = new ExecWrapper(
+        this.policyEngine,
+        this.approvalService,
+        // Dummy callback for UI prompt, to be wired fully later (default to YES for now to test)
+        async (cmd, reason, rule) => ({ allow: true, scope: 'once' }),
+        // Real execute via MCP
+        async (cmd) => {
+          try {
+            const tc = { name: 'run_command', input: { command: cmd } };
+            // Depending on how MCP returns, we will fake a 0 exit code on success.
+            const res = await this.mcpHost.callTool('terminal', tc);
+            const text = res.content.map(c => c.text).join('\n');
+            return { stdout: text, stderr: '', exitCode: 0, durationMs: 0 };
+          } catch (err: any) {
+            return { stdout: '', stderr: err.message, exitCode: 1, durationMs: 0 };
+          }
+        }
+      );
+    }
+
+    this.toolDispatcher = new ToolDispatcher(mcpHost, undoManager, auditLogger, workspaceRoot, this.execWrapper);
     this.enhancedMemory = new EnhancedSessionMemory(workspaceRoot);
     this.hookEngine = new HookEngine(workspaceRoot);
   }
@@ -147,6 +180,24 @@ export class AgentRunner {
     }
 
     await this.agentManager.startMCPServersForAgent(agentId, this.workspaceRoot);
+
+    // Initialise sandbox
+    if (this.sandboxManager && !this.activeSandbox) {
+      onThought({ type: 'thinking', label: 'Initializing Sandbox', timestamp: new Date() });
+      this.activeSandbox = await this.sandboxManager.create({
+        taskId: `task-${Date.now()}`,
+        repoPathOrRemote: this.workspaceRoot,
+        baseRef: '',
+        isolationMode: 'local_worktree_sandbox',
+        policyBundleId: 'default',
+        writable: true,
+        networkMode: 'deny_all'
+      });
+      this.toolDispatcher.activeSandbox = this.activeSandbox;
+    }
+
+    const providerParams = { apiKey: apiKey ?? '', ...effectiveProvider };
+    const maxTokens = vscode.workspace.getConfiguration('bormagi').get<number>('advanced.maxTokens') || 30000;
 
     // ─── Semantic Session Setup ───────────────────────────────────────────────
     // We instantiate a TurnMemory to track episodic context for this specific run

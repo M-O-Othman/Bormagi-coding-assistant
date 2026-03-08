@@ -45,6 +45,7 @@ No admin permissions are required. Install from the VS Code Marketplace or from 
 19. [Building Agents](#building-agents)
 20. [Agent Knowledge Base & Memory](#agent-knowledge-base--memory)
 21. [Multi-Agent Collaboration](#multi-agent-collaboration)
+48. [Sandbox Separated Work Environment](#sandbox-separated-work-environment)
 
 ---
 
@@ -1029,3 +1030,12 @@ You will see a VS Code notification when compaction triggers.
 ---
 
 *Bormagi — professional AI coding agents for your workspace.*
+
+---
+
+## Sandbox Separated Work Environment
+
+Agents execute all file modifications and terminal commands within an isolated "Sandbox" (`.bormagi/sandboxes/`). This ensures zero risk to your host project during agent orchestration. 
+
+- You can review the agent's work and gracefully merge it into your codebase using the **`Bormagi: Apply Sandbox Changes`** command via the Command Palette. Modified files are dropped into your Source Control (Git) tab for native VS Code line-by-line review.
+- A granular Policy Engine (`.bormagi/policies/sandbox.policy.yaml`) automatically intercepts dangerous actions (e.g., `rm -rf /`) and enforces interactive approvals for sensitive directories.

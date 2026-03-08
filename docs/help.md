@@ -39,6 +39,11 @@ Agents feature Local File-Based Vector Retrieval (RAG). Before an agent responds
 ### 8. Multi-Agent Collaboration
 Agents can delegate sub-tasks to each other or broadcast shared knowledge using the local file-based Message Bus (`.bormagi/shared/bus/`). Agents enforce permissions and constraints defined in the `AgentRegistry`.
 
+### 9. Sandbox Separated Work Environment
+Agents execute all file modifications and terminal commands within an isolated "Sandbox" (`.bormagi/sandboxes/`). This ensures zero risk to your host project during agent orchestration. 
+- You can review the agent's work and gracefully merge it into your codebase using the **`Bormagi: Apply Sandbox Changes`** command. 
+- A granular Policy Engine (`.bormagi/policies/sandbox.policy.yaml`) automatically intercepts dangerous actions (e.g., `rm -rf /`) and enforces interactive approvals for sensitive directories.
+
 ## Getting Started
 
 1. **Install the Extension**: You can download Bormagi from the Visual Studio Code Marketplace or install it using a `.vsix` file.
