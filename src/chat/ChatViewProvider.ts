@@ -5,6 +5,15 @@ import { ChatController, MessageToWebview } from './ChatController';
 import { getAppData } from '../data/DataStore';
 import { getMarkedFallbackSource } from './markedFallback';
 
+function getNonce(): string {
+  let text = '';
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  for (let i = 0; i < 32; i++) {
+    text += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return text;
+}
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
 
@@ -20,12 +29,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ): void {
     this.view = webviewView;
 
+    const mediaUri = vscode.Uri.joinPath(this.extensionUri, 'media');
+
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [this.extensionUri]
+      localResourceRoots: [mediaUri]
     };
 
-    webviewView.webview.html = this.getHtml();
+    webviewView.webview.html = this.getHtml(webviewView.webview);
 
     // Subscribe so controller can post messages to the webview
     this.controller.addSubscriber((msg: MessageToWebview) => {
@@ -43,6 +54,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.controller.setActiveAgent(message.agentId as string);
       } else if (type === 'switch_model') {
         await this.controller.handleWebviewMessage(message);
+      } else if (type === 'set_mode') {
+        await this.controller.handleWebviewMessage(message);
+      } else if (type === 'restore_checkpoint') {
+        await this.controller.handleWebviewMessage(message);
       } else if (type === 'open_dashboard') {
         await vscode.commands.executeCommand('bormagi.openDashboard');
       } else if (type === 'open_meeting') {
@@ -55,27 +70,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private getHtml(): string {
+  private getHtml(webview: vscode.Webview): string {
     const htmlPath = path.join(this.extensionUri.fsPath, 'media', 'chat.html');
+    const nonce = getNonce();
+
+    const chatCssUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'media', 'chat.css')
+    );
+    const chatJsUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'media', 'chat.js')
+    );
+
     try {
       let raw = fs.readFileSync(htmlPath, 'utf8');
-      // Inject model context limits from the shared constants so chat.html
-      // never needs its own hardcoded copy.
+
+      // Replace CSP source and nonce placeholders
+      raw = raw.replaceAll('{{CSP_SOURCE}}', webview.cspSource);
+      raw = raw.replaceAll('{{NONCE}}', nonce);
+
+      // Replace resource URIs
+      raw = raw.replace('{{CHAT_CSS_URI}}', chatCssUri.toString());
+      raw = raw.replace('{{CHAT_JS_URI}}', chatJsUri.toString());
+
+      // Inject model context limits
       raw = raw.replace(
-        /\/\*__MODEL_CONTEXT_LIMITS_JSON__\*\/\{\}\/\*__END__\*\//,
+        '{{MODEL_CONTEXT_LIMITS_JSON}}',
         JSON.stringify(getAppData().contextLimits)
       );
-      // Inject the marked.js Markdown parser library inline so it works
-      // within the webview's strict CSP (no external scripts allowed).
+
+      // Inject marked.js library
       let markedInjected = false;
       try {
-        // Try primary location (development): node_modules
-        // Fallback (packaged extension): media/vendor/marked.umd.js
         const candidatePaths = [
           path.join(this.extensionUri.fsPath, 'node_modules', 'marked', 'lib', 'marked.umd.js'),
           path.join(this.extensionUri.fsPath, 'media', 'vendor', 'marked.umd.js')
         ];
-
         for (const markedPath of candidatePaths) {
           if (fs.existsSync(markedPath)) {
             const markedSrc = fs.readFileSync(markedPath, 'utf8');
@@ -85,14 +114,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
         }
       } catch {
-        // Intentionally swallow and fall back below.
+        // Intentionally swallow
       }
-
       if (!markedInjected) {
-        // Hard fallback: inline a baked-in copy so Markdown still renders
-        // even if the vendor file was accidentally omitted from the package.
         raw = raw.replace('/*__MARKED_LIB__*/', getMarkedFallbackSource());
       }
+
       return raw;
     } catch {
       return '<html><body><p>Bormagi: Could not load chat UI.</p></body></html>';

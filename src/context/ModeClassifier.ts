@@ -158,7 +158,7 @@ export function buildUserModeDecision(mode: AssistantMode): ModeDecision {
 
 /** All valid mode values, for use in UI dropdowns and validation. */
 export const ALL_MODES: AssistantMode[] = [
-  'plan', 'edit', 'debug', 'review', 'explain', 'search', 'test-fix',
+  'plan', 'edit', 'debug', 'review', 'explain', 'search', 'test-fix', 'ask', 'code',
 ];
 
 /** Human-readable labels for mode display in the status bar. */
@@ -170,4 +170,6 @@ export const MODE_LABELS: Record<AssistantMode, string> = {
   explain:    '💡 Explain',
   search:     '🔎 Search',
   'test-fix': '🧪 Test-Fix',
+  ask:        '💬 Ask',
+  code:       '⌨️ Code',
 };

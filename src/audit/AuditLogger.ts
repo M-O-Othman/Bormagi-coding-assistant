@@ -344,4 +344,36 @@ export class AuditLogger {
     });
   }
 
+  // ─── UX telemetry ─────────────────────────────────────────────────────────
+
+  /** Log when the user changes assistant mode. */
+  async logModeChanged(
+    agentId: string,
+    fromMode: string,
+    toMode: string,
+    source: 'user_picker' | 'slash_command' | 'auto_detect',
+  ): Promise<void> {
+    await this.log({ event: 'MODE_CHANGED', agent: agentId, fromMode, toMode, source });
+  }
+
+  /** Log an approval decision made by the user. */
+  async logApprovalDecision(
+    id: string,
+    kind: string,
+    decision: 'approved' | 'denied' | 'batch_task' | 'batch_session',
+    agentId: string,
+  ): Promise<void> {
+    await this.log({ event: 'APPROVAL_DECISION', approvalId: id, kind, decision, agent: agentId });
+  }
+
+  /** Log a checkpoint-related event (created or restored). */
+  async logCheckpointEvent(
+    event: 'created' | 'restored',
+    checkpointId: string,
+    changedFiles: string[],
+    agentId: string,
+  ): Promise<void> {
+    await this.log({ event: `CHECKPOINT_${event.toUpperCase()}`, checkpointId, changedFiles, agent: agentId });
+  }
+
 }

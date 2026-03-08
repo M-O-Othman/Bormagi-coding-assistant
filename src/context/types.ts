@@ -12,7 +12,9 @@ export type AssistantMode =
   | "review"
   | "explain"
   | "search"
-  | "test-fix";
+  | "test-fix"
+  | "ask"
+  | "code";
 
 export interface ModeDecision {
   mode: AssistantMode;

@@ -10,6 +10,7 @@ import { ProviderType, ThoughtEvent } from '../types';
 import type { WorkflowEngine } from '../workflow/WorkflowEngine';
 import type { WorkflowStorage } from '../workflow/WorkflowStorage';
 import { getAppData } from '../data/DataStore';
+import type { PlanMilestone } from '../context/types';
 
 export type MessageToWebview =
   | { type: 'text_delta'; agentId: string; delta: string }
@@ -22,8 +23,45 @@ export type MessageToWebview =
   | { type: 'token_usage'; lastInputTokens: number; lastOutputTokens: number; sessionInputTokens: number; sessionOutputTokens: number; model: string }
   | { type: 'model_switched'; model: string }
   | { type: 'wf_command_result'; message: string }
-  | { type: 'action_request'; id: string; prompt: string; actions: string[] }
-  | { type: 'git_status'; status: import('../git/GitService').RepoStatusSnapshot; checkpointId?: string };
+  | { type: 'action_request'; id: string; prompt: string; actions: string[]; kind?: 'edit' | 'command' | 'network' | 'git' | 'external_tool'; reason?: string; scope?: string[]; risk?: 'low' | 'medium' | 'high'; alternatives?: string[] }
+  | { type: 'git_status'; status: import('../git/GitService').RepoStatusSnapshot; checkpointId?: string }
+  | { type: 'mode_changed'; mode: string; modeLabel: string }
+  | { type: 'compaction_notice'; preservedItems: string[]; droppedCount: number }
+  | { type: 'plan_artifact'; plan: { id: string; objective: string; milestones: Array<{ id: string; title: string; tasks: string[]; validations: string[]; status: string }>; decisions: string[]; blockers: string[] } }
+  | { type: 'diff_summary'; changedFiles: string[]; intent: string; risks?: string[]; checkpointRef?: string }
+  | { type: 'checkpoint_created'; checkpointId: string; label: string; changedFiles: string[] }
+  | { type: 'resume_state'; taskTitle: string; mode: string; lastSummary: string; nextAction: string; selectedFiles: string[]; checkpointId?: string; planId?: string; blockers: string[] };
+
+// Human-readable mode labels for UI display
+const MODE_LABELS: Record<string, string> = {
+  ask: 'Ask', explain: 'Ask', plan: 'Plan', code: 'Code', edit: 'Code',
+  debug: 'Debug', review: 'Review', search: 'Search', 'test-fix': 'Test-Fix',
+};
+
+// Slash-command → mode mapping
+const SLASH_MODE_COMMANDS: Record<string, string> = {
+  '/ask': 'ask', '/plan': 'plan', '/code': 'code', '/debug': 'debug', '/review': 'review',
+};
+
+const HELP_TEXT = [
+  'Available commands:',
+  '  /ask           — Switch to Ask mode (read-only Q&A)',
+  '  /plan          — Switch to Plan mode (design before changes)',
+  '  /code          — Switch to Code mode (apply edits)',
+  '  /debug         — Switch to Debug mode (investigate failures)',
+  '  /review        — Switch to Review mode (inspect diffs)',
+  '  /checkpoint    — Create a manual checkpoint',
+  '  /resume        — Resume the latest task or plan',
+  '  /clear         — Clear the conversation',
+  '  /undo          — Undo last file change',
+  '  /artifact      — Extract an artifact from conversation',
+  '  /wf-list       — List workflows',
+  '  /wf-status     — Show workflow status',
+  '  /wf-resume     — Resume a paused workflow task',
+  '  /wf-cancel     — Cancel a workflow task',
+  '  /wf-reassign   — Reassign a workflow task',
+  '  /help          — Show this message',
+].join('\n');
 
 export class ChatController {
   private _activeAgentId: string | undefined;
@@ -33,6 +71,7 @@ export class ChatController {
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
   private currentModel = '';
+  private currentMode = 'ask';
 
   // Optional workflow engine — injected after construction when workflow features are active.
   private workflowEngine?: WorkflowEngine;
@@ -55,7 +94,6 @@ export class ChatController {
       try {
         const root = this.configManager.rootDir;
         const status = await this.runner.git.getStatus(root);
-        // Default checkpoint is not polled, emitted via side-effects if needed
         this.post({ type: 'git_status', status, checkpointId: undefined });
       } catch {
         // Suppress errors during polling
@@ -83,8 +121,11 @@ export class ChatController {
   }
 
   async handleUserMessage(rawMessage: string): Promise<void> {
-    // Handle /undo command
-    if (rawMessage.trim().toLowerCase() === '/undo') {
+    const trimmed = rawMessage.trim();
+    const lower = trimmed.toLowerCase();
+
+    // ── /undo ────────────────────────────────────────────────────────────────
+    if (lower === '/undo') {
       if (!this._activeAgentId) {
         this.post({ type: 'error', message: 'No active agent selected.' });
         return;
@@ -94,19 +135,57 @@ export class ChatController {
       return;
     }
 
-    // Handle /artifact command
-    if (rawMessage.trim().startsWith('/artifact')) {
-      await this.handleArtifactCommand(rawMessage.trim());
+    // ── /help ────────────────────────────────────────────────────────────────
+    if (lower === '/help') {
+      this.post({ type: 'wf_command_result', message: HELP_TEXT });
       return;
     }
 
-    // Handle /wf-* workflow management commands
-    if (rawMessage.trim().startsWith('/wf-')) {
-      await this.handleWorkflowCommand(rawMessage.trim());
+    // ── /clear ───────────────────────────────────────────────────────────────
+    if (lower === '/clear') {
+      this.post({ type: 'wf_command_result', message: '__clear__' });
       return;
     }
 
-    // Parse @agent-name mention
+    // ── Mode switch slash commands: /ask /plan /code /debug /review ──────────
+    if (SLASH_MODE_COMMANDS[lower]) {
+      const newMode = SLASH_MODE_COMMANDS[lower];
+      await this.applyModeChange(newMode, 'slash_command');
+      this.post({ type: 'wf_command_result', message: `Switched to ${MODE_LABELS[newMode] ?? newMode} mode.` });
+      return;
+    }
+
+    // ── /checkpoint ──────────────────────────────────────────────────────────
+    if (lower === '/checkpoint') {
+      try {
+        const cp = await this.runner.checkpoints.createCheckpoint('manual', 'Manual checkpoint from /checkpoint command');
+        this.post({ type: 'checkpoint_created', checkpointId: cp.id, label: 'Manual checkpoint', changedFiles: [] });
+        void this.auditLogger.logCheckpointEvent('created', cp.id, [], this._activeAgentId ?? 'none');
+      } catch (err) {
+        this.post({ type: 'error', message: `Checkpoint failed: ${String(err)}` });
+      }
+      return;
+    }
+
+    // ── /resume ──────────────────────────────────────────────────────────────
+    if (lower === '/resume') {
+      await this.handleResumeCommand();
+      return;
+    }
+
+    // ── /artifact ────────────────────────────────────────────────────────────
+    if (trimmed.startsWith('/artifact')) {
+      await this.handleArtifactCommand(trimmed);
+      return;
+    }
+
+    // ── /wf-* workflow management commands ───────────────────────────────────
+    if (trimmed.startsWith('/wf-')) {
+      await this.handleWorkflowCommand(trimmed);
+      return;
+    }
+
+    // ── @agent-name mention ──────────────────────────────────────────────────
     const mentionMatch = rawMessage.match(/^@([\w-]+)\s*/);
     if (mentionMatch) {
       const mentionedId = mentionMatch[1];
@@ -137,7 +216,14 @@ export class ChatController {
         (event) => this.post({ type: 'thought', agentId, event }),
         async (prompt) => {
           const result = await this.requestInlineAction(prompt, ['Allow', 'Deny']);
-          return result === 'Allow';
+          const approved = result === 'Allow';
+          void this.auditLogger.logApprovalDecision(
+            Math.random().toString(36).slice(2),
+            'command',
+            approved ? 'approved' : 'denied',
+            agentId
+          );
+          return approved;
         },
         async (filePath, original, proposed) =>
           this.diffManager.showAndApprove(filePath, original, proposed),
@@ -174,9 +260,28 @@ export class ChatController {
           placeHolder: `Current: ${agent.provider.model}`
         });
         if (chosen) {
-          agent.provider.model = chosen;   // session-only override
+          agent.provider.model = chosen;
           this.currentModel = chosen;
           this.post({ type: 'model_switched', model: chosen });
+        }
+        break;
+      }
+      case 'set_mode': {
+        const newMode = msg.mode as string;
+        if (newMode) {
+          await this.applyModeChange(newMode, 'user_picker');
+        }
+        break;
+      }
+      case 'restore_checkpoint': {
+        const checkpointId = msg.checkpointId as string;
+        if (!checkpointId) break;
+        try {
+          await this.runner.checkpoints.restoreCheckpoint(checkpointId);
+          void this.auditLogger.logCheckpointEvent('restored', checkpointId, [], this._activeAgentId ?? 'none');
+          this.post({ type: 'wf_command_result', message: `Restored to checkpoint ${checkpointId}.` });
+        } catch (err) {
+          this.post({ type: 'error', message: `Restore failed: ${String(err)}` });
         }
         break;
       }
@@ -194,7 +299,6 @@ export class ChatController {
     this.statusBar.update(agent.name);
     await this.auditLogger.logAgentSwitch(agentId);
 
-    // Resolve effective provider (mirrors AgentRunner fallback logic)
     const explicitDefault = !!(agent.useDefaultProvider || !agent.provider?.type);
     let effectiveType = agent.provider.type;
     let effectiveModel = agent.provider.model;
@@ -205,7 +309,6 @@ export class ChatController {
       if (def) { effectiveType = def.type; effectiveModel = def.model; }
       usingDefault = true;
     } else {
-      // Auto-fallback: no own key + workspace default available
       const needsOwnKey = (agent.provider?.auth_method ?? 'api_key') === 'api_key';
       if (needsOwnKey) {
         const ownKey = await this.agentManager.getApiKey(agent.id);
@@ -258,7 +361,6 @@ export class ChatController {
         const hasUsableDefault = !!defaultProvider?.type && (!defaultNeedsKey || defaultKeySet);
 
         if (!ownKey && needsOwnKey && hasUsableDefault && defaultProvider) {
-          // Auto-fallback: no own key but workspace default is available
           effectiveType = defaultProvider.type;
           effectiveModel = defaultProvider.model;
           configured = true;
@@ -275,6 +377,55 @@ export class ChatController {
     }));
 
     this.post({ type: 'agent_list', agents, activeAgentId: this._activeAgentId });
+  }
+
+  // ─── Private helpers ──────────────────────────────────────────────────────────
+
+  private async applyModeChange(
+    newMode: string,
+    source: 'user_picker' | 'slash_command' | 'auto_detect'
+  ): Promise<void> {
+    const prevMode = this.currentMode;
+    this.currentMode = newMode;
+    const label = MODE_LABELS[newMode] ?? newMode;
+    this.statusBar.updateMode(label);
+    this.post({ type: 'mode_changed', mode: newMode, modeLabel: label });
+    void this.auditLogger.logModeChanged(this._activeAgentId ?? 'none', prevMode, newMode, source);
+  }
+
+  private async handleResumeCommand(): Promise<void> {
+    try {
+      const root = this.configManager.rootDir;
+      const { listPlans, loadPlan } = await import('../context/PlanManager.js');
+      const planIds = listPlans(root);
+      if (planIds.length === 0) {
+        this.post({ type: 'wf_command_result', message: 'No saved plans found. Start a new task by asking a question or using /plan.' });
+        return;
+      }
+      const plan = loadPlan(root, planIds[0]); // newest first
+      if (!plan) {
+        this.post({ type: 'wf_command_result', message: 'Could not load the latest plan.' });
+        return;
+      }
+
+      const pendingMilestone = plan.milestones.find((m: PlanMilestone) => m.status !== 'done' && m.status !== 'blocked');
+      const nextAction = pendingMilestone
+        ? `Continue with milestone: "${pendingMilestone.title}"`
+        : 'All milestones are complete or blocked.';
+
+      this.post({
+        type: 'resume_state',
+        taskTitle: plan.objective,
+        mode: this.currentMode,
+        lastSummary: plan.decisions.length > 0 ? plan.decisions[plan.decisions.length - 1] : 'No decisions recorded yet.',
+        nextAction,
+        selectedFiles: [],
+        planId: plan.id,
+        blockers: plan.blockers,
+      });
+    } catch (err) {
+      this.post({ type: 'error', message: `Resume failed: ${String(err)}` });
+    }
   }
 
   private async handleArtifactCommand(raw: string): Promise<void> {
@@ -298,7 +449,7 @@ export class ChatController {
     await this.handleUserMessage(`[Artifact extraction — ${artifactType}]\n${prompt}`);
   }
 
-  // ─── WF-402: Workflow management commands ─────────────────────────────────────
+  // ─── WF commands ────────────────────────────────────────────────────────────
 
   private async handleWorkflowCommand(raw: string): Promise<void> {
     if (!this.workflowEngine || !this.workflowStorage) {
@@ -310,7 +461,7 @@ export class ChatController {
     }
 
     const parts = raw.split(/\s+/);
-    const subcommand = parts[0].slice(4); // strip leading '/wf-'
+    const subcommand = parts[0].slice(4);
 
     switch (subcommand) {
       case 'list':
@@ -391,8 +542,6 @@ export class ChatController {
     if (confirmed !== 'Resume') return;
 
     try {
-      // resumeAfterReview is the canonical resume path; for manual resume we pass the taskId as the reviewId
-      // which resolves the waiting-review state. For WaitingChild tasks, callers should cancel the child.
       const resumed = await this.workflowEngine!.resumeAfterReview(workflowId, taskId);
       const msg = resumed
         ? `Task "${resumed.title ?? taskId}" resumed successfully.`
@@ -481,9 +630,8 @@ export class ChatController {
     }
   }
 
-  // ─── Workflow command helpers ──────────────────────────────────────────────────
+  // ─── Workflow command helpers ────────────────────────────────────────────────
 
-  /** Resolve a workflowId — prompts with quick-pick if not provided or ambiguous. */
   private async resolveWorkflowId(workflowId?: string): Promise<string | undefined> {
     if (workflowId) return workflowId;
 
@@ -506,7 +654,6 @@ export class ChatController {
     return chosen ? items.find(i => i.label === chosen)?.id : undefined;
   }
 
-  /** Find which workflow owns a given task by scanning all workflows. */
   private async resolveWorkflowIdForTask(taskId: string): Promise<string | undefined> {
     const ids = await this.workflowStorage!.listWorkflowIds();
     for (const id of ids) {
@@ -517,7 +664,6 @@ export class ChatController {
   }
 
   private estimateCost(model: string, totalInputTokens: number, totalOutputTokens: number): number {
-    // USD per 1M tokens — loaded from data/models.json
     const p = getAppData().pricing[model];
     if (!p) return 0;
     return (totalInputTokens / 1e6) * p.in + (totalOutputTokens / 1e6) * p.out;

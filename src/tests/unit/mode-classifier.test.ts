@@ -127,15 +127,17 @@ describe('buildUserModeDecision', () => {
 });
 
 describe('ALL_MODES', () => {
-  test('contains exactly 7 modes', () => {
-    expect(ALL_MODES).toHaveLength(7);
+  test('contains exactly 9 modes', () => {
+    expect(ALL_MODES).toHaveLength(9);
   });
 
-  test('contains expected modes', () => {
+  test('contains expected modes including new ask and code', () => {
     expect(ALL_MODES).toContain('plan');
     expect(ALL_MODES).toContain('edit');
     expect(ALL_MODES).toContain('debug');
     expect(ALL_MODES).toContain('test-fix');
+    expect(ALL_MODES).toContain('ask');
+    expect(ALL_MODES).toContain('code');
   });
 });
 

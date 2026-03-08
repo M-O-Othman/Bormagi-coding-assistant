@@ -25,6 +25,7 @@ import type {
 } from './types';
 import { serializeRepoMapSlice } from '../index/RepoMapStore';
 import { getModeBudget } from '../config/ModeBudgets';
+import { loadOutputContract } from './ModePromptLoader';
 
 // ─── Assembly inputs ──────────────────────────────────────────────────────────
 
@@ -45,6 +46,10 @@ export interface PromptAssemblyArgs {
   agentName?:      string;
   /** Project name — used in the identity section. */
   projectName?:    string;
+  /** Absolute path to the extension root, used to resolve mode prompt .md files. */
+  extensionRoot?:  string;
+  /** Absolute path to the workspace root, used to resolve workspace-override prompt .md files. */
+  workspaceRoot?:  string;
 }
 
 // ─── Section formatters ───────────────────────────────────────────────────────
@@ -95,6 +100,11 @@ function formatRepoMapSection(repoMap: RepoMap, maxTokens: number): string {
 }
 
 // ─── Output contracts (mode-specific) ────────────────────────────────────────
+//
+// @deprecated These inline constants are kept as a safety fallback only.
+// `assemblePrompt` now loads contracts from editable .md files via
+// `loadOutputContract` (ModePromptLoader). This constant will be removed once
+// all callers pass `extensionRoot`.
 
 const OUTPUT_CONTRACTS: Record<AssistantMode, string> = {
   plan: `## Output Contract
@@ -144,6 +154,23 @@ Respond with:
 - **Root Cause**: why the implementation produces the wrong result
 - **Fix**: the minimal code change that makes the test pass
 - **Confidence**: High / Medium / Low`,
+
+  ask: `## Output Contract
+You are in read-only Ask Mode. You must not modify any files, run commands, or make state changes.
+
+Provide a clear, structured explanation:
+- Start with a one-sentence summary
+- Answer the question directly using evidence from the codebase
+- Cite specific files and symbols where relevant
+- List caveats or missing context if applicable
+- Suggest a concrete next step if useful`,
+
+  code: `## Output Contract
+Respond with:
+- **Changed Files**: list every file modified
+- **Patch Summary**: concise description of each change
+- **Validation Notes**: how to verify the change is correct
+Apply edits directly to the provided editable files.`,
 };
 
 // ─── Identity preamble ────────────────────────────────────────────────────────
@@ -181,6 +208,8 @@ export function assemblePrompt(args: PromptAssemblyArgs): string {
     mode,
     agentName  = 'Bormagi',
     projectName = '',
+    extensionRoot,
+    workspaceRoot,
   } = args;
 
   const budget = getModeBudget(mode);

@@ -83,6 +83,26 @@ export const DEFAULT_MODE_BUDGETS: Record<AssistantMode, ModeBudget> = {
     userInput:         800,
     reservedMargin:   3200,
   },
+  ask: {
+    stablePrefix:     1800,
+    memory:           1000,
+    repoMap:          2200,
+    retrievedContext: 3500,
+    toolOutputs:       800,
+    conversationTail: 1200,
+    userInput:         800,
+    reservedMargin:   2500,
+  },
+  code: {
+    stablePrefix:     1800,
+    memory:           1200,
+    repoMap:          1200,
+    retrievedContext: 7000,
+    toolOutputs:      1200,
+    conversationTail: 1000,
+    userInput:         800,
+    reservedMargin:   3000,
+  },
 };
 
 // ─── Resolved budget (defaults merged with user settings) ─────────────────────

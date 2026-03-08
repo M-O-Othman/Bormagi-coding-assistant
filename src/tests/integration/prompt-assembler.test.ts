@@ -234,6 +234,8 @@ describe('assemblePrompt — mode-specific output contracts', () => {
     explain:   ['one-sentence summary', 'plain language'],
     search:    ['File path', 'line number', 'relevance'],
     'test-fix': ['Failure Analysis', 'Root Cause', 'Fix', 'Confidence'],
+    ask:       ['read-only', 'Ask Mode'],
+    code:      ['Changed Files', 'Patch Summary'],
   };
 
   for (const mode of ALL_MODES) {
