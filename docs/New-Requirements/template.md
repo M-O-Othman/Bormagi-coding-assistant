@@ -1,7 +1,7 @@
-Review the feature specification defined in the relevant file under `docs/New-Requirements/6.ai_coding_assistant_git_github_integration_spec.md` and assess the current implementation status of that feature across the codebase.
+Review the feature specification defined in the relevant file under `docs/New-Requirements/7.ai_coding_assistant_chatbot_ai_ux_spec.md` and assess the current implementation status of that feature across the codebase.
 
 The feature might has been implemented partially and with quality issues. Your task is to evaluate it thoroughly, identify what is complete, incomplete, incorrect, missing, or implemented in a way that does not fully satisfy the specification, while ensuring that no existing working functionality is broken.
-**feature-name:**6.ai_coding_assistant_git_github_integration
+**feature-name:**7.ai_coding_assistant_chatbot_ai_ux_spec.md
 
 **Follow this process strictly:**
 
@@ -52,5 +52,6 @@ Expected quality bar:
 - The plan must be concrete, sequenced, technically actionable, and test-aware.
 - The implementation must be production-quality, coherent with the existing architecture, and consistent with project conventions.
 - Where the existing implementation is weak or incorrect, explain the issue clearly and fix it systematically rather than patching symptoms.
-Check for any unwired code or incomplete planned tasks /TODOs and report to user 
-Push to remote github branch master
+- Check for any unwired code or incomplete planned tasks /TODOs and report to user 
+- remove any temporary files or scripts you created to clean up the workspace
+- Push to remote github branch master
