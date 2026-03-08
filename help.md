@@ -30,6 +30,10 @@ Agents can generate Word documents and PowerPoint presentations directly from yo
 ### 6. Predefined Agents
 Bormagi comes with a set of predefined agents that can be installed for immediate use. These agents are ready-made to assist with common development tasks, such as coding, architecture decisions, and documentation.
 
+### 7. Advanced Git & GitHub Integration
+Bormagi provides a robust Git safety net with automatic checkpoints and a full GitHub integration for PR creation and autonomous review remediation.
+
+
 ## Getting Started
 
 1. **Install the Extension**: You can download Bormagi from the Visual Studio Code Marketplace or install it using a `.vsix` file.

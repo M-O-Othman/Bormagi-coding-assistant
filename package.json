@@ -54,6 +54,14 @@
           "type": "webview",
           "id": "bormagi.chatView",
           "name": "Chat",
+          "icon": "media/icon.svg",
+          "retainContextWhenHidden": true
+        },
+        {
+          "type": "webview",
+          "id": "bormagi.checkpointHistory",
+          "name": "History",
+          "icon": "media/icon.svg",
           "retainContextWhenHidden": true
         }
       ]

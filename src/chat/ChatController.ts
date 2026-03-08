@@ -22,7 +22,8 @@ export type MessageToWebview =
   | { type: 'token_usage'; lastInputTokens: number; lastOutputTokens: number; sessionInputTokens: number; sessionOutputTokens: number; model: string }
   | { type: 'model_switched'; model: string }
   | { type: 'wf_command_result'; message: string }
-  | { type: 'action_request'; id: string; prompt: string; actions: string[] };
+  | { type: 'action_request'; id: string; prompt: string; actions: string[] }
+  | { type: 'git_status'; status: import('../git/GitService').RepoStatusSnapshot; checkpointId?: string };
 
 export class ChatController {
   private _activeAgentId: string | undefined;
@@ -36,6 +37,7 @@ export class ChatController {
   // Optional workflow engine — injected after construction when workflow features are active.
   private workflowEngine?: WorkflowEngine;
   private workflowStorage?: WorkflowStorage;
+  private gitPollInterval?: NodeJS.Timeout;
 
   constructor(
     private readonly agentManager: AgentManager,
@@ -44,7 +46,22 @@ export class ChatController {
     private readonly statusBar: StatusBar,
     private readonly runner: AgentRunner,
     private readonly undoManager: UndoManager
-  ) {}
+  ) {
+    this.startGitPolling();
+  }
+
+  private startGitPolling() {
+    this.gitPollInterval = setInterval(async () => {
+      try {
+        const root = this.configManager.rootDir;
+        const status = await this.runner.git.getStatus(root);
+        // Default checkpoint is not polled, emitted via side-effects if needed
+        this.post({ type: 'git_status', status, checkpointId: undefined });
+      } catch {
+        // Suppress errors during polling
+      }
+    }, 5000);
+  }
 
   /** Inject workflow engine after construction (called from extension.ts when workflow is enabled). */
   setWorkflowEngine(engine: WorkflowEngine, storage: WorkflowStorage): void {
@@ -179,9 +196,9 @@ export class ChatController {
 
     // Resolve effective provider (mirrors AgentRunner fallback logic)
     const explicitDefault = !!(agent.useDefaultProvider || !agent.provider?.type);
-    let effectiveType  = agent.provider.type;
+    let effectiveType = agent.provider.type;
     let effectiveModel = agent.provider.model;
-    let usingDefault   = false;
+    let usingDefault = false;
 
     if (explicitDefault) {
       const def = await this.configManager.readDefaultProvider();
@@ -228,7 +245,7 @@ export class ChatController {
       let usesDefault: boolean;
 
       if (explicitDefault) {
-        effectiveType  = defaultProvider?.type  ?? a.provider.type;
+        effectiveType = defaultProvider?.type ?? a.provider.type;
         effectiveModel = defaultProvider?.model ?? a.provider.model;
         const needsKey = (defaultProvider?.auth_method ?? 'api_key') === 'api_key';
         configured = !needsKey || (!!defaultProvider && defaultKeySet);
@@ -242,12 +259,12 @@ export class ChatController {
 
         if (!ownKey && needsOwnKey && hasUsableDefault && defaultProvider) {
           // Auto-fallback: no own key but workspace default is available
-          effectiveType  = defaultProvider.type;
+          effectiveType = defaultProvider.type;
           effectiveModel = defaultProvider.model;
           configured = true;
           usesDefault = true;
         } else {
-          effectiveType  = a.provider.type;
+          effectiveType = a.provider.type;
           effectiveModel = a.provider.model;
           configured = !needsOwnKey || !!ownKey;
           usesDefault = false;

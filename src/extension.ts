@@ -20,6 +20,7 @@ import { MeetingPanel } from './ui/MeetingPanel';
 import { StatusBar } from './ui/StatusBar';
 import { SetupWizard } from './ui/SetupWizard';
 import { AuditLogger } from './audit/AuditLogger';
+import { CheckpointPanel } from './ui/CheckpointPanel';
 import { MCPHost } from './mcp/MCPHost';
 import { ProjectConfig } from './types';
 // Import workflow engine and related classes
@@ -136,6 +137,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const chatViewProvider = new ChatViewProvider(context.extensionUri, chatController);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('bormagi.chatView', chatViewProvider, {
+      webviewOptions: { retainContextWhenHidden: true }
+    })
+  );
+
+  // ─── Sidebar checkpoint WebView ──────────────────────────────────────────
+  const checkpointPanel = new CheckpointPanel(context.extensionUri, runner.checkpoints);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(CheckpointPanel.viewType, checkpointPanel, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );

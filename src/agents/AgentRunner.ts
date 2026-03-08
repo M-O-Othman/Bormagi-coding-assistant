@@ -31,12 +31,16 @@ import { TurnMemory } from '../memory/TurnMemory';
 import { Consolidator } from '../memory/Consolidator';
 import { DecisionManager } from '../memory/DecisionManager';
 import { DelegationManager } from '../collaboration/DelegationManager';
-
-// ─── Sandbox imports ────────────────────────────────────────────────────────
+import { SandboxManager } from '../sandbox/SandboxManager';
 import { PolicyEngine } from '../sandbox/PolicyEngine';
 import { ApprovalService } from '../sandbox/ApprovalService';
-import { SandboxManager } from '../sandbox/SandboxManager';
 import { ExecWrapper, PromptApprovalCallback } from '../sandbox/ExecWrapper';
+import { GitService } from '../git/GitService';
+import { CheckpointManager } from '../git/CheckpointManager';
+import { ValidationService } from '../git/ValidationService';
+import { CommitProposalGenerator } from '../git/CommitProposalGenerator';
+
+// ─── Sandbox imports ────────────────────────────────────────────────────────
 import { SandboxHandle } from '../sandbox/types';
 
 // ─── Context pipeline imports ──────────────────────────────────────────────────
@@ -78,6 +82,11 @@ export class AgentRunner {
   private readonly hookEngine: HookEngine;
   private activeSandbox: SandboxHandle | null = null;
   private execWrapper: ExecWrapper | null = null;
+  private readonly gitService: GitService;
+  private readonly checkpointManager: CheckpointManager;
+  private readonly validationService: ValidationService;
+  private readonly commitGenerator: CommitProposalGenerator;
+  private currentCheckpointId: string | null = null;
 
   constructor(
     private readonly agentManager: AgentManager,
@@ -97,6 +106,11 @@ export class AgentRunner {
     private readonly approvalService?: ApprovalService,
     private readonly sandboxManager?: SandboxManager
   ) {
+    this.gitService = new GitService(workspaceRoot);
+    this.checkpointManager = new CheckpointManager(workspaceRoot);
+    this.validationService = new ValidationService(workspaceRoot);
+    this.commitGenerator = new CommitProposalGenerator(this.gitService);
+
     if (this.policyEngine && this.approvalService) {
       this.execWrapper = new ExecWrapper(
         this.policyEngine,
@@ -137,6 +151,15 @@ export class AgentRunner {
     this.enhancedMemory = new EnhancedSessionMemory(workspaceRoot);
     this.hookEngine = new HookEngine(workspaceRoot);
   }
+
+  get git(): GitService {
+    return this.gitService;
+  }
+
+  get checkpoints(): CheckpointManager {
+    return this.checkpointManager;
+  }
+
 
   async run(
     agentId: string,
@@ -255,6 +278,24 @@ export class AgentRunner {
     const requestId = `${agentId}-${Date.now()}`;
     const vsConfig = vscode.workspace.getConfiguration('bormagi');
     const enhancedPipeline = vsConfig.get<boolean>('contextPipeline.enabled', false);
+
+    // ─── Phase-1: Git Capabilities & Pre-Edit State (FR-001, FR-006, FR-020) ─
+    const gitContext = await this.gitService.getStatus(this.workspaceRoot);
+    if (gitContext.state !== "clean" && enhancedPipeline) {
+      onThought({
+        type: 'thinking',
+        label: `Repository is dirty (${gitContext.state}). Extracting Git snapshot.`,
+        timestamp: new Date()
+      });
+    }
+
+    // Automatically checkpoint the workspace BEFORE starting any new task iterations
+    if (enhancedPipeline && !this.currentCheckpointId) {
+      const checkpt = await this.checkpointManager.createCheckpoint('task_start', `Start Task: ${userMessage.substring(0, 25)}`);
+      this.currentCheckpointId = checkpt.id;
+      turnMemory.addToolResult('system_checkpoint', `A Git Checkpoint was successfully created before this task began (ID: ${checkpt.id}).`);
+    }
+
     await this.auditLogger.logModeClassified(
       requestId,
       mode,
@@ -275,13 +316,10 @@ export class AgentRunner {
     const budget = getModeBudget(mode);
     const profile = getActiveModelProfile(effectiveProvider);
 
-    // 3. Resolve instructions from .bormagi/instructions/{global,repo}.md.
-    const instructions = resolveInstructions(this.workspaceRoot);
-
-    // 4. Load repo map from .bormagi/repo-map.json (null if not yet built).
+    // 3. Load repo map from .bormagi/repo-map.json (null if not yet built).
     const repoMap = loadRepoMap(this.workspaceRoot);
 
-    // 5. Gather, score, and rank context candidates.
+    // 4. Gather, score, and rank context candidates.
     const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath;
     const retrievalQuery = { text: userMessage, mode, activeFile };
     const candidates = await retrieveCandidates(
@@ -289,6 +327,15 @@ export class AgentRunner {
       { workspaceRoot: this.workspaceRoot, repoMap, activeFilePath: activeFile, agentId },
       budget.retrievedContext,
     );
+
+    // 5. Build candidate paths for YAML instruction glob matching
+    const candidatePaths = candidates.map(c => c.path || '').filter(Boolean);
+    if (gitContext && gitContext.changedPaths) {
+      gitContext.changedPaths.forEach(cp => candidatePaths.push(cp.path));
+    }
+
+    // 6. Resolve instructions from .bormagi and .github files, scoped by paths
+    const instructions = resolveInstructions(this.workspaceRoot, candidatePaths);
 
     // 6. Partition candidates into envelope slots (editable / reference / memory / toolOutputs).
     const envelope = buildContextEnvelope(candidates, mode);
@@ -355,6 +402,10 @@ export class AgentRunner {
 
     const rawTools = [...this.mcpHost.getAllTools(), ...getAppData().virtualTools];
     const tools = minifyToolDefinitions(rawTools);
+
+    if (enhancedPipeline && this.currentCheckpointId) {
+      messages.push({ role: 'system', content: `[System Notice]: A Git Checkpoint was successfully created before this task began (ID: ${this.currentCheckpointId}).` });
+    }
 
     // Secret scan before sending context to the model.
     const secretHits = scanForSecrets(messages);
@@ -545,6 +596,22 @@ export class AgentRunner {
           // ─── Phase-5: after-edit hook for file-mutation tools ──────────────
           if (enhancedPipeline && (event.name.includes('write') || event.name.includes('edit'))) {
             await this.hookEngine.onAfterEdit([event.name], { mode });
+
+            // Post-Edit Pipeline (FR-021)
+            onThought({ type: 'thinking', label: 'Running Validation Services...', timestamp: new Date() });
+            const val = await this.validationService.run([event.name]);
+            if (!val.ok) {
+              onThought({
+                type: 'error',
+                label: `Validation Failed after edit (${val.diagnostics.length} issues)`,
+                detail: val.diagnostics[0]?.message || 'Unknown Failure',
+                timestamp: new Date()
+              });
+              // Provide context back to the agent so it can self-repair (FR-057)
+              messages.push({ role: 'user', content: `[Validation Output]\n${val.rawOutput}\nPlease fix the errors before continuing.` });
+            } else {
+              this.currentCheckpointId = null; // Prepare for next checkpoint
+            }
           }
         }
       }
@@ -577,6 +644,18 @@ export class AgentRunner {
         this.enhancedMemory.recordEditedFile(agentId, file);
       }
       await this.enhancedMemory.persistState(agentId);
+
+      // Phase 3: Commit Proposal (FR-032)
+      if (enhancedPipeline && toolsUsed.some(t => t.includes('write') || t.includes('edit'))) {
+        const proposal = await this.commitGenerator.generate(this.workspaceRoot, fullResponse.substring(0, 500));
+        onThought({
+          type: 'thinking',
+          label: `Proposed Commit: ${proposal.title}`,
+          detail: proposal.body,
+          timestamp: new Date()
+        });
+        // We don't auto-commit, but we provide the proposal in the summary if needed.
+      }
 
       // Save a session checkpoint so the session can be resumed after restart.
       await saveCheckpoint(this.workspaceRoot, buildCheckpointState(requestId, {

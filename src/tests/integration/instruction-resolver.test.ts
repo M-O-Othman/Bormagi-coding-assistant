@@ -42,7 +42,7 @@ describe('resolveInstructions', () => {
     const result = resolveInstructions(tmpDir);
     expect(result.merged).toBe('');
     expect(result.totalTokenEstimate).toBe(0);
-    expect(result.layers).toHaveLength(2);
+    expect(result.layers).toHaveLength(4);
   });
 
   test('marks missing layers correctly', () => {
@@ -70,7 +70,7 @@ describe('resolveInstructions', () => {
 
   test('merges both layers with separator', () => {
     writeInstructionFile(tmpDir, GLOBAL_INSTRUCTION, 'Global rules here.');
-    writeInstructionFile(tmpDir, REPO_INSTRUCTION,   'Repo rules here.');
+    writeInstructionFile(tmpDir, REPO_INSTRUCTION, 'Repo rules here.');
     const result = resolveInstructions(tmpDir);
     expect(result.merged).toContain('Global rules here.');
     expect(result.merged).toContain('Repo rules here.');
@@ -79,10 +79,10 @@ describe('resolveInstructions', () => {
 
   test('layer order is global before repo', () => {
     writeInstructionFile(tmpDir, GLOBAL_INSTRUCTION, 'GLOBAL');
-    writeInstructionFile(tmpDir, REPO_INSTRUCTION,   'REPO');
+    writeInstructionFile(tmpDir, REPO_INSTRUCTION, 'REPO');
     const result = resolveInstructions(tmpDir);
     const globalIdx = result.merged.indexOf('GLOBAL');
-    const repoIdx   = result.merged.indexOf('REPO');
+    const repoIdx = result.merged.indexOf('REPO');
     expect(globalIdx).toBeLessThan(repoIdx);
   });
 
@@ -104,8 +104,9 @@ describe('resolveInstructions', () => {
 
   test('layer filePath points to the correct absolute path', () => {
     const result = resolveInstructions(tmpDir);
-    const [global, repo] = result.layers;
-    expect(global.filePath).toContain(INSTRUCTION_DIR);
+    const global = result.layers.find(l => l.role === 'global')!;
+    const repo = result.layers.find(l => l.role === 'repo')!;
+    expect(global.filePath).toContain(path.normalize(INSTRUCTION_DIR));
     expect(global.filePath).toContain(GLOBAL_INSTRUCTION);
     expect(repo.filePath).toContain(REPO_INSTRUCTION);
   });

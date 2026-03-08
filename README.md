@@ -46,6 +46,7 @@ No admin permissions are required. Install from the VS Code Marketplace or from 
 20. [Agent Knowledge Base & Memory](#agent-knowledge-base--memory)
 21. [Multi-Agent Collaboration](#multi-agent-collaboration)
 48. [Sandbox Separated Work Environment](#sandbox-separated-work-environment)
+49. [Advanced Git & GitHub Integration](#advanced-git--github-integration)
 
 ---
 
@@ -98,7 +99,10 @@ The Chat tab provides a full streaming chat experience with the selected agent.
 | Token stats | Running totals of prompt/completion tokens and estimated cost |
 | Thought trace | Collapsible section under each response showing every tool call and result |
 | Input history | `↑` / `↓` keys cycle through previously sent messages |
+| Input history | `↑` / `↓` keys cycle through previously sent messages |
 | Clear / Export | Clear the visible history, or export the chat as plain text |
+| **Git Status** | Real-time branch and working tree state displayed in the toolbar |
+| **Checkpoints** | Automatic system checkpoints before tasks; button to view history |
 
 **File writes** always open a VS Code diff editor for your approval. **Shell commands** show an explicit confirmation prompt before executing.
 
@@ -787,6 +791,31 @@ Built-in tools available to all agents:
 | `create_presentation` | Create a PowerPoint presentation (`.pptx`) from slide Markdown | Yes — approval prompt |
 
 Custom MCP servers can be added per-agent in `config.json` under `mcp_servers`.
+
+---
+
+## Advanced Git & GitHub Integration
+
+Bormagi features deep integration with Git and GitHub to provide a safety net for agentic coding and a seamless transition to the PR review phase.
+
+### Local Git Safety Net (Checkpoints)
+
+Every time an agent starts a task or modifies a file, Bormagi automatically creates a **Shadow Checkpoint** in a hidden Git repository (`.bormagi/shadow.git`).
+- **Pre-edit Checkpoint**: Created manually or automatically before an agent begins work.
+- **Visual History**: Use the **History** tab in the sidebar to see all checkpoints.
+- **One-click Restore**: Instantly roll back your entire workspace to any previous state if an agent makes a mistake.
+
+### GitHub Integration
+
+Bormagi can manage the entire lifecycle of a feature branch:
+- **Draft PR Creation**: Agents can propose code changes and automatically open a Draft PR on GitHub.
+- **CI Check Integration**: Bormagi monitors PR check runs (actions) and can self-repair if a build fails.
+- **Review Remediation Loop**: When humans leave review comments on a PR, Bormagi can autonomously fetch those comments, synthesize a fix, and push updated code to the branch.
+
+### Requirements
+- **Git**: Installed and available in the system PATH.
+- **GitHub CLI (`gh`)**: Recommended for full PR automation and authentication fallback.
+- **VS Code GitHub Auth**: Bormagi will attempt to use your signed-in VS Code account first.
 
 ---
 

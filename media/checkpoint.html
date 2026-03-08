@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-inline';">
+    <title>Checkpoint History</title>
+    <style>
+        :root {
+            --bg: var(--vscode-sideBar-background);
+            --fg: var(--vscode-sideBar-foreground);
+            --border: var(--vscode-widget-border);
+            --hover: var(--vscode-list-hoverBackground);
+            --accent: var(--vscode-button-background);
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--fg);
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            padding: 10px;
+            margin: 0;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 5px;
+        }
+
+        .checkpoint-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .checkpoint-card {
+            background: var(--vscode-editor-background);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 8px;
+            cursor: default;
+            transition: background 0.2s;
+        }
+
+        .checkpoint-card:hover {
+            background: var(--hover);
+        }
+
+        .meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85em;
+            opacity: 0.7;
+            margin-bottom: 4px;
+        }
+
+        .label {
+            font-weight: bold;
+            display: block;
+            margin-bottom: 6px;
+        }
+
+        .actions {
+            display: flex;
+            justify-content: flex-end;
+        }
+
+        button {
+            background: var(--accent);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 4px 10px;
+            border-radius: 2px;
+            cursor: pointer;
+            font-size: 0.9em;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        .empty {
+            text-align: center;
+            opacity: 0.6;
+            margin-top: 40px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <span>History</span>
+        <button id="refresh-btn">Refresh</button>
+    </div>
+    <div id="list" class="checkpoint-list">
+        <div class="empty">Scanning for checkpoints...</div>
+    </div>
+
+    <script>
+        const vscode = acquireVsCodeApi();
+        const listEl = document.getElementById('list');
+
+        window.addEventListener('message', event => {
+            const message = event.data;
+            if (message.type === 'history') {
+                render(message.history);
+            }
+        });
+
+        document.getElementById('refresh-btn').onclick = () => {
+            vscode.postMessage({ type: 'refresh' });
+        };
+
+        function render(history) {
+            if (history.length === 0) {
+                listEl.innerHTML = '<div class="empty">No shadow checkpoints found yet.</div>';
+                return;
+            }
+
+            listEl.innerHTML = history.map(c => `
+                <div class="checkpoint-card">
+                    <div class="meta">
+                        <span>${c.trigger.toUpperCase()}</span>
+                        <span>${new Date(c.createdAt).toLocaleTimeString()}</span>
+                    </div>
+                    <span class="label">${c.label}</span>
+                    <div class="actions">
+                        <button onclick="restore('${c.id}')">Restore</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        window.restore = (id) => {
+            vscode.postMessage({ type: 'restore', checkpointId: id });
+        };
+
+        // Initial fetch
+        vscode.postMessage({ type: 'refresh' });
+    </script>
+</body>
+
+</html>
