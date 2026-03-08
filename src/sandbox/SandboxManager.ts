@@ -28,7 +28,10 @@ export class SandboxManager {
 
         const isGitRepo = fs.existsSync(path.join(this.workspaceRoot, '.git'));
 
-        let branchName = `bormagi/task-${req.taskId}`;
+        // Normalise taskId: strip any leading "task-" so the branch never
+        // becomes "bormagi/task-task-<id>" when the caller already prefixes it.
+        const normTaskId = req.taskId.replace(/^task-/, '');
+        let branchName = `bormagi/task-${normTaskId}`;
 
         if (isGitRepo && req.isolationMode === 'local_worktree_sandbox') {
             try {

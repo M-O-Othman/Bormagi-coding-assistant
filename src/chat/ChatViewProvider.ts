@@ -107,7 +107,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ];
         for (const markedPath of candidatePaths) {
           if (fs.existsSync(markedPath)) {
-            const markedSrc = fs.readFileSync(markedPath, 'utf8');
+            // Strip sourceMappingURL to avoid a blocked CSP request for the .map file
+            const markedSrc = fs.readFileSync(markedPath, 'utf8')
+              .replace(/\/\/# sourceMappingURL=\S+/g, '');
             raw = raw.replace('/*__MARKED_LIB__*/', markedSrc);
             markedInjected = true;
             break;

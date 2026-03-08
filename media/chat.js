@@ -335,7 +335,7 @@ function beginStream() {
   const strip = document.createElement('div');
   strip.className = 'thought-strip';
   strip.innerHTML =
-    '<div class="thought-hd" onclick="toggleStrip(this)">' +
+    '<div class="thought-hd" data-action="toggle-strip">' +
     '<span class="thought-hd-icon">⚙</span>' +
     '<span class="thought-hd-label">0 tool actions</span>' +
     '<span class="thought-chevron">▼</span>' +
@@ -436,7 +436,7 @@ function appendThought(event) {
       ? '<div class="thought-detail' + (isLong ? ' thought-detail-collapsed' : '') + '" id="' + detailId + '">' +
       esc(isLong ? detail.slice(0, 300) + '…' : detail) +
       '</div>' +
-      (isLong ? '<button class="thought-expand-btn" onclick="toggleThoughtDetail(\'' + detailId + '\',this,' + JSON.stringify(esc(detail)) + ')">Show more</button>' : '')
+      (isLong ? '<button class="thought-expand-btn" data-action="toggle-detail" data-detail-id="' + detailId + '" data-detail-full="' + esc(detail).replace(/"/g, '&quot;') + '">Show more</button>' : '')
       : '');
 
   body.appendChild(item);
@@ -542,7 +542,7 @@ function postProcessCodeBlocks(container) {
     header.className = 'md-code-header';
     header.innerHTML =
       '<span class="md-code-lang">' + esc(lang || 'code') + '</span>' +
-      '<button class="md-code-copy" onclick="copyCodeBlock(this)">Copy</button>';
+      '<button class="md-code-copy" data-action="copy-code">Copy</button>';
 
     // Body
     const body = document.createElement('div');
@@ -621,8 +621,7 @@ function showActionCard(id, prompt, actions, meta) {
   const btnsHtml = actions.map((a, idx) => {
     const isDeny = idx === actions.length - 1 && actions.length > 1;
     return '<button class="action-btn' + (isDeny ? ' deny-btn' : '') + '" ' +
-      'data-action="' + esc(a) + '" ' +
-      'onclick="respondAction(\'' + id + '\', \'' + a.replace(/'/g, "\\'") + '\')">' +
+      'data-action="respond-action" data-card-id="' + esc(id) + '" data-choice="' + esc(a) + '">' +
       esc(a) + '</button>';
   }).join('');
 
@@ -692,7 +691,7 @@ const EXAMPLE_PROMPTS = [
 
 function buildEmptyState() {
   const chips = EXAMPLE_PROMPTS.map(p =>
-    '<button class="example-chip" onclick="useExamplePrompt(' + JSON.stringify(p) + ')">' + esc(p) + '</button>'
+    '<button class="example-chip" data-action="use-example" data-prompt="' + esc(p) + '">' + esc(p) + '</button>'
   ).join('');
   return '<div id="empty-state">' +
     '<div class="empty-icon">◈</div>' +
@@ -875,7 +874,7 @@ function showContextUpdate(items, tokenHealth) {
       ? '<span class="ctx-tok-badge">' + (item.estimatedTokens > 999 ? Math.round(item.estimatedTokens / 1000) + 'k' : item.estimatedTokens) + '</span>'
       : '';
     const removeBtn = item.removable
-      ? '<button class="ctx-remove-btn" title="Remove from context" onclick="removeContextItem(' + JSON.stringify(item.id) + ')">×</button>'
+      ? '<button class="ctx-remove-btn" title="Remove from context" data-action="remove-ctx-item" data-item-id="' + esc(item.id) + '">×</button>'
       : '';
 
     el.innerHTML =
@@ -933,7 +932,7 @@ function showPlanArtifact(plan) {
     const isDone = ms.status === 'done';
     return '<div class="plan-milestone">' +
       '<input type="checkbox" ' + (isDone ? 'checked' : '') + ' ' +
-      'onchange="toggleMilestone(\'' + plan.id + '\',' + idx + ',this.checked)">' +
+      'data-action="toggle-milestone" data-plan-id="' + esc(plan.id) + '" data-idx="' + idx + '">' +
       '<span class="plan-milestone-text' + (isDone ? ' done' : '') + '">' + esc(ms.title) + '</span>' +
       '</div>';
   }).join('');
@@ -1176,8 +1175,8 @@ window.addEventListener('message', e => {
         (m.lastSummary ? '<div class="resume-card-row">Last: <span>' + esc(m.lastSummary) + '</span></div>' : '') +
         (m.nextAction ? '<div class="resume-card-row">Next: <span>' + esc(m.nextAction) + '</span></div>' : '') +
         '<div class="resume-card-actions">' +
-        '<button class="action-btn" onclick="sendResume()">Resume</button>' +
-        '<button class="action-btn deny-btn" onclick="dismissResume(this)">Dismiss</button>' +
+        '<button class="action-btn" data-action="send-resume">Resume</button>' +
+        '<button class="action-btn deny-btn" data-action="dismiss-resume">Dismiss</button>' +
         '</div>' +
         '</div>' +
         '</div></div>';
@@ -1316,5 +1315,58 @@ document.getElementById('checkpoint-pill')?.addEventListener('click', () => {
   vscode.postMessage({ type: 'open_checkpoints' });
 });
 document.getElementById('context-rail-header')?.addEventListener('click', toggleContextRail);
+
+// ── Delegated event handlers (CSP: no inline handlers in dynamic HTML) ──────
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+  if (!el) return;
+  const action = el.dataset.action;
+  switch (action) {
+    case 'toggle-strip': {
+      toggleStrip(el);
+      break;
+    }
+    case 'toggle-detail': {
+      const id = el.dataset.detailId;
+      const full = el.dataset.detailFull || '';
+      const target = document.getElementById(id);
+      if (!target) break;
+      const collapsed = target.classList.toggle('thought-detail-collapsed');
+      target.innerHTML = collapsed ? full.slice(0, 300) + '…' : full;
+      el.textContent = collapsed ? 'Show more' : 'Show less';
+      break;
+    }
+    case 'copy-code': {
+      copyCodeBlock(el);
+      break;
+    }
+    case 'respond-action': {
+      respondAction(el.dataset.cardId, el.dataset.choice);
+      break;
+    }
+    case 'use-example': {
+      window.useExamplePrompt(el.dataset.prompt || '');
+      break;
+    }
+    case 'remove-ctx-item': {
+      window.removeContextItem(el.dataset.itemId);
+      break;
+    }
+    case 'send-resume': {
+      window.sendResume();
+      break;
+    }
+    case 'dismiss-resume': {
+      el.closest('.msg')?.remove();
+      break;
+    }
+  }
+});
+
+document.addEventListener('change', e => {
+  const el = e.target.closest('[data-action="toggle-milestone"]');
+  if (!el) return;
+  window.toggleMilestone(el.dataset.planId, parseInt(el.dataset.idx, 10), el.checked);
+});
 
 vscode.postMessage({ type: 'refresh_agents' });
