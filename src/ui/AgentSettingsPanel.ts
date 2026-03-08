@@ -73,6 +73,8 @@ export class AgentSettingsPanel {
     );
     const defaultProvider = await this.configManager.readDefaultProvider();
     const hasDefaultKey = await this.secrets.hasApiKey('__default__');
+    const classifierProvider = await this.configManager.readClassifierProvider();
+    const hasClassifierKey = await this.secrets.hasApiKey('__classifier__');
     const mode = this.initialMode;
     const focusAgentId = this.focusAgentId ?? null;
     this.panel.webview.postMessage({
@@ -81,7 +83,9 @@ export class AgentSettingsPanel {
       mode,
       focusAgentId,
       defaultProvider: defaultProvider ?? null,
-      hasDefaultKey
+      hasDefaultKey,
+      classifierProvider: classifierProvider ?? null,
+      hasClassifierKey
     });
     this.initialMode = 'list';
     this.focusAgentId = undefined;
@@ -184,6 +188,27 @@ export class AgentSettingsPanel {
           await this.agentManager.updateAgent({ ...a, useDefaultProvider: true });
         }
         this.panel.webview.postMessage({ type: 'apply_default_done', count: allAgents.length });
+        await this.sendAgentList();
+        break;
+      }
+
+      case 'save_classifier_provider': {
+        const provider = msg.provider as ProviderConfig | null;
+        const apiKey = msg.apiKey as string | undefined;
+        if (provider !== null) {
+          const normalised = this.normaliseAuthMethod(provider);
+          if (!normalised.type || !normalised.model) {
+            this.panel.webview.postMessage({ type: 'error', message: 'Provider type and model are required for the classifier.' });
+            return;
+          }
+          await this.configManager.writeClassifierProvider(normalised);
+        } else {
+          await this.configManager.writeClassifierProvider(null);
+        }
+        if (apiKey && apiKey.trim()) {
+          await this.secrets.setApiKey('__classifier__', apiKey.trim());
+        }
+        this.panel.webview.postMessage({ type: 'classifier_saved' });
         await this.sendAgentList();
         break;
       }
@@ -327,6 +352,37 @@ export class AgentSettingsPanel {
       <button class="btn btn-secondary" onclick="applyDefaultToAll()" title="Set all agents to use the workspace default provider">Apply to all agents</button>
     </div>
     <div id="default-status"></div>
+  </div>
+
+  <!-- Classifier Model Card -->
+  <div class="default-card">
+    <h3>Classifier Model <span class="badge">Secondary LLM</span></h3>
+    <p style="font-size:11px;opacity:0.6;margin-bottom:10px">
+      Optional lightweight model used to auto-detect the assistant mode (plan / edit / debug…) for each request.
+      Leave blank to use the built-in regex classifier instead.
+      A fast, cheap model such as <strong>claude-haiku-4-5-20251001</strong> is recommended.
+    </p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div>
+        <label for="cl-provider">Provider</label>
+        <select id="cl-provider" onchange="onClassifierProviderChange()">${providerOptions}</select>
+      </div>
+      <div>
+        <label for="cl-model">Model</label>
+        <select id="cl-model"></select>
+      </div>
+    </div>
+    <label for="cl-apikey">API Key</label>
+    <input id="cl-apikey" type="password" placeholder="Leave blank to keep existing key"/>
+    <label for="cl-base-url">Custom Base URL (optional)</label>
+    <input id="cl-base-url" type="text" placeholder="https://api.example.com/v1beta"/>
+    <label for="cl-proxy-url">Proxy URL (optional)</label>
+    <input id="cl-proxy-url" type="text" placeholder="https://proxy.example.com"/>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" onclick="saveClassifierProvider()">Save Classifier</button>
+      <button class="btn btn-secondary" onclick="clearClassifierProvider()">Clear (use regex)</button>
+    </div>
+    <div id="classifier-status"></div>
   </div>
 
   <div class="section" id="list-section">
@@ -499,6 +555,47 @@ export class AgentSettingsPanel {
       }
       document.getElementById('default-status').textContent = 'Applying…';
       vscode.postMessage({ type: 'apply_default_to_all' });
+    }
+
+    // ── Classifier provider section ───────────────────────────────────────
+    function onClassifierProviderChange() {
+      const p = document.getElementById('cl-provider').value;
+      const sel = document.getElementById('cl-model');
+      sel.innerHTML = (MODELS[p] || []).map(m => '<option value="' + m + '">' + m + '</option>').join('');
+    }
+
+    function saveClassifierProvider() {
+      const type = document.getElementById('cl-provider').value;
+      const model = document.getElementById('cl-model').value;
+      const apiKey = document.getElementById('cl-apikey').value.trim();
+      const baseUrl = document.getElementById('cl-base-url').value.trim() || null;
+      const proxyUrl = document.getElementById('cl-proxy-url').value.trim() || null;
+      if (!type || !model) {
+        document.getElementById('classifier-status').textContent = '⚠ Select a provider and model first.';
+        return;
+      }
+      vscode.postMessage({
+        type: 'save_classifier_provider',
+        provider: { type, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: 'api_key', vertex_location: null },
+        apiKey: apiKey || undefined
+      });
+    }
+
+    function clearClassifierProvider() {
+      vscode.postMessage({ type: 'save_classifier_provider', provider: null });
+    }
+
+    function populateClassifierCard(cfg, hasKey) {
+      if (!cfg) { return; }
+      const provSel = document.getElementById('cl-provider');
+      provSel.value = cfg.type || '';
+      const modelSel = document.getElementById('cl-model');
+      modelSel.innerHTML = (MODELS[cfg.type] || []).map(m => '<option value="' + m + '">' + m + '</option>').join('');
+      modelSel.value = cfg.model || '';
+      document.getElementById('cl-base-url').value = cfg.base_url || '';
+      document.getElementById('cl-proxy-url').value = cfg.proxy_url || '';
+      const status = document.getElementById('classifier-status');
+      status.textContent = hasKey ? '✓ API key stored' : '';
     }
 
     // ── Per-agent provider fields toggle ──────────────────────────────────
@@ -716,6 +813,19 @@ export class AgentSettingsPanel {
         document.getElementById('default-status').textContent =
           msg.hasDefaultKey ? '✓ Default API key is set' : 'No default API key set';
         document.getElementById('default-status').style.opacity = '0.6';
+        // Populate classifier fields
+        if (msg.classifierProvider) {
+          populateClassifierCard(msg.classifierProvider, msg.hasClassifierKey);
+        } else {
+          document.getElementById('classifier-status').textContent =
+            'Not configured — using built-in regex classifier';
+          document.getElementById('classifier-status').style.opacity = '0.6';
+        }
+      } else if (msg.type === 'classifier_saved') {
+        const el = document.getElementById('classifier-status');
+        el.textContent = '✓ Classifier saved';
+        el.style.color = 'var(--vscode-terminal-ansiGreen)';
+        document.getElementById('cl-apikey').value = '';
       } else if (msg.type === 'save_success') {
         showStatus('Agent saved successfully.', true);
         hideForm();
@@ -733,6 +843,7 @@ export class AgentSettingsPanel {
 
     // Initial load
     onDefaultProviderChange();
+    onClassifierProviderChange();
     onProviderChange();
     document.getElementById('f-auth-method').addEventListener('change', syncAgentAuthControls);
     vscode.postMessage({ type: 'get_agents' });

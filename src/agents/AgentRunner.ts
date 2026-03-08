@@ -44,7 +44,7 @@ import { CommitProposalGenerator } from '../git/CommitProposalGenerator';
 import { SandboxHandle } from '../sandbox/types';
 
 // ─── Context pipeline imports ──────────────────────────────────────────────────
-import { classifyMode } from '../context/ModeClassifier';
+import { classifyMode, classifyModeWithLLM } from '../context/ModeClassifier';
 import { getModeBudget } from '../config/ModeBudgets';
 import { getActiveModelProfile } from '../config/ModelProfiles';
 import { enforcePreflightBudget, estimateEnvelopeTokens, estimateTokens } from '../context/BudgetEngine';
@@ -287,7 +287,26 @@ export class AgentRunner {
     const projectName = projectConfig?.project.name ?? '';
 
     // 1. Classify mode — use explicitly set userMode if provided, otherwise auto-detect.
-    const modeDecision = classifyMode(userMessage);
+    //    When a classifierProvider is configured, delegate to the secondary LLM.
+    let modeDecision = classifyMode(userMessage);
+    if (!userMode) {
+      const classifierProviderCfg = await this.configManager.readClassifierProvider();
+      if (classifierProviderCfg) {
+        const classifierKey = await this.agentManager.getApiKey('__classifier__');
+        if (classifierKey || classifierProviderCfg.auth_method !== 'api_key') {
+          const classifierLLM = ProviderFactory.create(
+            { ...agentConfig, provider: classifierProviderCfg },
+            classifierKey,
+          );
+          modeDecision = await classifyModeWithLLM(userMessage, classifierLLM);
+          onThought({
+            type: 'thinking',
+            label: `Mode classified by LLM (${classifierProviderCfg.model}): ${modeDecision.mode}`,
+            timestamp: new Date(),
+          });
+        }
+      }
+    }
     const mode: AssistantMode = userMode ?? modeDecision.mode;
     const requestId = `${agentId}-${Date.now()}`;
     const vsConfig = vscode.workspace.getConfiguration('bormagi');

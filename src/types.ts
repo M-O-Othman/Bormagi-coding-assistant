@@ -13,6 +13,12 @@ export interface ProjectConfig {
   };
   agents: string[];
   defaultProvider?: ProviderConfig;
+  /**
+   * Secondary lightweight provider used for mode classification.
+   * When set, AgentRunner calls this provider instead of the regex classifier
+   * to determine the assistant mode for each request.
+   */
+  classifierProvider?: ProviderConfig;
   /** Role selected during first-launch onboarding wizard. Used to rank agent list. */
   userRole?: UserRole;
 }

@@ -241,6 +241,24 @@ export class ConfigManager {
     await this.writeProjectConfig(proj);
   }
 
+  async readClassifierProvider(): Promise<import('../types').ProviderConfig | null> {
+    const proj = await this.readProjectConfig();
+    return proj?.classifierProvider ?? null;
+  }
+
+  async writeClassifierProvider(provider: import('../types').ProviderConfig | null): Promise<void> {
+    const proj = await this.readProjectConfig() ?? {
+      project: { name: '', created_at: new Date().toISOString() },
+      agents: []
+    };
+    if (provider === null) {
+      delete proj.classifierProvider;
+    } else {
+      proj.classifierProvider = provider;
+    }
+    await this.writeProjectConfig(proj);
+  }
+
   async appendAuditLog(entry: string): Promise<void> {
     const filePath = this.auditLogPath;
     fs.mkdirSync(path.dirname(filePath), { recursive: true });

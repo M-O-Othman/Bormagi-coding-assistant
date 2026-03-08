@@ -1,15 +1,18 @@
 // ─── Mode Classifier ──────────────────────────────────────────────────────────
 //
-// Rules-based request classifier.
+// Rules-based request classifier with optional LLM-based override.
 //
 // The user selects mode explicitly via the status bar dropdown (OQ-1 answer: C).
 // This classifier is the auto-detect fallback used when no explicit selection
 // has been made for the current request.
 //
-// Rules are deterministic keyword/pattern matching — no LLM call is made.
+// When a classifierProvider is configured in project settings, classifyModeWithLLM()
+// is used instead of the regex rules — the secondary model returns a single mode
+// token with no streaming overhead.
 // Spec reference: §FR-1.
 
 import type { AssistantMode, ModeDecision } from './types';
+import type { ILLMProvider } from '../providers/ILLMProvider';
 
 // ─── Pattern table ────────────────────────────────────────────────────────────
 
@@ -173,3 +176,49 @@ export const MODE_LABELS: Record<AssistantMode, string> = {
   ask:        '💬 Ask',
   code:       '⌨️ Code',
 };
+
+// ─── LLM-based classifier ─────────────────────────────────────────────────────
+
+const CLASSIFIER_SYSTEM = `You are a request intent classifier for a coding assistant.
+Given a user message, respond with exactly ONE token — the intent label that best fits.
+Valid labels: plan edit debug review explain search test-fix ask code
+No explanation, no punctuation, no extra words — just the label.`;
+
+/**
+ * Classify the user message using a secondary LLM provider.
+ * Falls back to the regex classifier if the provider call fails or returns
+ * an unrecognised token.
+ */
+export async function classifyModeWithLLM(
+  userText: string,
+  provider: ILLMProvider,
+): Promise<ModeDecision> {
+  try {
+    let response = '';
+    const stream = provider.stream(
+      [
+        { role: 'system', content: CLASSIFIER_SYSTEM },
+        { role: 'user', content: userText.slice(0, 500) }, // cap to keep call cheap
+      ],
+      [],
+      8, // only need one token
+    );
+    for await (const event of stream) {
+      if (event.type === 'text') { response += event.delta; }
+      if (event.type === 'done') { break; }
+    }
+    const token = response.trim().toLowerCase() as AssistantMode;
+    if ((ALL_MODES as string[]).includes(token)) {
+      return {
+        mode: token,
+        confidence: 0.9,
+        secondaryIntents: [],
+        reason: `LLM classifier returned '${token}'.`,
+        userOverride: false,
+      };
+    }
+  } catch {
+    // fall through to regex fallback
+  }
+  return classifyMode(userText);
+}
