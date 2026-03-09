@@ -34,16 +34,24 @@ export class ToolDispatcher {
   }
 
   private getEffectivePath(originalPath: string): string {
-    if (!this._activeSandbox) return originalPath;
-    if (path.isAbsolute(originalPath)) {
+    let cleanPath = originalPath;
+    // Agents sometimes provide absolute paths like `/foo/bar.ts` assuming the root is `/`
+    // Convert it to a relative path `foo/bar.ts` if it isn't an actual absolute OS path 
+    if (path.isAbsolute(cleanPath) && !cleanPath.startsWith(this.workspaceRoot)) {
+      cleanPath = cleanPath.replace(/^[\/\\]+/, '');
+    }
+
+    if (!this._activeSandbox) return cleanPath;
+
+    if (path.isAbsolute(cleanPath)) {
       // Absolute paths not allowed to be re-mapped easily, but let's assume they are relative to workspaceRoot
       // The prompt tells Agents to use relative paths.
-      const rel = path.relative(this.workspaceRoot, originalPath);
+      const rel = path.relative(this.workspaceRoot, cleanPath);
       const sandboxRel = path.relative(this.workspaceRoot, this._activeSandbox.workspacePath);
-      return path.join(sandboxRel, rel);
+      return path.join(sandboxRel, rel).replace(/\\/g, '/');
     }
     const sandboxRel = path.relative(this.workspaceRoot, this._activeSandbox.workspacePath);
-    return path.join(sandboxRel, originalPath).replace(/\\/g, '/');
+    return path.join(sandboxRel, cleanPath).replace(/\\/g, '/');
   }
 
   /**
@@ -103,12 +111,20 @@ export class ToolDispatcher {
       }
     } else if (toolEvent.name === 'write_file') {
       const inp = toolEvent.input as { path: string; content: string };
+      const originalPath = inp.path;
       inp.path = this.getEffectivePath(inp.path);
       result = await this.handleWriteFile(
         agentId,
         inp,
         onDiff
       );
+
+      // Mask the sandbox path prefix in the success response so the agent only sees its requested path
+      if (this._activeSandbox) {
+        const sandboxRel = path.relative(this.workspaceRoot, this._activeSandbox.workspacePath).replace(/\\/g, '/');
+        result = result.replace(new RegExp(`File written: ${sandboxRel}[/\\\\]?`, 'g'), `File written: `)
+          .replace(new RegExp(sandboxRel, 'g'), '');
+      }
     } else if (toolEvent.name === 'get_diagnostics') {
       result = this.handleGetDiagnostics(toolEvent.input as { path?: string });
     } else if (toolEvent.name === 'create_document') {
@@ -130,6 +146,13 @@ export class ToolDispatcher {
         const tc: MCPToolCall = { name: toolEvent.name, input: inp };
         const mcpResult = await this.mcpHost.callTool(serverName, tc);
         result = mcpResult.content.map(c => c.text).join('\n');
+
+        // Strip sandbox prefix from search_files or list_files responses
+        if (this._activeSandbox && (toolEvent.name === 'search_files' || toolEvent.name === 'list_files')) {
+          const sandboxRel = path.relative(this.workspaceRoot, this._activeSandbox.workspacePath).replace(/\\/g, '/');
+          // Lines in search_files look like: `.bormagi/sandboxes/sbx_.../workspace/src/foo.ts:1: content`
+          result = result.replace(new RegExp(`${sandboxRel}[/\\\\]?`, 'g'), '');
+        }
       } else {
         result = `Tool "${toolEvent.name}" not found in any running MCP server.`;
       }
