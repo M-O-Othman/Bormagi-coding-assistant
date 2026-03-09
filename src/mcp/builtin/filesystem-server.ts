@@ -117,12 +117,12 @@ const TOOLS = [
   },
   {
     name: 'write_file',
-    description: 'Write or overwrite a file in the workspace.',
+    description: 'Write or overwrite a file in the workspace. ALWAYS use a path relative to the workspace root (e.g. "src/utils/helper.ts"). Never pass absolute paths like /tmp/ or C:\\. Creates parent directories automatically.',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Relative path to the file.' },
-        content: { type: 'string', description: 'Full content to write.' }
+        path: { type: 'string', description: 'Relative path from workspace root, e.g. "src/utils/helper.ts". Must NOT start with / or a drive letter.' },
+        content: { type: 'string', description: 'Full file content to write.' }
       },
       required: ['path', 'content']
     }

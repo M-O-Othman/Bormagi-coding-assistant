@@ -116,17 +116,21 @@ Respond with a structured plan containing:
 Do NOT write code in this response — produce the plan only.`,
 
   edit: `## Output Contract
-Respond with:
-- **Changed Files**: list every file modified
+You MUST use the \`write_file\` tool to apply every file change — do NOT just describe changes in text.
+- Paths MUST be relative to the workspace root (e.g. \`src/utils/helper.ts\`). Never use absolute paths or /tmp/.
+- You can create new files as well as overwrite existing ones.
+After writing all files respond with:
+- **Changed Files**: list every file written
 - **Patch Summary**: concise description of each change
-- **Validation Notes**: how to verify the change is correct
-Apply edits directly to the provided editable files.`,
+- **Validation Notes**: how to verify the changes are correct`,
 
   debug: `## Output Contract
-Respond with:
-- **Root Cause Hypothesis**: what is causing the issue and why
-- **Evidence**: specific lines/values that confirm the hypothesis
-- **Proposed Fix**: concrete code change to resolve the issue`,
+You MUST use the \`write_file\` tool to apply the fix — do NOT just describe the fix in text.
+- Paths MUST be relative to the workspace root (e.g. \`src/foo.ts\`). Never use absolute paths or /tmp/.
+After writing respond with:
+- **Root Cause**: what caused the issue
+- **Fix Applied**: file(s) written and what changed
+- **Validation**: how to verify the fix`,
 
   review: `## Output Contract
 Respond with a structured review:
@@ -149,10 +153,12 @@ List each matching result with:
 Sort results by relevance.`,
 
   'test-fix': `## Output Contract
-Respond with:
+You MUST use the \`write_file\` tool to apply the fix — do NOT just describe the fix in text.
+- Paths MUST be relative to the workspace root. Never use absolute paths or /tmp/.
+After writing respond with:
 - **Failure Analysis**: what the test expects vs. what it receives
 - **Root Cause**: why the implementation produces the wrong result
-- **Fix**: the minimal code change that makes the test pass
+- **Fix Applied**: what was written and where
 - **Confidence**: High / Medium / Low`,
 
   ask: `## Output Contract
@@ -166,11 +172,13 @@ Provide a clear, structured explanation:
 - Suggest a concrete next step if useful`,
 
   code: `## Output Contract
-Respond with:
-- **Changed Files**: list every file modified
+You MUST use the \`write_file\` tool to write every file — do NOT just describe the code in text.
+- Paths MUST be relative to the workspace root (e.g. \`src/utils/helper.ts\`). Never use absolute paths or /tmp/.
+- You can create new files as well as overwrite existing ones.
+After writing all files respond with:
+- **Changed Files**: list every file written
 - **Patch Summary**: concise description of each change
-- **Validation Notes**: how to verify the change is correct
-Apply edits directly to the provided editable files.`,
+- **Validation Notes**: how to verify the changes are correct`,
 };
 
 // ─── Identity preamble ────────────────────────────────────────────────────────
