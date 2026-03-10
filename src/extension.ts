@@ -248,6 +248,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await sandboxManager.promote(pick);
         vscode.window.showInformationMessage(`Sandbox '${pick}' changes applied to workspace.`);
       }
+    }),
+
+    vscode.commands.registerCommand('bormagi.enableSandbox', async () => {
+      await vscode.workspace.getConfiguration('bormagi').update('sandbox.enabled', true, vscode.ConfigurationTarget.Global);
+      vscode.window.showInformationMessage('Bormagi Sandbox enabled. Agents will now operate in isolated spaces.');
+    }),
+
+    vscode.commands.registerCommand('bormagi.disableSandbox', async () => {
+      await vscode.workspace.getConfiguration('bormagi').update('sandbox.enabled', false, vscode.ConfigurationTarget.Global);
+      vscode.window.showWarningMessage('Bormagi Sandbox disabled. Agents will write directly to your workspace.');
     })
   );
 

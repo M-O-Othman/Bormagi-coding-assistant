@@ -233,8 +233,11 @@ export class AgentRunner {
 
     await this.agentManager.startMCPServersForAgent(agentId, this.workspaceRoot);
 
+    const vsConfig = vscode.workspace.getConfiguration('bormagi');
+    const isSandboxEnabled = vsConfig.get<boolean>('sandbox.enabled', false);
+
     // Initialise sandbox
-    if (this.sandboxManager && !this.activeSandbox) {
+    if (this.sandboxManager && !this.activeSandbox && isSandboxEnabled) {
       onThought({ type: 'thinking', label: 'Initializing Sandbox', timestamp: new Date() });
       this.activeSandbox = await this.sandboxManager.create({
         taskId: `task-${Date.now()}`,
@@ -246,12 +249,14 @@ export class AgentRunner {
         networkMode: 'deny_all'
       });
       this.toolDispatcher.activeSandbox = this.activeSandbox;
+    } else if (!isSandboxEnabled) {
+      this.toolDispatcher.activeSandbox = null;
+      onThought({ type: 'thinking', label: 'Sandbox disabled. Writing directly to workspace.', timestamp: new Date() });
     }
 
     const providerParams = { apiKey: apiKey ?? '', ...effectiveProvider };
-    const maxTokens = vscode.workspace.getConfiguration('bormagi').get<number>('advanced.maxTokens') || 30000;
+    const maxTokens = vsConfig.get<number>('advanced.maxTokens') || 30000;
     // Ensure the output tokens matches the value we deducted from the safety ceiling
-    const vsConfig = vscode.workspace.getConfiguration('bormagi');
     const actualMaxOutputTokens = Math.max(
       vsConfig.get<number>('maxOutputTokens', 1200),
       // Bormagi's default for some operations if not set is 1200
@@ -817,6 +822,27 @@ export class AgentRunner {
         // Emit diff summary for 2+ changed files (OQ-8 B)
         if (editedTools.length >= 2) {
           onDiffSummary?.(editedTools, proposal.title, this.currentCheckpointId ?? undefined);
+        }
+      }
+
+      // Phase 4: Sandbox Promotion Prompt
+      if (this.sandboxManager && this.activeSandbox) {
+        const mutationTools = ['write_file', 'edit_file', 'run_command', 'git_commit', 'create_document', 'create_presentation'];
+        const hasMutations = toolsUsed.some(t => mutationTools.includes(t));
+
+        if (hasMutations) {
+          const promote = await onApproval(`The agent has modified files in its sandbox. Would you like to apply these changes to your workspace?`);
+          if (promote) {
+            onThought({ type: 'thinking', label: 'Applying sandbox changes to workspace...', timestamp: new Date() });
+            try {
+              await this.sandboxManager.promote(this.activeSandbox.sandboxId);
+              onThought({ type: 'thinking', label: 'Sandbox changes applied successfully.', timestamp: new Date() });
+            } catch (err: any) {
+              onThought({ type: 'error', label: 'Failed to apply sandbox changes', detail: err.message, timestamp: new Date() });
+            }
+          } else {
+            onThought({ type: 'thinking', label: 'User declined to apply sandbox changes.', timestamp: new Date() });
+          }
         }
       }
 

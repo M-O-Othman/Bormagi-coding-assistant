@@ -31,25 +31,27 @@ import { loadOutputContract } from './ModePromptLoader';
 
 export interface PromptAssemblyArgs {
   /** Role/identity preamble — usually from the agent's system prompt. */
-  systemPreamble:  string;
+  systemPreamble: string;
   /** Merged instruction layers from `InstructionResolver`. */
-  instructions:    EffectiveInstructions;
+  instructions: EffectiveInstructions;
   /** Composed and budget-enforced context envelope. */
-  envelope:        ContextEnvelope;
+  envelope: ContextEnvelope;
   /** Repo map for the workspace (may be null if not yet built). */
-  repoMap:         RepoMap | null;
+  repoMap: RepoMap | null;
   /** The user's raw current message. */
-  userMessage:     string;
+  userMessage: string;
   /** Current assistant mode — drives the output contract. */
-  mode:            AssistantMode;
+  mode: AssistantMode;
   /** Agent name — used in the identity section. */
-  agentName?:      string;
+  agentName?: string;
   /** Project name — used in the identity section. */
-  projectName?:    string;
+  projectName?: string;
   /** Absolute path to the extension root, used to resolve mode prompt .md files. */
-  extensionRoot?:  string;
+  extensionRoot?: string;
   /** Absolute path to the workspace root, used to resolve workspace-override prompt .md files. */
-  workspaceRoot?:  string;
+  workspaceRoot?: string;
+  /** Whether the agent is currently operating inside a sandbox workspace. */
+  isSandboxed?: boolean;
 }
 
 // ─── Section formatters ───────────────────────────────────────────────────────
@@ -214,10 +216,11 @@ export function assemblePrompt(args: PromptAssemblyArgs): string {
     repoMap,
     userMessage,
     mode,
-    agentName  = 'Bormagi',
+    agentName = 'Bormagi',
     projectName = '',
     extensionRoot,
     workspaceRoot,
+    isSandboxed,
   } = args;
 
   const budget = getModeBudget(mode);
@@ -254,7 +257,11 @@ export function assemblePrompt(args: PromptAssemblyArgs): string {
   parts.push(formatToolOutputs(envelope.toolOutputs));
 
   // 9. Output contract
-  parts.push(`\n\n${OUTPUT_CONTRACTS[mode]}`);
+  let contract = OUTPUT_CONTRACTS[mode];
+  if (isSandboxed) {
+    contract += `\n\n**Sandbox Environment Active**: You are operating in an isolated sandbox. Your file changes will NOT be visible in the user's main workspace until they are promoted. Upon completing your file modifications, you MUST explicitly instruct the user to run the **"Bormagi: Apply Sandbox Changes"** command to sync your work to their source workspace.`;
+  }
+  parts.push(`\n\n${contract}`);
 
   return parts.filter(p => p.trim()).join('');
 }

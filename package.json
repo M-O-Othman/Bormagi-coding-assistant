@@ -121,6 +121,16 @@
         "command": "bormagi.promoteSandbox",
         "title": "Bormagi: Apply Sandbox Changes",
         "category": "Bormagi"
+      },
+      {
+        "command": "bormagi.enableSandbox",
+        "title": "Bormagi: Enable Sandbox",
+        "category": "Bormagi"
+      },
+      {
+        "command": "bormagi.disableSandbox",
+        "title": "Bormagi: Disable Sandbox",
+        "category": "Bormagi"
       }
     ],
     "configuration": {
@@ -531,6 +541,16 @@
           "type": "number",
           "default": 3200,
           "description": "Safety margin kept free for model output (test-fix mode)."
+        },
+        "bormagi.sandbox.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether to use an isolated sandbox for agent operations. If disabled, agents write directly to the workspace."
+        },
+        "bormagi.sandbox.requireConfirmation": {
+          "type": "boolean",
+          "default": false,
+          "description": "When sandbox is disabled, require manual confirmation before writing or editing files. Defaults to false."
         }
       }
     },
@@ -574,6 +594,14 @@
         },
         {
           "command": "bormagi.promoteSandbox",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "bormagi.enableSandbox",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "bormagi.disableSandbox",
           "when": "workspaceFolderCount > 0"
         }
       ]

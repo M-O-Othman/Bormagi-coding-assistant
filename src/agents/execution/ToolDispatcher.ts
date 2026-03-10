@@ -190,7 +190,14 @@ export class ToolDispatcher {
     if (this._activeSandbox) {
       approved = true;
     } else {
-      approved = await onDiff(filePath, originalContent, args.content);
+      const config = vscode.workspace.getConfiguration('bormagi');
+      const requireConfirmation = config.get<boolean>('sandbox.requireConfirmation', false);
+
+      if (!requireConfirmation) {
+        approved = true; // Auto-approve by default when sandbox is disabled, as requested by user
+      } else {
+        approved = await onDiff(filePath, originalContent, args.content);
+      }
     }
 
     if (!approved) {
