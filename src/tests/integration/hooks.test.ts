@@ -38,7 +38,7 @@ describe('HookEngine — no config', () => {
   });
 
   test('allows everything when no hooks.json exists', async () => {
-    const result = await engine.runHooks('before-tool', { mode: 'edit', toolName: 'writeFile' });
+    const result = await engine.runHooks('before-tool', { mode: 'code', toolName: 'writeFile' });
     expect(result.allow).toBe(true);
   });
 
@@ -118,7 +118,7 @@ describe('HookEngine — protected-path-check', () => {
     const result = await engine.onBeforeTool(
       'writeFile',
       { path: 'src/config/.env' },
-      { mode: 'edit' },
+      { mode: 'code' },
     );
     expect(result.allow).toBe(false);
     expect(result.messages?.some(m => m.includes('.env'))).toBe(true);
@@ -128,7 +128,7 @@ describe('HookEngine — protected-path-check', () => {
     const result = await engine.onBeforeTool(
       'writeFile',
       { path: 'src/secrets/api-keys.ts' },
-      { mode: 'edit' },
+      { mode: 'code' },
     );
     expect(result.allow).toBe(false);
   });
@@ -137,7 +137,7 @@ describe('HookEngine — protected-path-check', () => {
     const result = await engine.onBeforeTool(
       'writeFile',
       { path: 'src/components/Button.tsx' },
-      { mode: 'edit' },
+      { mode: 'code' },
     );
     expect(result.allow).toBe(true);
   });
@@ -146,7 +146,7 @@ describe('HookEngine — protected-path-check', () => {
     const result = await engine.onBeforeTool(
       'readFile',
       { path: 'src/config/.env' },
-      { mode: 'edit' },
+      { mode: 'code' },
     );
     expect(result.allow).toBe(true);
   });
@@ -175,7 +175,7 @@ describe('HookEngine — post-compaction-inject', () => {
   });
 
   test('allows the action and injects a context note', async () => {
-    const result = await engine.onAfterCompaction({ mode: 'edit' });
+    const result = await engine.onAfterCompaction({ mode: 'code' });
     expect(result.allow).toBe(true);
     expect(result.contextToInject).toBeDefined();
     expect(result.contextToInject!.length).toBeGreaterThan(0);
@@ -206,7 +206,7 @@ describe('HookEngine — after-edit glob filtering', () => {
       },
     ]);
     const engine = new HookEngine(workspace);
-    const result = await engine.onAfterEdit(['src/foo.ts'], { mode: 'edit' });
+    const result = await engine.onAfterEdit(['src/foo.ts'], { mode: 'code' });
     expect(result.allow).toBe(true);
   });
 
@@ -221,7 +221,7 @@ describe('HookEngine — after-edit glob filtering', () => {
     ]);
     const engine = new HookEngine(workspace);
     // Pass only a JSON file — should not match *.ts
-    const result = await engine.onAfterEdit(['src/config.json'], { mode: 'edit' });
+    const result = await engine.onAfterEdit(['src/config.json'], { mode: 'code' });
     // No matching hooks fire → default allow
     expect(result.allow).toBe(true);
     expect(result.contextToInject).toBeUndefined();
@@ -278,7 +278,7 @@ describe('HookEngine — shell hooks', () => {
       },
     ]);
     const engine = new HookEngine(workspace);
-    await engine.onAfterEdit(['src/foo.ts', 'src/bar.ts'], { mode: 'edit' });
+    await engine.onAfterEdit(['src/foo.ts', 'src/bar.ts'], { mode: 'code' });
     const output = fs.readFileSync(outFile, 'utf-8').trim();
     expect(output).toContain('src/foo.ts');
     expect(output).toContain('src/bar.ts');
@@ -319,7 +319,7 @@ describe('HookEngine — event ordering and short-circuit', () => {
     const result = await engine.onBeforeTool(
       'writeFile',
       { path: '.env' },
-      { mode: 'edit' },
+      { mode: 'code' },
     );
     expect(result.allow).toBe(false);
     expect(fs.existsSync(outFile)).toBe(false);

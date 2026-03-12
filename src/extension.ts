@@ -177,6 +177,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await selectAgentCommand(agentManager!, chatController!);
     }),
 
+    vscode.commands.registerCommand('bormagi.switchMode', async () => {
+      await chatController!.promptSwitchMode();
+    }),
+
     vscode.commands.registerCommand('bormagi.openDashboard', () => {
       MainPanel.createOrShow();
     }),

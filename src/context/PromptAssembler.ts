@@ -109,60 +109,6 @@ function formatRepoMapSection(repoMap: RepoMap, maxTokens: number): string {
 // all callers pass `extensionRoot`.
 
 const OUTPUT_CONTRACTS: Record<AssistantMode, string> = {
-  plan: `## Output Contract
-Respond with a structured plan containing:
-- **Assumptions**: list any assumptions made
-- **Impacted Files**: list each file that will need modification
-- **Plan Steps**: numbered implementation steps
-- **Risks**: potential issues or open questions
-Do NOT write code in this response — produce the plan only.`,
-
-  edit: `## Output Contract
-You MUST use the \`write_file\` tool to apply every file change — do NOT just describe changes in text.
-- Paths MUST be relative to the workspace root (e.g. \`src/utils/helper.ts\`). Never use absolute paths or /tmp/.
-- You can create new files as well as overwrite existing ones.
-After writing all files respond with:
-- **Changed Files**: list every file written
-- **Patch Summary**: concise description of each change
-- **Validation Notes**: how to verify the changes are correct`,
-
-  debug: `## Output Contract
-You MUST use the \`write_file\` tool to apply the fix — do NOT just describe the fix in text.
-- Paths MUST be relative to the workspace root (e.g. \`src/foo.ts\`). Never use absolute paths or /tmp/.
-After writing respond with:
-- **Root Cause**: what caused the issue
-- **Fix Applied**: file(s) written and what changed
-- **Validation**: how to verify the fix`,
-
-  review: `## Output Contract
-Respond with a structured review:
-- **Findings** (grouped by severity: Critical / Major / Minor / Info)
-- **Suggested Changes**: specific, actionable recommendations
-- **Confidence**: overall confidence level in the review (High / Medium / Low)`,
-
-  explain: `## Output Contract
-Provide a clear, structured explanation:
-- Start with a one-sentence summary
-- Explain the key concepts in plain language
-- Reference specific lines or symbols where relevant
-- Avoid unnecessary jargon`,
-
-  search: `## Output Contract
-List each matching result with:
-- File path and line number
-- A brief description of what was found
-- Why it matches the search query
-Sort results by relevance.`,
-
-  'test-fix': `## Output Contract
-You MUST use the \`write_file\` tool to apply the fix — do NOT just describe the fix in text.
-- Paths MUST be relative to the workspace root. Never use absolute paths or /tmp/.
-After writing respond with:
-- **Failure Analysis**: what the test expects vs. what it receives
-- **Root Cause**: why the implementation produces the wrong result
-- **Fix Applied**: what was written and where
-- **Confidence**: High / Medium / Low`,
-
   ask: `## Output Contract
 You are in read-only Ask Mode. You must not modify any files, run commands, or make state changes.
 
@@ -172,6 +118,14 @@ Provide a clear, structured explanation:
 - Cite specific files and symbols where relevant
 - List caveats or missing context if applicable
 - Suggest a concrete next step if useful`,
+
+  plan: `## Output Contract
+Write a plan document to \`.bormagi/plans/<task-name>.md\`. Include:
+- **Objective**: what needs to be built or changed
+- **Steps**: numbered implementation steps
+- **Files**: files to create or modify
+- **Risks**: potential issues or open questions
+Do NOT implement any code — the plan is for user review before execution.`,
 
   code: `## Output Contract
 You MUST use the \`write_file\` tool to write every file — do NOT just describe the code in text.

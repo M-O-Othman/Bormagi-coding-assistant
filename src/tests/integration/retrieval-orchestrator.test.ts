@@ -143,7 +143,7 @@ describe('rankAndPrune', () => {
   test('drops zero-score candidates', () => {
     const zero  = makeCandidate({ id: 'z', score: 0, tokenEstimate: 10 });
     const nonZero = makeCandidate({ id: 'nz', score: 0.8, tokenEstimate: 10 });
-    const result = rankAndPrune([zero, nonZero], 1000, 'edit');
+    const result = rankAndPrune([zero, nonZero], 1000, 'code');
     expect(result.map(c => c.id)).not.toContain('z');
     expect(result.map(c => c.id)).toContain('nz');
   });
@@ -152,7 +152,7 @@ describe('rankAndPrune', () => {
     const big = Array.from({ length: 10 }, (_, i) =>
       makeCandidate({ id: `c${i}`, score: 0.5 - i * 0.01, tokenEstimate: 100 }),
     );
-    const result = rankAndPrune(big, 350, 'edit');
+    const result = rankAndPrune(big, 350, 'code');
     // 3 candidates × 100 tokens = 300 ≤ 350; 4th would exceed.
     expect(result.length).toBeLessThanOrEqual(3);
   });
@@ -163,7 +163,7 @@ describe('rankAndPrune', () => {
       makeCandidate({ id: 'high', score: 0.9, tokenEstimate: 10 }),
       makeCandidate({ id: 'mid',  score: 0.5, tokenEstimate: 10 }),
     ];
-    const result = rankAndPrune(candidates, 1000, 'edit');
+    const result = rankAndPrune(candidates, 1000, 'code');
     expect(result[0].id).toBe('high');
     expect(result[1].id).toBe('mid');
     expect(result[2].id).toBe('low');
@@ -187,21 +187,21 @@ describe('buildContextEnvelope', () => {
       makeCandidate({ id: 'e1', editable: true,  kind: 'file',    score: 0.9 }),
       makeCandidate({ id: 'r1', editable: false, kind: 'snippet', score: 0.5 }),
     ];
-    const env = buildContextEnvelope(candidates, 'edit');
+    const env = buildContextEnvelope(candidates, 'code');
     expect(env.editable.map(c => c.id)).toContain('e1');
     expect(env.reference.map(c => c.id)).toContain('r1');
   });
 
   test('puts memory candidates in memory list', () => {
     const c = makeCandidate({ kind: 'memory', editable: false, score: 0.3 });
-    const env = buildContextEnvelope([c], 'edit');
+    const env = buildContextEnvelope([c], 'code');
     expect(env.memory).toHaveLength(1);
     expect(env.editable).toHaveLength(0);
   });
 
   test('puts tool-output candidates in toolOutputs list', () => {
     const c = makeCandidate({ kind: 'tool-output', editable: false, score: 0.3 });
-    const env = buildContextEnvelope([c], 'debug');
+    const env = buildContextEnvelope([c], 'code');
     expect(env.toolOutputs).toHaveLength(1);
   });
 
@@ -247,7 +247,7 @@ describe('retrieveCandidates', () => {
   test('returns candidates when active file is provided', async () => {
     const filePath = writeFile(tmpDir, 'src/main.ts', 'export function main() {}');
     const results = await retrieveCandidates(
-      { text: 'main function', mode: 'edit', activeFile: filePath },
+      { text: 'main function', mode: 'code', activeFile: filePath },
       { workspaceRoot: tmpDir, repoMap: null, activeFilePath: filePath },
       5000,
     );
@@ -283,7 +283,7 @@ describe('retrieveCandidates', () => {
     ]);
 
     const results = await retrieveCandidates(
-      { text: 'authenticate user login', mode: 'edit' },
+      { text: 'authenticate user login', mode: 'code' },
       { workspaceRoot: tmpDir, repoMap },
       10000,
     );
@@ -295,7 +295,7 @@ describe('retrieveCandidates', () => {
 
   test('returns empty array when no signals match', async () => {
     const results = await retrieveCandidates(
-      { text: 'some completely unrelated query', mode: 'search' },
+      { text: 'some completely unrelated query', mode: 'ask' },
       { workspaceRoot: tmpDir, repoMap: null },
       5000,
     );
@@ -322,7 +322,7 @@ describe('retrieveCandidates', () => {
 
     const TINY_BUDGET = 50; // tokens — forces pruning
     const results = await retrieveCandidates(
-      { text: 'file fn export function', mode: 'edit' },
+      { text: 'file fn export function', mode: 'code' },
       { workspaceRoot: tmpDir, repoMap },
       TINY_BUDGET,
     );

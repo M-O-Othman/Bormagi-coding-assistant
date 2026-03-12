@@ -6,7 +6,9 @@
       "Bash(npx jest:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(npm run compile)",
+      "Bash(python3:*)"
     ]
   }
 }

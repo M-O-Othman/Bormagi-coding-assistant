@@ -1,15 +1,16 @@
 // ─── Mode Classifier ──────────────────────────────────────────────────────────
 //
-// Rules-based request classifier with optional LLM-based override.
+// Three-mode classifier: ask | plan | code
 //
-// The user selects mode explicitly via the status bar dropdown (OQ-1 answer: C).
-// This classifier is the auto-detect fallback used when no explicit selection
-// has been made for the current request.
+//   ask  — questions and explanations only; no file writes.
+//   plan — the user wants a plan/design document written for review before
+//          any implementation begins.
+//   code — everything else: implement, fix, debug, refactor, test, etc.
+//          For complex tasks the agent plans internally then executes;
+//          for simple tasks it writes immediately.
 //
-// When a classifierProvider is configured in project settings, classifyModeWithLLM()
-// is used instead of the regex rules — the secondary model returns a single mode
-// token with no streaming overhead.
-// Spec reference: §FR-1.
+// The user selects mode explicitly via the status bar dropdown.
+// This classifier is the auto-detect fallback when no explicit selection exists.
 
 import type { AssistantMode, ModeDecision } from './types';
 import type { ILLMProvider } from '../providers/ILLMProvider';
@@ -26,66 +27,21 @@ interface ModePattern {
 
 const MODE_PATTERNS: ModePattern[] = [
   {
-    mode: 'debug',
+    mode: 'ask',
     strong: [
-      /\b(fix|fixing|broken|break|breaks|bug|bugs|error|errors|exception|crash|crashing|failing|failed|stacktrace|stack\s*trace|traceback|undefined\s*is\s*not|cannot\s*read|null\s*reference|regression)\b/i,
+      /\b(what\s+is|what\s+are|what\s+does|how\s+does|how\s+do\s+I|explain|describe|tell\s+me|why\s+is|why\s+does|clarify|understand|overview|summary\s+of|walk\s+me\s+through)\b/i,
     ],
     weak: [
-      /\b(wrong|incorrect|unexpected|why\s+is|why\s+does|not\s+working|doesn'?t\s+work)\b/i,
-    ],
-  },
-  {
-    mode: 'test-fix',
-    strong: [
-      /\b(test\s*fail|failing\s*test|jest|mocha|vitest|pytest|junit|spec\s+fail|red\s+test|fix\s+test|make\s+test\s+pass)\b/i,
-    ],
-    weak: [
-      /\b(test|spec|assertion|assert|expect\b)\b/i,
+      /\b(question|curious|wondering|help\s+me\s+understand|can\s+you\s+explain)\b/i,
     ],
   },
   {
     mode: 'plan',
     strong: [
-      /\b(plan|design|architect|architecture|how\s+should|what\s+files|which\s+files|what\s+approach|strategy|diagram|sketch|outline\s+the|proposal)\b/i,
+      /\b(plan|design|architect|architecture|how\s+should\s+(I|we|the)|what\s+(files|approach|strategy)\s+(should|would|do\s+I)|diagram|sketch|outline|proposal|before\s+(I|we)\s+(implement|write|code))\b/i,
     ],
     weak: [
-      /\b(think\s+about|consider|structure|organise|organize|approach)\b/i,
-    ],
-  },
-  {
-    mode: 'review',
-    strong: [
-      /\b(review|code\s+review|pr\s+review|pull\s+request|lgtm|feedback\s+on|check\s+(this|my|the)\s+code|look\s+(at|over)\s+(this|my|the)|security\s+audit|audit\b)\b/i,
-    ],
-    weak: [
-      /\b(check|verify|validate|assess|evaluate)\b/i,
-    ],
-  },
-  {
-    mode: 'search',
-    strong: [
-      /\b(find|search|locate|where\s+is|where\s+are|grep\s+for|look\s+for|which\s+file|what\s+file)\b/i,
-    ],
-    weak: [
-      /\b(show\s+me|list\s+(all|every)|enumerate)\b/i,
-    ],
-  },
-  {
-    mode: 'explain',
-    strong: [
-      /\b(explain|what\s+does|how\s+does|describe|what\s+is\s+(this|the)|tell\s+me\s+about|walk\s+me\s+through|clarify|understand)\b/i,
-    ],
-    weak: [
-      /\b(why\s+is|what\s+are|overview|summary\s+of)\b/i,
-    ],
-  },
-  {
-    mode: 'edit',
-    strong: [
-      /\b(edit|change|refactor|rename|move|update|rewrite|implement|add\s+(a|the|new)\s+\w+|remove|delete|replace|modify|create\s+(a|the|new)\s+(function|class|method|file|component|interface|type))\b/i,
-    ],
-    weak: [
-      /\b(make\s+it|convert|transform|migrate|improve|extend|add|inject)\b/i,
+      /\b(think\s+about|consider|structure|organise|organize|approach|design\s+for)\b/i,
     ],
   },
 ];
@@ -120,10 +76,10 @@ export function classifyMode(userText: string): ModeDecision {
 
   if (scores.length === 0) {
     return {
-      mode: 'edit',
-      confidence: 0.3,
+      mode: 'code',
+      confidence: 0.7,
       secondaryIntents: [],
-      reason: 'No strong signals found; defaulting to edit mode.',
+      reason: 'No ask/plan signals found; defaulting to code mode.',
       userOverride: false,
     };
   }
@@ -132,7 +88,6 @@ export function classifyMode(userText: string): ModeDecision {
   const top = scores[0];
   const secondaryIntents = scores.slice(1).map(s => s.mode);
 
-  // Confidence is normalised: top score over sum of all scores (capped at 0.95)
   const totalScore = scores.reduce((acc, s) => acc + s.score, 0);
   const confidence = Math.min(0.95, top.score / totalScore);
 
@@ -160,28 +115,23 @@ export function buildUserModeDecision(mode: AssistantMode): ModeDecision {
 }
 
 /** All valid mode values, for use in UI dropdowns and validation. */
-export const ALL_MODES: AssistantMode[] = [
-  'plan', 'edit', 'debug', 'review', 'explain', 'search', 'test-fix', 'ask', 'code',
-];
+export const ALL_MODES: AssistantMode[] = ['ask', 'plan', 'code'];
 
 /** Human-readable labels for mode display in the status bar. */
 export const MODE_LABELS: Record<AssistantMode, string> = {
-  plan:       '📋 Plan',
-  edit:       '✏️ Edit',
-  debug:      '🐛 Debug',
-  review:     '🔍 Review',
-  explain:    '💡 Explain',
-  search:     '🔎 Search',
-  'test-fix': '🧪 Test-Fix',
-  ask:        '💬 Ask',
-  code:       '⌨️ Code',
+  ask:  '💬 Ask',
+  plan: '📋 Plan',
+  code: '⌨️ Code',
 };
 
 // ─── LLM-based classifier ─────────────────────────────────────────────────────
 
 const CLASSIFIER_SYSTEM = `You are a request intent classifier for a coding assistant.
 Given a user message, respond with exactly ONE token — the intent label that best fits.
-Valid labels: plan edit debug review explain search test-fix ask code
+Valid labels: ask plan code
+  ask  = questions, explanations, no file changes wanted
+  plan = user wants a design/plan document before implementation
+  code = implement, fix, edit, debug, refactor, build, create, or modify anything
 No explanation, no punctuation, no extra words — just the label.`;
 
 /**

@@ -37,7 +37,7 @@ function makeInput(messageCount = 10): CompactionInput {
   return {
     transcript,
     recentArtifacts: ['src/foo.ts', 'src/bar.ts'],
-    activeMode:      'edit',
+    activeMode:      'code',
     currentGoal:     'Refactor the authentication module.',
   };
 }
@@ -80,7 +80,7 @@ describe('compact()', () => {
   test('returns structured output from provider JSON', async () => {
     const input    = makeInput();
     const provider = makeStubProvider(validJson);
-    const result   = await compact(input, provider, 'edit');
+    const result   = await compact(input, provider, 'code');
 
     expect(result.structured.currentObjective).toBe('Refactor auth module.');
     expect(result.structured.decisions).toContain('Use refresh tokens');
@@ -90,7 +90,7 @@ describe('compact()', () => {
   test('narrative contains the objective', async () => {
     const input    = makeInput();
     const provider = makeStubProvider(validJson);
-    const result   = await compact(input, provider, 'edit');
+    const result   = await compact(input, provider, 'code');
 
     expect(result.narrative).toContain('Refactor auth module.');
     expect(result.narrative).toContain('[Session compacted');
@@ -99,7 +99,7 @@ describe('compact()', () => {
   test('falls back gracefully when provider throws', async () => {
     const input    = makeInput();
     const provider = makeErrorProvider();
-    const result   = await compact(input, provider, 'debug');
+    const result   = await compact(input, provider, 'code');
 
     // Should not throw; should return a plausible fallback.
     expect(result.droppedMessages).toBe(input.transcript.length);
@@ -124,7 +124,7 @@ describe('compact()', () => {
     const partialJson = { currentObjective: 'Do stuff.' }; // missing arrays
     const input    = makeInput();
     const provider = makeStubProvider(partialJson);
-    const result   = await compact(input, provider, 'edit');
+    const result   = await compact(input, provider, 'code');
 
     expect(result.structured.decisions).toEqual([]);
     expect(result.structured.blockers).toEqual([]);
@@ -141,7 +141,7 @@ describe('compact()', () => {
       },
     };
     const input  = makeInput();
-    const result = await compact(input, fencedProvider, 'edit');
+    const result = await compact(input, fencedProvider, 'code');
     expect(result.structured.currentObjective).toBe('Refactor auth module.');
   });
 });
@@ -155,7 +155,7 @@ describe('saveCheckpoint / loadCheckpoint', () => {
 
   function makeState(sessionId = 'sess-001'): CheckpointState {
     return buildCheckpointState(sessionId, {
-      activeMode:           'edit',
+      activeMode:           'code',
       currentPlan:          ['Step 1', 'Step 2'],
       recentEditedFiles:    ['src/foo.ts'],
       pendingToolArtifacts: [],
@@ -168,7 +168,7 @@ describe('saveCheckpoint / loadCheckpoint', () => {
     const loaded = await loadCheckpoint(tmpDir, state.sessionId);
     expect(loaded).not.toBeNull();
     expect(loaded!.sessionId).toBe('sess-001');
-    expect(loaded!.activeMode).toBe('edit');
+    expect(loaded!.activeMode).toBe('code');
     expect(loaded!.currentPlan).toEqual(['Step 1', 'Step 2']);
   });
 
@@ -216,7 +216,7 @@ describe('listCheckpoints', () => {
 
   test('returns session IDs for existing checkpoints', async () => {
     await saveCheckpoint(tmpDir, buildCheckpointState('sess-a', { activeMode: 'plan', currentPlan: [], recentEditedFiles: [], pendingToolArtifacts: [] }));
-    await saveCheckpoint(tmpDir, buildCheckpointState('sess-b', { activeMode: 'edit', currentPlan: [], recentEditedFiles: [], pendingToolArtifacts: [] }));
+    await saveCheckpoint(tmpDir, buildCheckpointState('sess-b', { activeMode: 'code', currentPlan: [], recentEditedFiles: [], pendingToolArtifacts: [] }));
     const ids = listCheckpoints(tmpDir);
     expect(ids).toContain('sess-a');
     expect(ids).toContain('sess-b');
@@ -229,7 +229,7 @@ describe('deleteCheckpoint', () => {
   afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
   test('removes the checkpoint file', async () => {
-    const state = buildCheckpointState('sess-del', { activeMode: 'debug', currentPlan: [], recentEditedFiles: [], pendingToolArtifacts: [] });
+    const state = buildCheckpointState('sess-del', { activeMode: 'ask', currentPlan: [], recentEditedFiles: [], pendingToolArtifacts: [] });
     await saveCheckpoint(tmpDir, state);
     expect(await loadCheckpoint(tmpDir, 'sess-del')).not.toBeNull();
 
@@ -309,7 +309,7 @@ describe('EnhancedSessionMemory', () => {
   test('buildPromptSummary returns non-empty string when state has content', () => {
     memory.setGoal('agent-1', 'Fix the bug');
     memory.setPlan('agent-1', ['Step 1', 'Step 2']);
-    const summary = memory.buildPromptSummary('agent-1', 'debug');
+    const summary = memory.buildPromptSummary('agent-1', 'code');
     expect(summary).toContain('Fix the bug');
     expect(summary).toContain('Step 1');
   });

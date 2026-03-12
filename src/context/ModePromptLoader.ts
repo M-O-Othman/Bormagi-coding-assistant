@@ -30,8 +30,7 @@ export function loadOutputContract(
   extensionRoot: string,
   workspaceRoot?: string,
 ): string {
-  // Alias resolution: treat `ask` as `ask`, `code` as `code` (each has its own file)
-  const fileMode = mode === 'ask' ? 'ask' : mode === 'code' ? 'code' : mode;
+  const fileMode = mode;
   const cacheKey = `${workspaceRoot ?? ''}::${fileMode}`;
 
   if (cache.has(cacheKey)) {
@@ -77,16 +76,10 @@ export function clearContractCache(): void {
 }
 
 function getFallbackContract(mode: AssistantMode): string {
-  const fallbacks: Partial<Record<AssistantMode, string>> = {
-    ask:       `## Output Contract\nAnswer the question clearly and concisely. Cite files and symbols. Do not modify any files.`,
-    explain:   `## Output Contract\nAnswer the question clearly and concisely. Cite files and symbols.`,
-    plan:      `## Output Contract\nProvide a numbered plan with impacted files, steps, and risks. Do not write code.`,
-    code:      `## Output Contract\nList changed files, patch summary, and validation notes.`,
-    edit:      `## Output Contract\nList changed files, patch summary, and validation notes.`,
-    debug:     `## Output Contract\nState root cause hypothesis, evidence, and proposed fix.`,
-    review:    `## Output Contract\nStructured review: findings by severity, suggestions, confidence.`,
-    search:    `## Output Contract\nList matching results with file path, line, description, relevance.`,
-    'test-fix': `## Output Contract\nState failure analysis, root cause, minimal fix, and confidence.`,
+  const fallbacks: Record<AssistantMode, string> = {
+    ask:  `## Output Contract\nAnswer the question clearly and concisely. Cite relevant files and symbols. Do NOT modify any files.`,
+    plan: `## Output Contract\nWrite a plan document to \`.bormagi/plans/<task-name>.md\`. Include: objective, numbered steps, files to create/modify, risks, and open questions. Do NOT implement any code — the plan is for user review before execution.`,
+    code: `## Output Contract\nImplement the task immediately. For simple tasks: write files directly. For complex tasks: read existing files first to understand conventions, then write. End with: Changed Files, Patch Summary, Validation Notes.`,
   };
-  return fallbacks[mode] ?? `## Output Contract\nRespond clearly and concisely.`;
+  return fallbacks[mode];
 }

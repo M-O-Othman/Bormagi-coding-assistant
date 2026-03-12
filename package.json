@@ -131,6 +131,11 @@
         "command": "bormagi.disableSandbox",
         "title": "Bormagi: Disable Sandbox",
         "category": "Bormagi"
+      },
+      {
+        "command": "bormagi.switchMode",
+        "title": "Bormagi: Switch Mode (Ask / Plan / Code)",
+        "category": "Bormagi"
       }
     ],
     "configuration": {

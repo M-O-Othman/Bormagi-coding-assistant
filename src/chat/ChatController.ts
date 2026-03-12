@@ -35,22 +35,19 @@ export type MessageToWebview =
 
 // Human-readable mode labels for UI display
 const MODE_LABELS: Record<string, string> = {
-  ask: 'Ask', explain: 'Ask', plan: 'Plan', code: 'Code', edit: 'Code',
-  debug: 'Debug', review: 'Review', search: 'Search', 'test-fix': 'Test-Fix',
+  ask: 'Ask', plan: 'Plan', code: 'Code',
 };
 
 // Slash-command → mode mapping
 const SLASH_MODE_COMMANDS: Record<string, string> = {
-  '/ask': 'ask', '/plan': 'plan', '/code': 'code', '/debug': 'debug', '/review': 'review',
+  '/ask': 'ask', '/plan': 'plan', '/code': 'code',
 };
 
 const HELP_TEXT = [
   'Available commands:',
-  '  /ask           — Switch to Ask mode (read-only Q&A)',
-  '  /plan          — Switch to Plan mode (design before changes)',
-  '  /code          — Switch to Code mode (apply edits)',
-  '  /debug         — Switch to Debug mode (investigate failures)',
-  '  /review        — Switch to Review mode (inspect diffs)',
+  '  /ask           — Switch to Ask mode (questions only, no file changes)',
+  '  /plan          — Switch to Plan mode (writes a plan file for review before coding)',
+  '  /code          — Switch to Code mode (implement immediately; plans internally for complex tasks)',
   '  /checkpoint    — Create a manual checkpoint',
   '  /resume        — Resume the latest task or plan',
   '  /clear         — Clear the conversation',
@@ -436,6 +433,19 @@ export class ChatController {
 
   // ─── Private helpers ──────────────────────────────────────────────────────────
 
+  /** Called from the status-bar switchMode command — shows a QuickPick for the three modes. */
+  async promptSwitchMode(): Promise<void> {
+    const items = [
+      { label: '💬 Ask', description: 'Questions only — no file changes', mode: 'ask' },
+      { label: '📋 Plan', description: 'Write a plan file for review before coding', mode: 'plan' },
+      { label: '⌨️ Code', description: 'Implement immediately (or plan-then-execute for complex tasks)', mode: 'code' },
+    ];
+    const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Select assistant mode' });
+    if (picked) {
+      await this.applyModeChange(picked.mode, 'user_picker');
+    }
+  }
+
   private async applyModeChange(
     newMode: string,
     source: 'user_picker' | 'slash_command' | 'auto_detect'
@@ -451,7 +461,7 @@ export class ChatController {
   private async handleResumeCommand(): Promise<void> {
     try {
       const root = this.configManager.rootDir;
-      const { listPlans, loadPlan } = await import('../context/PlanManager.js');
+      const { listPlans, loadPlan } = await import('../context/PlanManager');
       const planIds = listPlans(root);
       if (planIds.length === 0) {
         this.post({ type: 'wf_command_result', message: 'No saved plans found. Start a new task by asking a question or using /plan.' });

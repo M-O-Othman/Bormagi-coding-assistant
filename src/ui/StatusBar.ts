@@ -18,7 +18,7 @@ export class StatusBar {
       99
     );
     this.modeItem.command = 'bormagi.switchMode';
-    this.modeItem.tooltip = 'Click to switch assistant mode (Ask / Plan / Code / Debug / Review)';
+    this.modeItem.tooltip = 'Click to switch assistant mode (Ask / Plan / Code)';
     this.modeItem.text = '$(symbol-misc) Ask';
   }
 

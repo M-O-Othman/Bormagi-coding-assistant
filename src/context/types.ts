@@ -6,14 +6,8 @@
 // ─── Mode ─────────────────────────────────────────────────────────────────────
 
 export type AssistantMode =
-  | "plan"
-  | "edit"
-  | "debug"
-  | "review"
-  | "explain"
-  | "search"
-  | "test-fix"
   | "ask"
+  | "plan"
   | "code";
 
 export interface ModeDecision {

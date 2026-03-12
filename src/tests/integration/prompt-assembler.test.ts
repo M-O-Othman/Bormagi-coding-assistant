@@ -39,7 +39,7 @@ function makeCandidate(content: string, editable = false) {
   };
 }
 
-const ALL_MODES: AssistantMode[] = ['plan', 'edit', 'debug', 'review', 'explain', 'search', 'test-fix'];
+const ALL_MODES: AssistantMode[] = ['ask', 'plan', 'code'];
 
 // ─── assemblePrompt — structure ───────────────────────────────────────────────
 
@@ -94,7 +94,7 @@ describe('assemblePrompt — identity and structure', () => {
       envelope:       makeEnvelope(),
       repoMap:        null,
       userMessage:    'Fix the authentication bug.',
-      mode:           'debug',
+      mode:           'code',
     });
     expect(result).toContain('Fix the authentication bug.');
     expect(result).toContain('Current Task');
@@ -107,7 +107,7 @@ describe('assemblePrompt — identity and structure', () => {
       envelope:       makeEnvelope(),
       repoMap:        null,
       userMessage:    'task',
-      mode:           'explain',
+      mode:           'ask',
     });
     expect(result).toContain('PREAMBLE_SENTINEL');
   });
@@ -119,7 +119,7 @@ describe('assemblePrompt — identity and structure', () => {
       envelope:       makeEnvelope(),
       repoMap:        null,
       userMessage:    'task',
-      mode:           'edit',
+      mode:           'code',
     });
     expect(result).toContain('Always use TypeScript.');
     expect(result).toContain('Instructions');
@@ -132,7 +132,7 @@ describe('assemblePrompt — identity and structure', () => {
       envelope:       makeEnvelope(),
       repoMap:        null,
       userMessage:    'task',
-      mode:           'edit',
+      mode:           'code',
     });
     expect(result).not.toContain('## Instructions');
   });
@@ -151,7 +151,7 @@ describe('assemblePrompt — context envelope sections', () => {
       envelope,
       repoMap:        null,
       userMessage:    'task',
-      mode:           'edit',
+      mode:           'code',
     });
     expect(result).toContain('Files to Modify');
     expect(result).toContain('const x = 1;');
@@ -168,7 +168,7 @@ describe('assemblePrompt — context envelope sections', () => {
       envelope,
       repoMap:        null,
       userMessage:    'task',
-      mode:           'review',
+      mode:           'code',
     });
     expect(result).toContain('Reference Context');
     expect(result).toContain('function foo()');
@@ -200,7 +200,7 @@ describe('assemblePrompt — context envelope sections', () => {
       envelope,
       repoMap:        null,
       userMessage:    'task',
-      mode:           'test-fix',
+      mode:           'code',
     });
     expect(result).toContain('Tool Outputs');
     expect(result).toContain('TOOL_OUTPUT_DATA');
@@ -213,7 +213,7 @@ describe('assemblePrompt — context envelope sections', () => {
       envelope:       makeEnvelope(), // all empty
       repoMap:        null,
       userMessage:    'task',
-      mode:           'search',
+      mode:           'ask',
     });
     expect(result).not.toContain('Files to Modify');
     expect(result).not.toContain('Reference Context');
@@ -227,13 +227,7 @@ describe('assemblePrompt — context envelope sections', () => {
 
 describe('assemblePrompt — mode-specific output contracts', () => {
   const contractKeywords: Record<AssistantMode, string[]> = {
-    plan:      ['Assumptions', 'Impacted Files', 'Plan Steps', 'Risks'],
-    edit:      ['Changed Files', 'Patch Summary', 'Validation Notes'],
-    debug:     ['Root Cause Hypothesis', 'Evidence', 'Proposed Fix'],
-    review:    ['Findings', 'Suggested Changes', 'Confidence'],
-    explain:   ['one-sentence summary', 'plain language'],
-    search:    ['File path', 'line number', 'relevance'],
-    'test-fix': ['Failure Analysis', 'Root Cause', 'Fix', 'Confidence'],
+    plan:      ['Objective', 'Files', 'Steps', 'Risks'],
     ask:       ['read-only', 'Ask Mode'],
     code:      ['Changed Files', 'Patch Summary'],
   };
@@ -282,20 +276,11 @@ describe('getOutputContract', () => {
     expect(getOutputContract('plan').toLowerCase()).toContain('do not write code');
   });
 
-  test('edit contract mentions changed files', () => {
-    expect(getOutputContract('edit')).toContain('Changed Files');
+  test('code contract mentions changed files', () => {
+    expect(getOutputContract('code')).toContain('Changed Files');
   });
 
-  test('debug contract mentions root cause', () => {
-    expect(getOutputContract('debug')).toContain('Root Cause');
-  });
-
-  test('review contract mentions severity', () => {
-    const contract = getOutputContract('review');
-    expect(contract).toMatch(/Critical|Major|Minor/);
-  });
-
-  test('test-fix contract mentions confidence', () => {
-    expect(getOutputContract('test-fix')).toContain('Confidence');
+  test('ask contract mentions read-only', () => {
+    expect(getOutputContract('ask').toLowerCase()).toContain('read-only');
   });
 });

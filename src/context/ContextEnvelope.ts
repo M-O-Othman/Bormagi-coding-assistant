@@ -22,7 +22,7 @@ import type { AssistantMode, ContextCandidate, ContextEnvelope } from './types';
 // ─── Mode classification helpers ──────────────────────────────────────────────
 
 /** Modes where no editable-file scope is allowed. */
-const READ_ONLY_MODES = new Set<AssistantMode>(['plan', 'explain', 'search', 'review']);
+const READ_ONLY_MODES = new Set<AssistantMode>(['ask']);
 
 function maxEditableForMode(mode: AssistantMode): number {
   if (READ_ONLY_MODES.has(mode)) { return 0; }

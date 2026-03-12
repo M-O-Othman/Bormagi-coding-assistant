@@ -199,9 +199,7 @@ function getMaxEditableFiles(mode: AssistantMode): number {
   // Some modes have tighter editable-file caps.
   const modeCaps: Partial<Record<AssistantMode, number>> = {
     plan:    0, // plan mode outputs plan text, never editable code
-    explain: 0,
-    search:  0,
-    review:  0,
+    ask:     0,
   };
 
   return modeCaps[mode] ?? globalMax;

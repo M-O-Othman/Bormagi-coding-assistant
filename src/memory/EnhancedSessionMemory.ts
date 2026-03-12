@@ -196,7 +196,7 @@ export class EnhancedSessionMemory {
       parts.push(`**Architecture decisions:**\n${lines.join('\n')}`);
     }
 
-    if ((mode === 'debug' || mode === 'test-fix') && s.recentFailures.length > 0) {
+    if (mode === 'code' && s.recentFailures.length > 0) {
       parts.push(`**Recent failures:**\n${s.recentFailures.slice(0, 3).map(f => `- ${f}`).join('\n')}`);
     }
 

@@ -33,11 +33,6 @@ describe('loadOutputContract — packaged defaults', () => {
     const contract = loadOutputContract('plan', EXTENSION_ROOT);
     expect(contract.toLowerCase()).toMatch(/plan|steps|impacted/i);
   });
-
-  test('debug mode contract contains root cause instruction', () => {
-    const contract = loadOutputContract('debug', EXTENSION_ROOT);
-    expect(contract.toLowerCase()).toMatch(/root cause|hypothesis/i);
-  });
 });
 
 describe('loadOutputContract — caching', () => {
@@ -48,9 +43,9 @@ describe('loadOutputContract — caching', () => {
   });
 
   test('clearContractCache allows fresh reads', () => {
-    const first = loadOutputContract('edit', EXTENSION_ROOT);
+    const first = loadOutputContract('code', EXTENSION_ROOT);
     clearContractCache();
-    const second = loadOutputContract('edit', EXTENSION_ROOT);
+    const second = loadOutputContract('code', EXTENSION_ROOT);
     expect(first).toEqual(second); // content is the same, but cache was cleared
   });
 });
@@ -59,7 +54,7 @@ describe('loadOutputContract — workspace override', () => {
   test('falls back to packaged default when workspace has no override', () => {
     // Use a temp path that definitely has no override
     const noOverrideWs = path.join(EXTENSION_ROOT, 'src', 'tests');
-    const contract = loadOutputContract('review', EXTENSION_ROOT, noOverrideWs);
+    const contract = loadOutputContract('code', EXTENSION_ROOT, noOverrideWs);
     expect(contract.trim().length).toBeGreaterThan(0);
   });
 });

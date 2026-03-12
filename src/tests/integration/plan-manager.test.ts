@@ -50,7 +50,7 @@ describe('shouldCreatePlan', () => {
   });
 
   test('returns false for non-plan mode with short request', () => {
-    expect(shouldCreatePlan('Fix the login bug.', makeModeDecision('debug'))).toBe(false);
+    expect(shouldCreatePlan('Fix the login bug.', makeModeDecision('code'))).toBe(false);
   });
 
   test('returns true for non-plan mode when ≥ 3 task lines detected', () => {
@@ -60,12 +60,12 @@ describe('shouldCreatePlan', () => {
       '2. Create the AuthService',
       '3. Write tests for AuthService',
     ].join('\n');
-    expect(shouldCreatePlan(request, makeModeDecision('edit'))).toBe(true);
+    expect(shouldCreatePlan(request, makeModeDecision('code'))).toBe(true);
   });
 
   test('returns false when only 2 task lines detected', () => {
     const request = '- Update the README\n- Fix the typo';
-    expect(shouldCreatePlan(request, makeModeDecision('edit'))).toBe(false);
+    expect(shouldCreatePlan(request, makeModeDecision('code'))).toBe(false);
   });
 });
 
@@ -102,7 +102,7 @@ describe('createPlan', () => {
   test('markdown file contains the objective', () => {
     const plan = createPlan(workspace, 'Add dark mode', [
       { title: 'Theme tokens', tasks: ['Define palette'] },
-    ], 'edit');
+    ], 'code');
 
     const md = fs.readFileSync(
       path.join(workspace, '.bormagi', 'plans', `${plan.id}.md`),
@@ -318,7 +318,7 @@ describe('loadManifests', () => {
       id:               'test-cap',
       name:             'Test Capability',
       description:      'A test capability for unit testing',
-      applicableModes:  ['edit', 'debug'],
+      applicableModes:  ['code', 'plan'],
       requiredTools:    ['writeFile'],
       estimatedTokens:  500,
     };
@@ -327,7 +327,7 @@ describe('loadManifests', () => {
     const manifests = loadManifests(capsDir);
     expect(manifests).toHaveLength(1);
     expect(manifests[0].id).toBe('test-cap');
-    expect(manifests[0].applicableModes).toContain('edit');
+    expect(manifests[0].applicableModes).toContain('code');
   });
 
   test('skips directories without manifest.json', () => {
@@ -373,7 +373,7 @@ describe('maybeLoadCapability', () => {
   }
 
   test('returns null when no manifests provided', async () => {
-    const result = await maybeLoadCapability([], 'fix the bug', 'debug', 10_000);
+    const result = await maybeLoadCapability([], 'fix the bug', 'code', 10_000);
     expect(result).toBeNull();
   });
 
@@ -382,13 +382,13 @@ describe('maybeLoadCapability', () => {
       id:               'debug-cap',
       name:             'Debug Helper',
       description:      'Assists with debugging and error fixing',
-      applicableModes:  ['debug'],
+      applicableModes:  ['code'],
       requiredTools:    [],
       estimatedTokens:  200,
     }, '# Debug instructions\nAlways check the stack trace first.');
 
     const manifests = loadManifests(capsDir);
-    const loaded    = await maybeLoadCapability(manifests, 'fix the error', 'debug', 10_000);
+    const loaded    = await maybeLoadCapability(manifests, 'fix the error', 'code', 10_000);
 
     expect(loaded).not.toBeNull();
     expect(loaded!.id).toBe('debug-cap');
@@ -400,14 +400,14 @@ describe('maybeLoadCapability', () => {
       id:               'edit-cap',
       name:             'Edit Helper',
       description:      'Helps with code editing',
-      applicableModes:  ['edit'],
+      applicableModes:  ['code'],
       requiredTools:    [],
       estimatedTokens:  200,
     }, 'Edit instructions.');
 
     const manifests = loadManifests(capsDir);
-    // Current mode is 'debug', but capability only applies to 'edit'.
-    const result = await maybeLoadCapability(manifests, 'fix the bug', 'debug', 10_000);
+    // Current mode is 'ask', but capability only applies to 'code'.
+    const result = await maybeLoadCapability(manifests, 'fix the bug', 'ask', 10_000);
     expect(result).toBeNull();
   });
 
@@ -432,7 +432,7 @@ describe('maybeLoadCapability', () => {
       id:               'cached-cap',
       name:             'Cached Cap',
       description:      'Tests caching behaviour',
-      applicableModes:  ['review'],
+      applicableModes:  ['code'],
       requiredTools:    [],
       estimatedTokens:  300,
     }, 'Cached instructions.');
@@ -440,8 +440,8 @@ describe('maybeLoadCapability', () => {
     const manifests = loadManifests(capsDir);
     const sid = 'session-cache-test';
 
-    const first  = await maybeLoadCapability(manifests, 'review the PR', 'review', 10_000, sid);
-    const second = await maybeLoadCapability(manifests, 'review the PR', 'review', 10_000, sid);
+    const first  = await maybeLoadCapability(manifests, 'review the PR', 'code', 10_000, sid);
+    const second = await maybeLoadCapability(manifests, 'review the PR', 'code', 10_000, sid);
 
     expect(first).not.toBeNull();
     expect(second).not.toBeNull();
@@ -453,7 +453,7 @@ describe('maybeLoadCapability', () => {
       id:               'session-cap',
       name:             'Session Cap',
       description:      'Session clear test capability',
-      applicableModes:  ['search'],
+      applicableModes:  ['ask'],
       requiredTools:    [],
       estimatedTokens:  100,
     }, 'Search instructions.');
@@ -461,13 +461,13 @@ describe('maybeLoadCapability', () => {
     const manifests = loadManifests(capsDir);
     const sid = 'session-clear-test';
 
-    await maybeLoadCapability(manifests, 'find the file', 'search', 10_000, sid);
+    await maybeLoadCapability(manifests, 'find the file', 'ask', 10_000, sid);
     clearActivations(sid);
 
     // After clearing, the instruction file path would need to exist to reload.
     // The registry will re-read from disk (no longer cached).
     // We just verify it doesn't throw.
-    const result = await maybeLoadCapability(manifests, 'find the file', 'search', 10_000, sid);
+    const result = await maybeLoadCapability(manifests, 'find the file', 'ask', 10_000, sid);
     expect(result).not.toBeNull();
   });
 });
