@@ -259,9 +259,9 @@ export class AgentRunner {
     const maxTokens = vsConfig.get<number>('advanced.maxTokens') || 30000;
     // Ensure the output tokens matches the value we deducted from the safety ceiling
     const actualMaxOutputTokens = Math.max(
-      vsConfig.get<number>('maxOutputTokens', 1200),
-      // Bormagi's default for some operations if not set is 1200
-      1200
+      vsConfig.get<number>('maxOutputTokens', 8000),
+      // Minimum 8000 to accommodate large file writes (analog clocks, full components, etc.)
+      8000
     );
     // Deduct maxOutputTokens to ensure input + output stays under the rate limit
     const safeInputTokens = Math.max(1000, maxTokens - actualMaxOutputTokens);
@@ -656,8 +656,8 @@ export class AgentRunner {
     }
 
     const maxOutputTokens = Math.max(
-      128,
-      vsConfig.get<number>('maxOutputTokens', 1200)
+      8000,
+      vsConfig.get<number>('maxOutputTokens', 8000)
     );
 
     let fullResponse = '';
@@ -771,14 +771,31 @@ export class AgentRunner {
           agentLog.logToolCall(event.name, event.input);
           // Insert the assistant turn before the tool result so the model can see
           // its own prior tool calls on the next iteration and won't rewrite files.
-          messages.push({ role: 'assistant', content: turnAssistantText || `[calling ${event.name}]` });
+          // For file-write/edit tools, include the path and content size so the model
+          // knows exactly what it wrote and does not produce a second write to the same path.
+          const toolCallPath = (event.input as Record<string, unknown>)?.path as string | undefined;
+          const toolCallContent = (event.input as Record<string, unknown>)?.content as string | undefined;
+          let assistantTurnLabel: string;
+          if (toolCallPath && (event.name === 'write_file' || event.name === 'edit_file')) {
+            const sizeNote = toolCallContent ? ` (${toolCallContent.length} chars)` : '';
+            assistantTurnLabel = `[${event.name}: ${toolCallPath}${sizeNote}]`;
+          } else {
+            assistantTurnLabel = `[calling ${event.name}]`;
+          }
+          messages.push({ role: 'assistant', content: turnAssistantText || assistantTurnLabel });
           turnAssistantText = '';
           const toolResult = await this.toolDispatcher.dispatch(
             event, agentId, onApproval, onDiff, onThought
           );
           agentLog.logToolResult(event.name, String(toolResult));
           turnMemory.addToolResult(event.name, String(toolResult));
-          messages.push({ role: 'user', content: `[Tool result: ${event.name}]\n${toolResult}` });
+          // For write_file, append a discipline reminder so the model does not overwrite
+          // the file it just wrote on the very next iteration.
+          const isFileWrite = event.name === 'write_file';
+          const toolResultContent = isFileWrite && String(toolResult).startsWith('File written')
+            ? `${toolResult}\n[System: File saved. Do not call write_file for this path again. Use edit_file for any corrections, then summarise.]`
+            : String(toolResult);
+          messages.push({ role: 'user', content: `[Tool result: ${event.name}]\n${toolResultContent}` });
           calledATool = true;
           continueLoop = true;
           // ─── Phase-5: after-edit hook for file-mutation tools ──────────────
@@ -822,8 +839,14 @@ export class AgentRunner {
     }
 
     // Persist completed turn.
-    if (fullResponse) {
+    // Skip storing provider error messages (e.g. "Gemini returned an empty response")
+    // as assistant turns — they would pollute session history on the next invocation.
+    const isProviderError = fullResponse.includes('returned an empty response') ||
+      fullResponse.includes('finish reason:');
+    if (fullResponse && !isProviderError) {
       agentLog.logModelText(fullResponse);
+      // Persist user message first so history always has matching user/assistant pairs.
+      this.memoryManager.addMessage(agentId, userMsg);
       const assistantMsg: ChatMessage = { role: 'assistant', content: fullResponse };
       this.memoryManager.addMessage(agentId, assistantMsg);
       await this.memoryManager.persistTurn(agentId, userMessage, fullResponse, toolsUsed);
