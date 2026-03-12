@@ -61,6 +61,8 @@ const HELP_TEXT = [
   '  /wf-resume     — Resume a paused workflow task',
   '  /wf-cancel     — Cancel a workflow task',
   '  /wf-reassign   — Reassign a workflow task',
+  '  /ralph-loop    — Loop agent until completion signal detected',
+  '                   Usage: /ralph-loop "task" --completion-promise "DONE"',
   '  /help          — Show this message',
 ].join('\n');
 
@@ -190,6 +192,12 @@ export class ChatController {
     // ── /wf-* workflow management commands ───────────────────────────────────
     if (trimmed.startsWith('/wf-')) {
       await this.handleWorkflowCommand(trimmed);
+      return;
+    }
+
+    // ── /ralph-loop ───────────────────────────────────────────────────────────
+    if (trimmed.startsWith('/ralph-loop')) {
+      await this.handleRalphLoopCommand(trimmed);
       return;
     }
 
@@ -472,6 +480,168 @@ export class ChatController {
       });
     } catch (err) {
       this.post({ type: 'error', message: `Resume failed: ${String(err)}` });
+    }
+  }
+
+  private async handleRalphLoopCommand(raw: string): Promise<void> {
+    const agentId = this._activeAgentId;
+    if (!agentId) {
+      this.post({ type: 'error', message: 'No agent selected for /ralph-loop. Use @agent-name first.' });
+      return;
+    }
+
+    // Parse: /ralph-loop "task" --completion-promise "DONE"
+    // Supports double-quoted, single-quoted, or unquoted forms.
+    let task: string | undefined;
+    let completionPromise: string | undefined;
+    const dqMatch = raw.match(/^\/ralph-loop\s+"([^"]+)"\s+--completion-promise\s+"([^"]+)"/);
+    const sqMatch = !dqMatch && raw.match(/^\/ralph-loop\s+'([^']+)'\s+--completion-promise\s+'([^']+)'/);
+    const bareMatch = !dqMatch && !sqMatch && raw.match(/^\/ralph-loop\s+(.+?)\s+--completion-promise\s+(.+)$/s);
+    if (dqMatch) {
+      [, task, completionPromise] = dqMatch;
+    } else if (sqMatch) {
+      [, task, completionPromise] = sqMatch;
+    } else if (bareMatch) {
+      task = bareMatch[1].trim();
+      completionPromise = bareMatch[2].trim();
+    } else {
+      this.post({
+        type: 'wf_command_result',
+        message: [
+          'Usage: /ralph-loop "task description" --completion-promise "DONE"',
+          'Example: /ralph-loop "Implement the auth module" --completion-promise "DONE"',
+          '',
+          'The agent will re-run until its response contains the exact completion-promise string.',
+        ].join('\n'),
+      });
+      return;
+    }
+
+    const vsConfig = vscode.workspace.getConfiguration('bormagi');
+    // bormagi.agent.maxRalphLoopIterations defaults to 5; add to package.json contributes.configuration to expose in settings UI.
+    const maxIterations = vsConfig.get<number>('agent.maxRalphLoopIterations', 5);
+
+    const agent = this.agentManager.getAgent(agentId);
+    const providerType = agent?.provider.type ?? '';
+    const model = agent?.provider.model ?? this.currentModel;
+
+    this.post({
+      type: 'wf_command_result',
+      message: `Ralph Loop started.\nTask: "${task}"\nCompletion signal: "${completionPromise}"\nMax iterations: ${maxIterations}`,
+    });
+
+    let iteration = 0;
+    let completed = false;
+
+    while (!completed && iteration < maxIterations) {
+      iteration++;
+
+      const prompt = iteration === 1
+        ? task!
+        : [
+            `[Ralph Loop — iteration ${iteration}/${maxIterations}]`,
+            `The task is not yet complete. Original task: ${task}`,
+            `You must include the exact phrase "${completionPromise}" in your response once the task is fully done.`,
+            `Your previous response did not contain this signal. Please continue and complete the task.`,
+          ].join('\n');
+
+      this.post({ type: 'wf_command_result', message: `\n--- Ralph Loop iteration ${iteration}/${maxIterations} ---` });
+
+      let fullResponse = '';
+
+      try {
+        await this.runner.run(
+          agentId,
+          prompt,
+          (delta) => {
+            fullResponse += delta;
+            this.post({ type: 'text_delta', agentId, delta });
+          },
+          (event) => this.post({ type: 'thought', agentId, event }),
+          async (actionPrompt) => {
+            const result = await this.requestInlineAction(actionPrompt, ['Allow', 'Deny']);
+            const approved = result === 'Allow';
+            void this.auditLogger.logApprovalDecision(
+              Math.random().toString(36).slice(2),
+              'command',
+              approved ? 'approved' : 'denied',
+              agentId
+            );
+            return approved;
+          },
+          async (filePath, original, proposed) =>
+            this.diffManager.showAndApprove(filePath, original, proposed),
+          (usage) => {
+            this.sessionInputTokens += usage.inputTokens;
+            this.sessionOutputTokens += usage.outputTokens;
+            const costUsd = this.estimateCost(model, this.sessionInputTokens, this.sessionOutputTokens);
+            void this.auditLogger.logTokenUsage(agentId, providerType, model, usage.inputTokens, usage.outputTokens, costUsd);
+            this.post({
+              type: 'token_usage',
+              lastInputTokens: usage.inputTokens,
+              lastOutputTokens: usage.outputTokens,
+              sessionInputTokens: this.sessionInputTokens,
+              sessionOutputTokens: this.sessionOutputTokens,
+              model,
+            });
+          },
+          (droppedCount, preservedItems) => {
+            this.post({ type: 'compaction_notice', droppedCount, preservedItems });
+          },
+          (plan) => {
+            this.post({
+              type: 'plan_artifact',
+              plan: {
+                id: plan.id,
+                objective: plan.objective,
+                milestones: plan.milestones.map(m => ({
+                  id: m.id, title: m.title, tasks: m.tasks,
+                  validations: m.validations, status: m.status,
+                })),
+                decisions: plan.decisions ?? [],
+                blockers: plan.blockers ?? [],
+              },
+            });
+          },
+          (changedFiles, intent, checkpointRef) => {
+            this.post({ type: 'diff_summary', changedFiles, intent, checkpointRef });
+          },
+          (checkpointId, label, changedFiles) => {
+            this.post({ type: 'checkpoint_created', checkpointId, label, changedFiles });
+            void this.auditLogger.logCheckpointEvent('created', checkpointId, changedFiles, agentId);
+          },
+          (items, tokenHealth) => {
+            this.post({ type: 'context_update', items, tokenHealth });
+          },
+          this.currentMode as import('../context/types').AssistantMode,
+        );
+      } catch (err) {
+        this.post({ type: 'error', message: `Ralph Loop iteration ${iteration} error: ${String(err)}` });
+        this.post({ type: 'text_done', agentId });
+        return;
+      }
+
+      this.post({ type: 'text_done', agentId });
+
+      if (fullResponse.includes(completionPromise!)) {
+        completed = true;
+        this.post({
+          type: 'wf_command_result',
+          message: `Ralph Loop complete after ${iteration} iteration(s). Detected: "${completionPromise}".`,
+        });
+      } else if (iteration < maxIterations) {
+        this.post({
+          type: 'wf_command_result',
+          message: `Completion signal not found. Re-feeding (iteration ${iteration + 1}/${maxIterations})...`,
+        });
+      }
+    }
+
+    if (!completed) {
+      this.post({
+        type: 'wf_command_result',
+        message: `Ralph Loop exhausted ${maxIterations} iteration(s) without detecting "${completionPromise}". Task may be incomplete.`,
+      });
     }
   }
 
