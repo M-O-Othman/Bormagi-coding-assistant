@@ -132,7 +132,7 @@ let activeAgentId = null;
 let activeAgentName = null;
 let agentList = [];
 let currentModel = '';
-let currentMode = 'ask';
+let currentMode = 'code';
 
 // ── Input history (↑/↓ arrow key navigation) ──────────────────────────────
 const inputHistory = [];
@@ -753,15 +753,9 @@ function scrollEnd() { messagesEl.scrollTop = messagesEl.scrollHeight; }
 // ── Mode picker ────────────────────────────────────────────────────────────
 
 const MODES = [
-  { id: 'ask', label: '💬 Ask' },
+  { id: 'ask',  label: '💬 Ask' },
   { id: 'plan', label: '📋 Plan' },
   { id: 'code', label: '⌨️ Code' },
-  { id: 'debug', label: '🐛 Debug' },
-  { id: 'review', label: '🔍 Review' },
-  { id: 'explain', label: '💡 Explain' },
-  { id: 'edit', label: '✏️ Edit' },
-  { id: 'search', label: '🔎 Search' },
-  { id: 'test-fix', label: '🧪 Test-Fix' },
 ];
 
 function initModePicker() {

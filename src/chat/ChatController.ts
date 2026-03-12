@@ -71,7 +71,7 @@ export class ChatController {
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
   private currentModel = '';
-  private currentMode = 'ask';
+  private currentMode = 'code';
 
   // Optional workflow engine — injected after construction when workflow features are active.
   private workflowEngine?: WorkflowEngine;
@@ -154,7 +154,7 @@ export class ChatController {
       return;
     }
 
-    // ── Mode switch slash commands: /ask /plan /code /debug /review ──────────
+    // ── Mode switch slash commands: /ask /plan /code ──────────────────────────
     if (SLASH_MODE_COMMANDS[lower]) {
       const newMode = SLASH_MODE_COMMANDS[lower];
       await this.applyModeChange(newMode, 'slash_command');
