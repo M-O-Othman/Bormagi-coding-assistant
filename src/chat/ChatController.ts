@@ -518,8 +518,8 @@ export class ChatController {
     }
 
     const vsConfig = vscode.workspace.getConfiguration('bormagi');
-    // bormagi.agent.maxRalphLoopIterations defaults to 5; add to package.json contributes.configuration to expose in settings UI.
-    const maxIterations = vsConfig.get<number>('agent.maxRalphLoopIterations', 5);
+    // Safety brake only — not a meaningful task limit. Override via bormagi.agent.maxRalphLoopIterations if needed.
+    const maxIterations = vsConfig.get<number>('agent.maxRalphLoopIterations', 50);
 
     const agent = this.agentManager.getAgent(agentId);
     const providerType = agent?.provider.type ?? '';
@@ -527,7 +527,7 @@ export class ChatController {
 
     this.post({
       type: 'wf_command_result',
-      message: `Ralph Loop started.\nTask: "${task}"\nCompletion signal: "${completionPromise}"\nMax iterations: ${maxIterations}`,
+      message: `Ralph Loop started.\nTask: "${task}"\nCompletion signal: "${completionPromise}"`,
     });
 
     let iteration = 0;
@@ -539,13 +539,12 @@ export class ChatController {
       const prompt = iteration === 1
         ? task!
         : [
-            `[Ralph Loop — iteration ${iteration}/${maxIterations}]`,
-            `The task is not yet complete. Original task: ${task}`,
-            `You must include the exact phrase "${completionPromise}" in your response once the task is fully done.`,
-            `Your previous response did not contain this signal. Please continue and complete the task.`,
+            `[Continue task: ${task}]`,
+            `You have not yet finished. Continue working through any remaining subtasks.`,
+            `Do not stop until all work is complete. Only output "${completionPromise}" when every subtask is fully done and verified.`,
           ].join('\n');
 
-      this.post({ type: 'wf_command_result', message: `\n--- Ralph Loop iteration ${iteration}/${maxIterations} ---` });
+      this.post({ type: 'wf_command_result', message: `\n--- Ralph Loop pass ${iteration} ---` });
 
       let fullResponse = '';
 
@@ -627,12 +626,12 @@ export class ChatController {
         completed = true;
         this.post({
           type: 'wf_command_result',
-          message: `Ralph Loop complete after ${iteration} iteration(s). Detected: "${completionPromise}".`,
+          message: `Ralph Loop complete after ${iteration} pass(es). Detected: "${completionPromise}".`,
         });
-      } else if (iteration < maxIterations) {
+      } else {
         this.post({
           type: 'wf_command_result',
-          message: `Completion signal not found. Re-feeding (iteration ${iteration + 1}/${maxIterations})...`,
+          message: `Completion signal not yet detected — continuing...`,
         });
       }
     }
@@ -640,7 +639,7 @@ export class ChatController {
     if (!completed) {
       this.post({
         type: 'wf_command_result',
-        message: `Ralph Loop exhausted ${maxIterations} iteration(s) without detecting "${completionPromise}". Task may be incomplete.`,
+        message: `Ralph Loop safety brake hit (${maxIterations} passes) without detecting "${completionPromise}". Increase bormagi.agent.maxRalphLoopIterations if the task needs more passes.`,
       });
     }
   }

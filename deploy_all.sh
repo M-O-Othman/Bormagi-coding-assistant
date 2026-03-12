@@ -13,7 +13,7 @@ IFS=$'\n\t'         # safer word-splitting
 # ── 0. Resolve extension directory ────────────────────────────
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 EXT_DIR="${1:-$SCRIPT_DIR}"
-WORKSPACE_TO_OPEN="${2:-$PWD}"
+WORKSPACE_TO_OPEN="${2:-$SCRIPT_DIR/tmp}"
 
 if [[ ! -d "$EXT_DIR" ]]; then
   printf "\nERROR: Extension directory not found:\n  %s\n\n" "$EXT_DIR"
@@ -44,17 +44,17 @@ printf "=============================================================\n\n"
 pushd "$EXT_DIR" >/dev/null
 
 # ── 1. Install / refresh dependencies ─────────────────────────
-printf "[1/4] Installing npm dependencies…\n"
+printf "[1/5] Installing npm dependencies…\n"
 npm install
 printf "Done.\n\n"
 
 # ── 2. Compile (webpack) ──────────────────────────────────────
-printf "[2/4] Compiling extension (webpack)…\n"
+printf "[2/5] Compiling extension (webpack)…\n"
 npm run compile
 printf "Done.\n\n"
 
 # ── 3. Package with vsce ──────────────────────────────────────
-printf "[3/4] Packaging extension (.vsix)…\n"
+printf "[3/5] Packaging extension (.vsix)…\n"
 npm run vsce:package
 printf "Done.\n\n"
 
@@ -70,7 +70,7 @@ fi
 printf "Packaged: %s\n\n" "$VSIX_FILE"
 
 # ── 4. Install into VS Code ───────────────────────────────────
-printf "[4/4] Installing extension into VS Code…\n"
+printf "[4/5] Installing extension into VS Code…\n"
 "$CODE_CMD" --install-extension "$EXT_DIR/$VSIX_FILE" --force
 printf "Done.\n\n"
 
@@ -84,11 +84,17 @@ fi
 
 popd >/dev/null
 
+# ── 5. Reset test workspace ───────────────────────────────────
+printf "[5/5] Resetting test workspace: %s\n" "$WORKSPACE_TO_OPEN"
+rm -rf "$WORKSPACE_TO_OPEN"
+mkdir -p "$WORKSPACE_TO_OPEN"
+printf "Done.\n\n"
+
 printf "=============================================================\n"
 printf " SUCCESS — Bormagi installed from %s\n" "$VSIX_FILE"
 printf " Bormagi stays installed and enabled in normal VS Code sessions.\n"
 printf " Reload VS Code (Ctrl+Shift+P -> Developer: Reload Window) if already open.\n"
 printf "=============================================================\n\n"
 
-printf "Opening regular VS Code window: %s\n" "$WORKSPACE_TO_OPEN"
+printf "Opening test workspace: %s\n" "$WORKSPACE_TO_OPEN"
 "$CODE_CMD" "$WORKSPACE_TO_OPEN" >/dev/null 2>&1 || true

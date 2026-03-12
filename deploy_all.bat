@@ -11,7 +11,7 @@ if "%~1"=="" (
 )
 
 if "%~2"=="" (
-    set "WORKSPACE_TO_OPEN=%CD%"
+    set "WORKSPACE_TO_OPEN=%SCRIPT_DIR%\tmp"
 ) else (
     set "WORKSPACE_TO_OPEN=%~2"
 )
@@ -40,7 +40,7 @@ echo ============================================================
 echo.
 
 :: ── 1. Install / refresh dependencies ──────────────────────────
-echo [1/4] Installing npm dependencies...
+echo [1/5] Installing npm dependencies...
 cd /d "%EXT_DIR%"
 call npm install
 if errorlevel 1 (
@@ -52,7 +52,7 @@ echo Done.
 echo.
 
 :: ── 2. Compile (webpack) ────────────────────────────────────────
-echo [2/4] Compiling extension (webpack)...
+echo [2/5] Compiling extension (webpack)...
 call npm run compile
 if errorlevel 1 (
     echo ERROR: Compilation failed. Fix errors above before packaging.
@@ -63,7 +63,7 @@ echo Done.
 echo.
 
 :: ── 3. Package with vsce ───────────────────────────────────────
-echo [3/4] Packaging extension (.vsix)...
+echo [3/5] Packaging extension (.vsix)...
 call npm run vsce:package
 if errorlevel 1 (
     echo ERROR: vsce package failed.
@@ -85,7 +85,7 @@ echo Packaged: %VSIX_FILE%
 echo.
 
 :: ── 4. Install into VS Code ─────────────────────────────────────
-echo [4/4] Installing extension into VS Code...
+echo [4/5] Installing extension into VS Code...
 call %CODE_CMD% --install-extension "%EXT_DIR%\%VSIX_FILE%" --force
 if errorlevel 1 (
     echo ERROR: Installation failed. Make sure VS Code is in your PATH.
@@ -102,14 +102,22 @@ if errorlevel 1 (
     echo Installed extension id: %EXT_ID%
 )
 
+:: ── 5. Reset test workspace ──────────────────────────────────────
+echo [5/5] Resetting test workspace: %WORKSPACE_TO_OPEN%
+if exist "%WORKSPACE_TO_OPEN%" (
+    rd /s /q "%WORKSPACE_TO_OPEN%"
+)
+mkdir "%WORKSPACE_TO_OPEN%"
+echo Done.
 echo.
+
 echo ============================================================
 echo  SUCCESS — Bormagi installed from %VSIX_FILE%
 echo  Bormagi stays installed and enabled in normal VS Code sessions.
 echo  Reload VS Code (Ctrl+Shift+P ^> Developer: Reload Window) if already open.
 echo ============================================================
 echo.
-echo Opening regular VS Code window: %WORKSPACE_TO_OPEN%
+echo Opening test workspace: %WORKSPACE_TO_OPEN%
 call %CODE_CMD% "%WORKSPACE_TO_OPEN%" >nul 2>nul
 echo.
 pause

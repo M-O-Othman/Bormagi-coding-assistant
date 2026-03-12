@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { AgentLogger } from './AgentLogger';
 import { AgentManager } from './AgentManager';
 import { PromptComposer } from './PromptComposer';
 import { MemoryManager } from './MemoryManager';
@@ -323,6 +324,8 @@ export class AgentRunner {
     }
     const mode: AssistantMode = userMode ?? modeDecision.mode;
     const requestId = `${agentId}-${Date.now()}`;
+    const agentLog = new AgentLogger(this.workspaceRoot, agentId);
+    agentLog.sessionStart(mode);
     const enhancedPipeline = vsConfig.get<boolean>('contextPipeline.enabled', false);
 
     // ─── Phase-1: Git Capabilities & Pre-Edit State (FR-001, FR-006, FR-020) ─
@@ -412,6 +415,7 @@ export class AgentRunner {
       projectName,
     });
     let fullSystem = skillsSection ? `${assembledSystem}\n\n${skillsSection}` : assembledSystem;
+    agentLog.logSystemPrompt(fullSystem);
 
     if (kbEvidence && kbEvidence.chunks.length > 0) {
       const formattedEvidence = RetrievalService.formatEvidenceForPrompt(kbEvidence);
@@ -529,7 +533,9 @@ export class AgentRunner {
 
     const userMsg: ChatMessage = { role: 'user', content: userMessage };
     messages.push(userMsg);
-    this.memoryManager.addMessage(agentId, userMsg);
+    // Defer adding to persistent session history until after a successful response.
+    // Adding eagerly causes the message to strand in history when the session fails
+    // with no output, leading to duplicate user messages on the next invocation.
 
     const rawTools = [...this.mcpHost.getAllTools(), ...getAppData().virtualTools];
     const tools = minifyToolDefinitions(rawTools);
@@ -659,12 +665,17 @@ export class AgentRunner {
     let continueLoop = true;
     let isFirstModelRequest = true;
     let iterationCount = 0;
-    const maxToolIterations = vsConfig.get<number>('agent.maxToolIterations', 10);
+    const maxToolIterations = vsConfig.get<number>('agent.maxToolIterations', 20);
 
     while (continueLoop) {
       continueLoop = false;
       let calledATool = false;
+      // Accumulate the model's text output for the current turn so we can add
+      // a proper assistant turn to messages before each tool result. Without this,
+      // the model cannot see its own prior tool calls and rewrites files repeatedly.
+      let turnAssistantText = '';
 
+      agentLog.logApiCall(iterationCount + 1, messages);
       if (isFirstModelRequest) {
         const size = measureRequestSize({
           systemPrompt: fullSystem,
@@ -735,7 +746,13 @@ export class AgentRunner {
           }
         } else if (event.type === 'token_usage') {
           onTokenUsage?.(event.usage);
-
+          agentLog.logTokenUsage(
+            iterationCount + 1,
+            event.usage.inputTokens,
+            event.usage.outputTokens,
+            event.usage.cacheReadInputTokens ?? 0,
+            event.usage.cacheCreationInputTokens ?? 0
+          );
           const cacheCreation = event.usage.cacheCreationInputTokens ?? 0;
           const cacheRead = event.usage.cacheReadInputTokens ?? 0;
           if (cacheCreation > 0 || cacheRead > 0) {
@@ -748,11 +765,18 @@ export class AgentRunner {
         } else if (event.type === 'text') {
           onText(event.delta);
           fullResponse += event.delta;
+          turnAssistantText += event.delta;
         } else if (event.type === 'tool_use') {
           toolsUsed.push(event.name);
+          agentLog.logToolCall(event.name, event.input);
+          // Insert the assistant turn before the tool result so the model can see
+          // its own prior tool calls on the next iteration and won't rewrite files.
+          messages.push({ role: 'assistant', content: turnAssistantText || `[calling ${event.name}]` });
+          turnAssistantText = '';
           const toolResult = await this.toolDispatcher.dispatch(
             event, agentId, onApproval, onDiff, onThought
           );
+          agentLog.logToolResult(event.name, String(toolResult));
           turnMemory.addToolResult(event.name, String(toolResult));
           messages.push({ role: 'user', content: `[Tool result: ${event.name}]\n${toolResult}` });
           calledATool = true;
@@ -799,6 +823,7 @@ export class AgentRunner {
 
     // Persist completed turn.
     if (fullResponse) {
+      agentLog.logModelText(fullResponse);
       const assistantMsg: ChatMessage = { role: 'assistant', content: fullResponse };
       this.memoryManager.addMessage(agentId, assistantMsg);
       await this.memoryManager.persistTurn(agentId, userMessage, fullResponse, toolsUsed);
@@ -853,6 +878,8 @@ export class AgentRunner {
         recentEditedFiles: this.enhancedMemory.getState(agentId).recentEditedFiles,
         pendingToolArtifacts: toolsUsed,
       }));
+
+      agentLog.sessionEnd(toolsUsed);
 
       // End turn and extract semantic memories
       turnMemory.endTurn();
