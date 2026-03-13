@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import { AgentLogger } from './AgentLogger';
 import { AgentManager } from './AgentManager';
 import { PromptComposer } from './PromptComposer';
@@ -531,6 +533,13 @@ export class AgentRunner {
     const bootstrapContext = ''; // kept for measureRequestSize compat — pipeline handles context
     const retrievalContext = ''; // kept for measureRequestSize compat — pipeline handles context
 
+    // Inject artifact registry so the model knows what files already exist from
+    // previous sessions (e.g. a plan written in plan mode, readable in code mode).
+    const artifactNote = await this.loadArtifactRegistryNote();
+    if (artifactNote) {
+      messages.push({ role: 'system', content: artifactNote });
+    }
+
     const userMsg: ChatMessage = { role: 'user', content: userMessage };
     messages.push(userMsg);
     // Defer adding to persistent session history until after a successful response.
@@ -812,11 +821,23 @@ export class AgentRunner {
             );
             agentLog.logToolResult(event.name, String(toolResult));
             turnMemory.addToolResult(event.name, String(toolResult));
-            toolResultContent = `[Tool result: ${event.name}]\n${String(toolResult)}`;
+            // Truncate very large tool results so they don't dominate the context
+            // window on subsequent iterations and cause the model to output tiny
+            // narrations instead of the next tool call.
+            const resultStr = String(toolResult);
+            const MAX_TOOL_RESULT_CHARS = 8000;
+            const truncatedResult = resultStr.length > MAX_TOOL_RESULT_CHARS
+              ? resultStr.slice(0, MAX_TOOL_RESULT_CHARS) +
+                `\n\n[... result truncated: ${resultStr.length - MAX_TOOL_RESULT_CHARS} more chars omitted from history ...]`
+              : resultStr;
+            toolResultContent = `[Tool result: ${event.name}]\n${truncatedResult}`;
             if (isFileWrite && toolCallPath && String(toolResult).startsWith('File written')) {
               writtenPaths.add(toolCallPath);
               const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
               toolResultContent += `\n\nFiles written this task: ${pathList}. Use edit_file for any corrections to these paths.`;
+              // Record in cross-session artifact registry so future sessions (e.g. code mode
+              // after plan mode) know what files were created and where.
+              this.recordArtifact(agentId, toolCallPath).catch(() => { /* non-fatal */ });
             }
           }
           messages.push({ role: 'user', content: toolResultContent });
@@ -864,20 +885,43 @@ export class AgentRunner {
       }
 
       if (!calledATool) {
-        continueLoop = false;
+        // If the model narrated intent to call a tool (e.g. "Now let me read X:")
+        // but emitted no function call, push a recovery nudge and re-enter the loop.
+        // This happens when a huge tool result floods the context and the model "runs
+        // out of steam", outputting a short narration instead of the next call.
+        if (toolsUsed.length > 0 && iterationCount < maxToolIterations) {
+          const checkText = (turnAssistantText || lastAssistantText).trim();
+          const isNarratingNextCall =
+            checkText.endsWith(':') ||
+            checkText.endsWith('...') ||
+            /\b(let me|i['']ll now|now let me|i will now)\s+(read|check|list|examine|look at|search|write|run|create)\b/i.test(checkText);
+          if (isNarratingNextCall) {
+            onThought({
+              type: 'thinking',
+              label: 'Narration-without-action detected — nudging model to execute',
+              detail: `Model said "${checkText.slice(-120)}" but called no tool`,
+              timestamp: new Date(),
+            });
+            if (turnAssistantText) {
+              messages.push({ role: 'assistant', content: turnAssistantText });
+              turnAssistantText = '';
+            }
+            messages.push({ role: 'user', content: 'Call the next tool now. Do not narrate — execute immediately.' });
+            continueLoop = true;
+          }
+        }
+        if (!continueLoop) {
+          continueLoop = false;
+        }
       }
     }
 
     // ─── Degenerate response guard ────────────────────────────────────────────
-    // Gemini sometimes outputs "[calling tool]" or "<tool:X>" as plain text instead
-    // of a proper function_call, especially after many tool iterations. When detected,
-    // inject one final synthesis prompt (tools disabled) to force a real text answer.
+    // Gemini sometimes outputs a tool-call label as plain text instead of a proper
+    // function_call. When detected, inject one final synthesis prompt (no tools) to
+    // force a real text answer.
     {
       const lastText = (lastAssistantText || fullResponse).trim();
-      // Match degenerate cases regardless of length (a tool path can be >60 chars):
-      //   - empty string
-      //   - single neutral marker we use as a placeholder (▶)
-      //   - entire output is a tool-call label the model reproduced as text
       const looksDegenerate =
         lastText === '' ||
         lastText === '▶' ||
@@ -926,7 +970,18 @@ export class AgentRunner {
     // as assistant turns — they would pollute session history on the next invocation.
     const isProviderError = fullResponse.includes('returned an empty response') ||
       fullResponse.includes('finish reason:');
-    if (fullResponse && !isProviderError) {
+    // Skip storing narration-only sessions — if the final text is just the model
+    // describing its next intended action (e.g. "Let me read X..."), saving it to
+    // history would cause the next session to re-derive the same context instead of
+    // picking up real progress.
+    const finalText = (lastAssistantText || fullResponse).trim();
+    const isIncompleteNarration =
+      toolsUsed.length > 0 &&
+      finalText.length < 300 &&
+      (/\b(let me|i['']ll now|now let me|i will now)\s+(read|check|list|examine|look at|search|write|run|create)\b/i.test(finalText) ||
+        finalText.endsWith(':') ||
+        finalText.endsWith('...'));
+    if (fullResponse && !isProviderError && !isIncompleteNarration) {
       agentLog.logModelText(fullResponse);
       // Persist user message first so history always has matching user/assistant pairs.
       this.memoryManager.addMessage(agentId, userMsg);
@@ -1141,5 +1196,40 @@ export class AgentRunner {
       }
     }
     return out;
+  }
+
+  // ─── Artifact registry ────────────────────────────────────────────────────
+  // Tracks files created across sessions so mode transitions (plan → code) can
+  // inject a "files already created" note into the next session's context.
+
+  private artifactRegistryPath(): string {
+    return path.join(this.workspaceRoot, '.bormagi', 'artifact-registry.json');
+  }
+
+  private async recordArtifact(agentId: string, filePath: string): Promise<void> {
+    const registryPath = this.artifactRegistryPath();
+    let entries: Array<{ agentId: string; path: string; timestamp: string }> = [];
+    try {
+      const raw = await fs.readFile(registryPath, 'utf8');
+      entries = JSON.parse(raw);
+    } catch { /* first run or corrupt — start fresh */ }
+    // Avoid duplicate entries for the same path
+    if (!entries.some(e => e.path === filePath)) {
+      entries.push({ agentId, path: filePath, timestamp: new Date().toISOString() });
+      await fs.mkdir(path.dirname(registryPath), { recursive: true });
+      await fs.writeFile(registryPath, JSON.stringify(entries, null, 2), 'utf8');
+    }
+  }
+
+  async loadArtifactRegistryNote(): Promise<string> {
+    try {
+      const raw = await fs.readFile(this.artifactRegistryPath(), 'utf8');
+      const entries: Array<{ agentId: string; path: string; timestamp: string }> = JSON.parse(raw);
+      if (entries.length === 0) { return ''; }
+      const lines = entries.map(e => `- ${e.path} (created by ${e.agentId})`).join('\n');
+      return `[Artifact Registry — files created in previous sessions]\n${lines}\n\nBefore writing any file, check if it already exists at one of these paths.`;
+    } catch {
+      return '';
+    }
   }
 }
