@@ -793,19 +793,19 @@ export class AgentRunner {
           );
           agentLog.logToolResult(event.name, String(toolResult));
           turnMemory.addToolResult(event.name, String(toolResult));
-          messages.push({ role: 'user', content: `[Tool result: ${event.name}]\n${String(toolResult)}` });
-          // After a successful write_file, inject a system-role constraint message
-          // listing every path written so far. User-role reminders are ignored by the
-          // model; a system message carries hard constraint authority.
+          // After a successful write_file, embed the constraint directly into the
+          // tool-result user message. A separate role:'system' message gets converted
+          // to a user/model pair by Gemini (and treated as already-acknowledged context),
+          // so the model ignores it. Embedding it in the actual tool result forces the
+          // model to process it as live instruction on the next turn.
           const isFileWrite = event.name === 'write_file';
+          let toolResultContent = `[Tool result: ${event.name}]\n${String(toolResult)}`;
           if (isFileWrite && toolCallPath && String(toolResult).startsWith('File written')) {
             writtenPaths.add(toolCallPath);
             const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
-            messages.push({
-              role: 'system',
-              content: `[CONSTRAINT] Files already written in this task: ${pathList}. Do NOT call write_file for any of these paths again. Use edit_file for corrections. Proceed with any remaining files that still need to be written, then summarise.`
-            });
+            toolResultContent += `\n\n[CONSTRAINT] Files already written in this task: ${pathList}. Do NOT call write_file for any of these paths again. Use edit_file for corrections. Proceed with any remaining files that still need to be written, then summarise.`;
           }
+          messages.push({ role: 'user', content: toolResultContent });
           calledATool = true;
           continueLoop = true;
           // ─── Phase-5: after-edit hook for file-mutation tools ──────────────
