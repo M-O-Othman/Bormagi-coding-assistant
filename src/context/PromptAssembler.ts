@@ -120,7 +120,7 @@ Provide a clear, structured explanation:
 - Suggest a concrete next step if useful`,
 
   plan: `## Output Contract
-Write a plan document to \`.bormagi/plans/<task-name>.md\`. Include:
+Use the \`write_file\` tool to write a plan document to \`.bormagi/plans/<task-name>.md\`. The write_file tool creates parent directories automatically — do NOT run mkdir first. Include:
 - **Objective**: what needs to be built or changed
 - **Steps**: numbered implementation steps
 - **Files**: files to create or modify

@@ -62,16 +62,41 @@ export class GeminiProvider implements ILLMProvider {
   }
 
   private getAccessToken(): string {
-    // Prefer ADC for Vertex/enterprise flows, fallback to user login token.
-    const adcToken = this.tryPrintAccessToken('gcloud auth application-default print-access-token');
-    if (adcToken) {
-      return adcToken;
+    // oauth_proxy targets the Gemini Developer API (generativelanguage.googleapis.com),
+    // which requires the generative-language scope. Request it explicitly so the token
+    // is not scope-limited to Cloud Platform only.
+    const generativeLangScope = 'https://www.googleapis.com/auth/generative-language';
+
+    if (this.authMethod === 'oauth_proxy') {
+      const scopedAdc = this.tryPrintAccessToken(
+        `gcloud auth application-default print-access-token --scopes=${generativeLangScope}`
+      );
+      if (scopedAdc) { return scopedAdc; }
+
+      const scopedUser = this.tryPrintAccessToken(
+        `gcloud auth print-access-token --scopes=${generativeLangScope}`
+      );
+      if (scopedUser) { return scopedUser; }
+
+      // Fallback: unscopped token — will get a 403 if it lacks the scope, but we
+      // try anyway so the error message from the API is surfaced (and caught below).
+      const bare = this.tryPrintAccessToken('gcloud auth application-default print-access-token')
+                ?? this.tryPrintAccessToken('gcloud auth print-access-token');
+      if (bare) { return bare; }
+
+      throw new Error(
+        'Bormagi: Could not obtain a GCP access token for oauth_proxy mode.\n' +
+        'Re-authenticate with the required scope:\n' +
+        `  gcloud auth application-default login --scopes=${generativeLangScope}`
+      );
     }
 
+    // Vertex AI / other OAuth flows — standard ADC is sufficient.
+    const adcToken = this.tryPrintAccessToken('gcloud auth application-default print-access-token');
+    if (adcToken) { return adcToken; }
+
     const userToken = this.tryPrintAccessToken('gcloud auth print-access-token');
-    if (userToken) {
-      return userToken;
-    }
+    if (userToken) { return userToken; }
 
     throw new Error(
       'Bormagi: Could not obtain a GCP access token. ' +
@@ -419,6 +444,18 @@ export class GeminiProvider implements ILLMProvider {
 
     if (!response.ok) {
       const errBody = await response.text().catch(() => '');
+
+      // Give a clear, actionable message for the most common OAuth failure.
+      if (response.status === 403 && errBody.includes('ACCESS_TOKEN_SCOPE_INSUFFICIENT')) {
+        const scope = 'https://www.googleapis.com/auth/generative-language';
+        throw new Error(
+          'Bormagi: Gemini OAuth token is missing the required scope.\n' +
+          'Fix: re-authenticate with the generative-language scope:\n' +
+          `  gcloud auth application-default login --scopes=${scope}\n` +
+          'Then reload the extension. Alternatively, switch the agent to API Key auth.'
+        );
+      }
+
       throw new Error(`Gemini ${this.authMethod} request failed (${response.status} ${response.statusText}): ${errBody}`);
     }
 

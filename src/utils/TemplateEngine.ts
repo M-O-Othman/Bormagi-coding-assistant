@@ -1,3 +1,4 @@
+import * as os from 'os';
 import * as vscode from 'vscode';
 
 export interface TemplateContext {
@@ -7,6 +8,8 @@ export interface TemplateContext {
   selection: string;
   agent_name: string;
   project_name: string;
+  os_platform: string;
+  shell: string;
 }
 
 export class TemplateEngine {
@@ -25,13 +28,18 @@ export class TemplateEngine {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     const workspace = workspaceFolders?.[0]?.name ?? '';
 
+    const platform = os.platform();
+    const shellCmd = platform === 'win32' ? 'cmd.exe' : (process.env.SHELL ?? 'bash');
+
     return {
       workspace,
       date: new Date().toISOString().split('T')[0],
       filename,
       selection,
       agent_name: agentName,
-      project_name: projectName
+      project_name: projectName,
+      os_platform: platform,
+      shell: shellCmd,
     };
   }
 }

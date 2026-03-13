@@ -784,26 +784,38 @@ export class AgentRunner {
             const sizeNote = toolCallContent ? ` (${toolCallContent.length} chars)` : '';
             assistantTurnLabel = `[${event.name}: ${toolCallPath}${sizeNote}]`;
           } else {
-            assistantTurnLabel = `[calling ${event.name}]`;
+            // Use a generic neutral marker — any tool-name format in the history
+            // gets learned by the model and reproduced as plain text on the next turn.
+            assistantTurnLabel = '▶';
           }
           messages.push({ role: 'assistant', content: turnAssistantText || assistantTurnLabel });
           turnAssistantText = '';
-          const toolResult = await this.toolDispatcher.dispatch(
-            event, agentId, onApproval, onDiff, onThought
-          );
-          agentLog.logToolResult(event.name, String(toolResult));
-          turnMemory.addToolResult(event.name, String(toolResult));
-          // After a successful write_file, embed the constraint directly into the
-          // tool-result user message. A separate role:'system' message gets converted
-          // to a user/model pair by Gemini (and treated as already-acknowledged context),
-          // so the model ignores it. Embedding it in the actual tool result forces the
-          // model to process it as live instruction on the next turn.
+
+          // ─── Hard-enforce write_file uniqueness ──────────────────────────────
+          // Text-based CONSTRAINT hints are ignored by Gemini after repeated exposure.
+          // Instead, intercept rewrite attempts in code and return a rejection so the
+          // model is forced to use edit_file rather than looping forever.
           const isFileWrite = event.name === 'write_file';
-          let toolResultContent = `[Tool result: ${event.name}]\n${String(toolResult)}`;
-          if (isFileWrite && toolCallPath && String(toolResult).startsWith('File written')) {
-            writtenPaths.add(toolCallPath);
+          let toolResultContent: string;
+          if (isFileWrite && toolCallPath && writtenPaths.has(toolCallPath)) {
             const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
-            toolResultContent += `\n\n[CONSTRAINT] Files already written in this task: ${pathList}. Do NOT call write_file for any of these paths again. Use edit_file for corrections. Proceed with any remaining files that still need to be written, then summarise.`;
+            const rejection = `[SYSTEM ERROR] write_file REJECTED: "${toolCallPath}" was already written this task. The file has NOT been changed. You MUST use edit_file for any corrections to existing files. Written paths: ${pathList}. Proceed with remaining tasks or summarise.`;
+            agentLog.logToolResult(event.name, rejection);
+            turnMemory.addToolResult(event.name, rejection);
+            toolResultContent = `[Tool result: ${event.name}]\n${rejection}`;
+            onThought({ type: 'error', label: `Rewrite blocked: ${toolCallPath}`, detail: rejection, timestamp: new Date() });
+          } else {
+            const toolResult = await this.toolDispatcher.dispatch(
+              event, agentId, onApproval, onDiff, onThought
+            );
+            agentLog.logToolResult(event.name, String(toolResult));
+            turnMemory.addToolResult(event.name, String(toolResult));
+            toolResultContent = `[Tool result: ${event.name}]\n${String(toolResult)}`;
+            if (isFileWrite && toolCallPath && String(toolResult).startsWith('File written')) {
+              writtenPaths.add(toolCallPath);
+              const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
+              toolResultContent += `\n\nFiles written this task: ${pathList}. Use edit_file for any corrections to these paths.`;
+            }
           }
           messages.push({ role: 'user', content: toolResultContent });
           calledATool = true;
@@ -852,6 +864,58 @@ export class AgentRunner {
       if (!calledATool) {
         continueLoop = false;
       }
+    }
+
+    // ─── Degenerate response guard ────────────────────────────────────────────
+    // Gemini sometimes outputs "[calling tool]" or "<tool:X>" as plain text instead
+    // of a proper function_call, especially after many tool iterations. When detected,
+    // inject one final synthesis prompt (tools disabled) to force a real text answer.
+    {
+      const lastText = (lastAssistantText || fullResponse).trim();
+      // Match degenerate cases regardless of length (a tool path can be >60 chars):
+      //   - empty string
+      //   - single neutral marker we use as a placeholder (▶)
+      //   - entire output is a tool-call label the model reproduced as text
+      const looksDegenerate =
+        lastText === '' ||
+        lastText === '▶' ||
+        /^<tool:\w[^>]*>\s*$/.test(lastText) ||
+        /^\[(?:calling|tool:)\s*\w[^\]]*\]\s*$/.test(lastText);
+      if (looksDegenerate && toolsUsed.length > 0 && iterationCount < maxToolIterations) {
+        onThought({
+          type: 'thinking',
+          label: 'Degenerate response detected — injecting synthesis prompt',
+          detail: `Last model output was ${lastText.length ? `"${lastText}"` : '(empty)'} after ${toolsUsed.length} tool calls`,
+          timestamp: new Date(),
+        });
+        // Use a lean context for synthesis — the full messages array may be too large
+        // after many tool iterations, causing the model to return 0 tokens again.
+        const synthesisMessages: ChatMessage[] = [
+          messages[0], // system prompt only
+          { role: 'user', content: `You have completed ${toolsUsed.length} tool operations for the following request: "${userMessage}"\n\nPlease now provide your complete final answer as plain text. Do not call any tools. Summarise what you did and what the outcome was.` },
+        ];
+        let synthText = '';
+        for await (const synthEvent of provider.stream(synthesisMessages, [], actualMaxOutputTokens)) {
+          if (synthEvent.type === 'text') {
+            onText(synthEvent.delta);
+            synthText += synthEvent.delta;
+          } else if (synthEvent.type === 'token_usage') {
+            onTokenUsage?.(synthEvent.usage);
+          }
+        }
+        if (synthText.trim()) {
+          fullResponse = synthText;
+          lastAssistantText = synthText;
+        }
+      }
+    }
+
+    // Final safety net: the loop produced no text at all — always show something.
+    if (!fullResponse.trim()) {
+      const fallback = 'The agent completed tool operations but did not generate a text response. Please try your request again.';
+      onText(fallback);
+      fullResponse = fallback;
+      lastAssistantText = fallback;
     }
 
     // Persist completed turn.

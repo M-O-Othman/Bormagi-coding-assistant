@@ -6,10 +6,59 @@
  * for obtaining user consent before invoking run_command.
  */
 import * as childProcess from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 
 const workspaceRoot = process.argv[2] ?? process.cwd();
+const IS_WINDOWS = process.platform === 'win32';
+
+/** Strings that Windows CMD prints to stdout on error (exit code is still 0). */
+const WINDOWS_STDOUT_ERRORS = [
+  'The syntax of the command is incorrect',
+  'is not recognized as an internal or external command',
+  'Access is denied',
+  'The system cannot find the path specified',
+  'The system cannot find the file specified',
+];
+
+function detectWindowsStdoutError(output: string): string | null {
+  for (const pattern of WINDOWS_STDOUT_ERRORS) {
+    if (output.includes(pattern)) { return pattern; }
+  }
+  return null;
+}
+
+/**
+ * Translate a Unix-style command to its Windows equivalent.
+ * Returns the translated command string, or the original if no translation applies.
+ */
+function translateForWindows(command: string): string {
+  // mkdir -p <path>  →  fs.mkdirSync (handled separately below; here we replace with PowerShell)
+  const mkdirMatch = command.match(/^mkdir\s+-p\s+(.+)$/);
+  if (mkdirMatch) {
+    const dirArg = mkdirMatch[1].trim();
+    // Use PowerShell's New-Item which is always available on Windows 7+
+    return `powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path '${dirArg}' | Out-Null"`;
+  }
+
+  // rm -rf <path>  →  PowerShell Remove-Item
+  const rmMatch = command.match(/^rm\s+-rf?\s+(.+)$/);
+  if (rmMatch) {
+    const target = rmMatch[1].trim();
+    return `powershell -NoProfile -Command "Remove-Item -Recurse -Force -ErrorAction SilentlyContinue '${target}'"`;
+  }
+
+  // cp -r <src> <dest>  →  PowerShell Copy-Item
+  const cpMatch = command.match(/^cp\s+-r\s+(\S+)\s+(\S+)$/);
+  if (cpMatch) {
+    const src = cpMatch[1];
+    const dest = cpMatch[2];
+    return `powershell -NoProfile -Command "Copy-Item -Recurse -Force '${src}' '${dest}'"`;
+  }
+
+  return command;
+}
 
 function send(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + '\n');
@@ -38,24 +87,34 @@ function resolveCwd(requestedCwd?: string): string {
 
 function runCommand(args: { command: string; cwd?: string }): string {
   const cwd = resolveCwd(args.cwd);
+  const command = IS_WINDOWS ? translateForWindows(args.command) : args.command;
   try {
-    const output = childProcess.execSync(args.command, {
+    const output = childProcess.execSync(command, {
       cwd,
       encoding: 'utf8',
       timeout: 60000,
       maxBuffer: 1024 * 1024 * 10
     });
-    return output;
+    // On Windows, CMD may return exit code 0 even on errors — check stdout content.
+    if (IS_WINDOWS) {
+      const winErr = detectWindowsStdoutError(output);
+      if (winErr) {
+        return `[Error] Command failed (Windows stdout error): ${winErr}\nOutput: ${output.trim()}`;
+      }
+    }
+    // Return a normalised success message when the command produced no output,
+    // so the LLM knows it succeeded and doesn't retry indefinitely.
+    return output.trim() || 'Done.';
   } catch (err) {
     const execErr = err as childProcess.SpawnSyncReturns<string>;
-    return execErr.stdout + '\n' + execErr.stderr;
+    return (execErr.stdout ?? '') + '\n' + (execErr.stderr ?? '');
   }
 }
 
 const TOOLS = [
   {
     name: 'run_command',
-    description: 'Execute a shell command in the workspace directory. Requires user approval before execution (enforced by the extension).',
+    description: 'Execute a shell command in the workspace directory. Requires user approval before execution (enforced by the extension). NOTE: You do NOT need to run mkdir before write_file — write_file creates parent directories automatically.',
     inputSchema: {
       type: 'object',
       properties: {
