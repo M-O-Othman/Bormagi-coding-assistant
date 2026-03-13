@@ -1,6 +1,25 @@
 {
   "virtualTools": [
     {
+      "name": "declare_file_batch",
+      "description": "Declare the complete set of files you intend to write BEFORE writing any of them. Call once at the start of any multi-file task. The framework tracks your batch progress and warns you of missing files at session end.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Relative paths of all files you plan to write in this session (e.g. ['src/index.ts', 'package.json'])."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "One-sentence description of what this batch creates."
+          }
+        },
+        "required": ["files"]
+      }
+    },
+    {
       "name": "update_task_state",
       "description": "Update the persistent task execution state. Call this after completing a significant step, before ending a session, or when you identify next actions / blockers / framework choices. The state survives across sessions and powers the 'continue' contract — when the user types 'continue', the framework resumes from next_actions[0] without rediscovering context.",
       "inputSchema": {

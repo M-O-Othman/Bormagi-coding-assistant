@@ -38,6 +38,11 @@ export interface ExecutionStateData {
   techStack: Record<string, string>;
   /** Cumulative tool iterations used across all sessions for this task. */
   iterationsUsed: number;
+  /**
+   * Files declared via `declare_file_batch` at the start of the current session.
+   * The framework tracks writes against this list and reports progress after each write.
+   */
+  plannedFileBatch: string[];
   updatedAt: string;
 }
 
@@ -84,6 +89,7 @@ export class ExecutionStateManager {
       blockers: [],
       techStack: {},
       iterationsUsed: 0,
+      plannedFileBatch: [],
       updatedAt: new Date().toISOString(),
     };
   }
@@ -126,6 +132,11 @@ export class ExecutionStateManager {
 
     if (state.resolvedInputs.length > 0) {
       lines.push(`Files already read this task (skip re-reading unless you wrote to them): ${state.resolvedInputs.join(', ')}`);
+    }
+
+    const planned = state.plannedFileBatch ?? [];
+    if (planned.length > 0) {
+      lines.push(`Declared file batch (${planned.length} files): ${planned.join(', ')}`);
     }
 
     return lines.join('\n');

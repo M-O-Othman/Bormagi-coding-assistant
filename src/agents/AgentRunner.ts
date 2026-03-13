@@ -12,7 +12,7 @@ import { AuditLogger } from '../audit/AuditLogger';
 import { ProviderFactory } from '../providers/ProviderFactory';
 import { FileScanner, type ScannedFile } from '../utils/FileScanner';
 import { ConfigManager } from '../config/ConfigManager';
-import { ChatMessage, TokenUsage } from '../types';
+import { ChatMessage, TokenUsage, MCPToolDefinition } from '../types';
 import type { AgentExecutionResult } from '../workflow/types';
 import { ExecutionOutcome } from '../workflow/enums';
 import { scanForSecrets, trimToContextLimit } from './execution/ContextWindow';
@@ -43,6 +43,7 @@ import { CheckpointManager } from '../git/CheckpointManager';
 import { ValidationService } from '../git/ValidationService';
 import { CommitProposalGenerator } from '../git/CommitProposalGenerator';
 import { ExecutionStateManager, type ExecutionStateData } from './ExecutionStateManager';
+import { ConsistencyValidator } from './execution/ConsistencyValidator';
 
 // ─── Sandbox imports ────────────────────────────────────────────────────────
 import { SandboxHandle } from '../sandbox/types';
@@ -774,7 +775,7 @@ export class AgentRunner {
         isFirstModelRequest = false;
       }
 
-      for await (const event of provider.stream(messages, tools, actualMaxOutputTokens)) {
+      for await (const event of provider.stream(messages, this.filterToolsByMode(tools, mode), actualMaxOutputTokens)) {
         if (event.type === 'provider_headers') {
           const importantHeaders = this.selectImportantHeaders(event.headers);
           await this.auditLogger.logLLMResponseHeaders(
@@ -850,7 +851,7 @@ export class AgentRunner {
             const rejection = `[SYSTEM ERROR] write_file REJECTED: "${toolCallPath}" was already written this task. The file has NOT been changed. You MUST use edit_file for any corrections to existing files. Written paths: ${pathList}. Proceed with remaining tasks or summarise.`;
             agentLog.logToolResult(event.name, rejection);
             turnMemory.addToolResult(event.name, rejection);
-            toolResultContent = `[Tool result: ${event.name}]\n${rejection}`;
+            toolResultContent = `<tool_result name="${event.name}" status="error">\n${rejection}\n</tool_result>`;
             onThought({ type: 'error', label: `Rewrite blocked: ${toolCallPath}`, detail: rejection, timestamp: new Date() });
           } else if (isFileWrite && toolCallPath && registeredArtifactPaths.has(this.normalizeWorkspacePath(toolCallPath))) {
             // ─── Cross-session artifact guard ────────────────────────────────
@@ -860,7 +861,7 @@ export class AgentRunner {
             const rejection = `[SYSTEM ERROR] write_file REJECTED: "${normalizedGuard}" already exists from a previous session (artifact registry). The file has NOT been changed. Use edit_file to modify it, or read it first to see what was already written.`;
             agentLog.logToolResult(event.name, rejection);
             turnMemory.addToolResult(event.name, rejection);
-            toolResultContent = `[Tool result: ${event.name}]\n${rejection}`;
+            toolResultContent = `<tool_result name="${event.name}" status="error">\n${rejection}\n</tool_result>`;
             onThought({ type: 'error', label: `Cross-session artifact guard: ${normalizedGuard}`, detail: rejection, timestamp: new Date() });
           } else if (event.name === 'update_task_state') {
             // ─── In-process execution state update ───────────────────────────
@@ -893,6 +894,14 @@ export class AgentRunner {
             ].filter(Boolean).join(', ');
             agentLog.logToolResult(event.name, summary);
             toolResultContent = `[Task state updated — ${summary}]`;
+          } else if (event.name === 'declare_file_batch') {
+            // ─── In-process write-batch declaration (#7) ──────────────────────
+            const inp = event.input as { files: string[]; rationale?: string };
+            execState.plannedFileBatch = (inp.files ?? []).map(f => this.normalizeWorkspacePath(f));
+            stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+            agentLog.logToolResult(event.name, `batch declared: ${execState.plannedFileBatch.length} files`);
+            toolResultContent = `[Batch declared: ${execState.plannedFileBatch.length} file(s) — ` +
+              `${inp.rationale ?? 'no rationale'}. Write all of them before this session ends.]`;
           } else {
             const toolResult = await this.toolDispatcher.dispatch(
               event, agentId, onApproval, onDiff, onThought
@@ -915,7 +924,7 @@ export class AgentRunner {
               ? resultStr.slice(0, MAX_TOOL_RESULT_CHARS) +
                 `\n\n[... result truncated: ${resultStr.length - MAX_TOOL_RESULT_CHARS} more chars omitted from history ...]`
               : resultStr;
-            toolResultContent = `[Tool result: ${event.name}]\n${truncatedResult}`;
+            toolResultContent = `<tool_result name="${event.name}">\n${truncatedResult}\n</tool_result>`;
 
             // ─── #6 Discovery budget enforcement ─────────────────────────────
             // Count consecutive reads with no writes. After 3+, inject a hard
@@ -949,6 +958,15 @@ export class AgentRunner {
                 if (missingFiles.length > 0) {
                   toolResultContent += `\n\n[Verification] Warning: ${missingFiles.length} file(s) appear missing from disk: ${missingFiles.join(', ')}. Investigate before continuing.`;
                 }
+              }
+              // ─── #7 Batch progress ───────────────────────────────────────────
+              const plannedBatch = execState.plannedFileBatch ?? [];
+              if (plannedBatch.length > 0) {
+                const remaining = plannedBatch.filter(p => !execState.artifactsCreated.includes(p));
+                const batchNote = remaining.length === 0
+                  ? `[Batch complete: all ${plannedBatch.length} planned files written.]`
+                  : `[Batch: ${execState.artifactsCreated.length}/${plannedBatch.length} done. Remaining: ${remaining.slice(0, 4).join(', ')}${remaining.length > 4 ? ` +${remaining.length - 4} more` : ''}]`;
+                toolResultContent += `\n${batchNote}`;
               }
             }
           }
@@ -1198,6 +1216,46 @@ export class AgentRunner {
       }
     }
 
+    // ─── #8 Minimal consistency validator ────────────────────────────────────
+    if (writtenPaths.size > 0) {
+      const validator = new ConsistencyValidator(this.workspaceRoot);
+      const issues = await validator.validate(Array.from(writtenPaths));
+      if (issues.length > 0) {
+        const issueText = issues.map((i: { path: string; issue: string }) => `- ${i.path}: ${i.issue}`).join('\n');
+        onThought({
+          type: 'error',
+          label: `Consistency check: ${issues.length} issue(s) found`,
+          detail: issueText,
+          timestamp: new Date(),
+        });
+        onText(`\n\n[Consistency Check]\n${issueText}`);
+      }
+    }
+
+    // ─── #18 Post-run health score ────────────────────────────────────────────
+    {
+      const totalCalls = toolsUsed.length;
+      const readCalls  = toolsUsed.filter(t => ['read_file', 'list_files', 'search_files'].includes(t)).length;
+      const writeCalls = toolsUsed.filter(t => ['write_file', 'edit_file'].includes(t)).length;
+      const health = {
+        iterationLoad: Math.round((iterationCount / maxToolIterations) * 100),
+        readRatio:     totalCalls > 0 ? Math.round((readCalls / totalCalls) * 100) : 0,
+        writeCount:    writeCalls,
+        discoveryBudgetTriggered: consecutiveReadCount >= 3,
+        verificationPerformed: writtenPaths.size >= 5,
+      };
+      const overall = Math.max(0, 100
+        - (health.iterationLoad > 80 ? 30 : health.iterationLoad > 60 ? 15 : 0)
+        - (health.readRatio > 70 ? 20 : health.readRatio > 50 ? 10 : 0)
+        - (health.discoveryBudgetTriggered ? 10 : 0));
+      onThought({
+        type: 'thinking',
+        label: `Session health: ${overall}/100`,
+        detail: JSON.stringify(health, null, 2),
+        timestamp: new Date(),
+      });
+    }
+
     // Always save execution state — even for incomplete sessions — so the
     // continue contract can resume from the last known position next invocation.
     execState.iterationsUsed += iterationCount;
@@ -1442,6 +1500,32 @@ export class AgentRunner {
     } catch {
       return 'mature'; // safe default: assume existing work is present
     }
+  }
+
+  // ─── #13 Mode-based tool filtering ───────────────────────────────────────
+
+  /**
+   * Return only the tools that are appropriate for the current assistant mode.
+   * This prevents write/execute tools from being offered in review/chat modes
+   * and reduces the surface area for accidental destructive actions.
+   */
+  private filterToolsByMode(tools: MCPToolDefinition[], mode: AssistantMode): MCPToolDefinition[] {
+    if (mode === 'ask') {
+      // Ask / Q&A mode: read-only tools only — no writes, no command execution
+      const READ_ONLY = new Set([
+        'read_file', 'list_files', 'search_files',
+        'git_status', 'git_diff', 'git_log',
+        'get_diagnostics', 'update_task_state',
+      ]);
+      return tools.filter(t => READ_ONLY.has(t.name));
+    }
+    if (mode === 'plan') {
+      // Plan mode: allow reads + document creation; block destructive execution
+      const BLOCKED = new Set(['run_command', 'git_commit', 'git_push', 'git_create_pr', 'gcp_deploy']);
+      return tools.filter(t => !BLOCKED.has(t.name));
+    }
+    // code (default): all tools available
+    return tools;
   }
 
   /** Return a short system note describing workspace maturity to the model. */
