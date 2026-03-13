@@ -5,6 +5,11 @@
  *
  * All git/gh invocations use execFileSync with argument arrays (not shell strings)
  * to prevent command-injection via file paths, branch names, or commit messages.
+ *
+ * Workspace isolation: status/diff/log/add all use `-- .` (or `git add .`) so that
+ * operations are scoped to workspaceRoot even when it is a subdirectory of a larger
+ * git repository (e.g. a generated project living inside a monorepo or the extension's
+ * own tmp/ folder).
  */
 import * as childProcess from 'child_process';
 import * as readline from 'readline';
@@ -148,13 +153,16 @@ rl.on('line', (line) => {
       let text = '';
 
       if (toolName === 'git_status') {
-        text = git(['status']);
+        // `-- .` scopes output to workspaceRoot, preventing leakage from a parent repo
+        text = git(['status', '--', '.']);
 
       } else if (toolName === 'git_diff') {
         const diffArgs = args as { staged?: boolean; path?: string };
         const gitArgs = ['diff'];
         if (diffArgs.staged) gitArgs.push('--staged');
-        if (diffArgs.path) { gitArgs.push('--'); gitArgs.push(diffArgs.path); }
+        // Always end with a pathspec so diff is confined to the workspace directory
+        gitArgs.push('--');
+        gitArgs.push(diffArgs.path ?? '.');
         text = git(gitArgs);
 
       } else if (toolName === 'git_commit') {
@@ -162,14 +170,17 @@ rl.on('line', (line) => {
         if (commitArgs.files && commitArgs.files.length > 0) {
           git(['add', '--', ...commitArgs.files]);
         } else {
-          git(['add', '-A']);
+          // `git add .` stages only files under cwd (workspaceRoot), unlike `git add -A`
+          // which would stage changes across the entire repository.
+          git(['add', '.']);
         }
         text = git(['commit', '-m', commitArgs.message]);
 
       } else if (toolName === 'git_log') {
         const logArgs = args as { count?: number };
         const count = String(logArgs.count ?? 10);
-        text = git(['log', '--oneline', `-n${count}`]);
+        // `-- .` filters log to commits that touched the workspace directory
+        text = git(['log', '--oneline', `-n${count}`, '--', '.']);
 
       } else if (toolName === 'git_create_branch') {
         const branchArgs = args as { name: string; checkout?: boolean };

@@ -1,6 +1,34 @@
 {
   "virtualTools": [
     {
+      "name": "update_task_state",
+      "description": "Update the persistent task execution state. Call this after completing a significant step, before ending a session, or when you identify next actions / blockers / framework choices. The state survives across sessions and powers the 'continue' contract — when the user types 'continue', the framework resumes from next_actions[0] without rediscovering context.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "completed_step": {
+            "type": "string",
+            "description": "Natural-language description of the step just completed (e.g. 'Created root package.json and tsconfig.base.json')."
+          },
+          "next_actions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Ordered list of remaining actions. Replaces the current list. Put the very next thing to do at index 0."
+          },
+          "blockers": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Unresolved blockers or errors (replaces existing blockers list). Pass [] to clear."
+          },
+          "tech_stack": {
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "description": "Framework choices to lock for this task (e.g. {\"backend\": \"express\", \"orm\": \"prisma\", \"frontend\": \"react-vite\"}). Merged with existing entries — cannot be unset once written."
+          }
+        }
+      }
+    },
+    {
       "name": "get_diagnostics",
       "description": "Read VS Code diagnostics (Problems panel) for a file or the entire workspace.",
       "inputSchema": {

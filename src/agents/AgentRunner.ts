@@ -42,6 +42,7 @@ import { GitService } from '../git/GitService';
 import { CheckpointManager } from '../git/CheckpointManager';
 import { ValidationService } from '../git/ValidationService';
 import { CommitProposalGenerator } from '../git/CommitProposalGenerator';
+import { ExecutionStateManager, type ExecutionStateData } from './ExecutionStateManager';
 
 // ─── Sandbox imports ────────────────────────────────────────────────────────
 import { SandboxHandle } from '../sandbox/types';
@@ -535,12 +536,34 @@ export class AgentRunner {
 
     // Inject artifact registry so the model knows what files already exist from
     // previous sessions (e.g. a plan written in plan mode, readable in code mode).
-    const artifactNote = await this.loadArtifactRegistryNote();
+    const [artifactNote, registeredArtifactPaths] = await Promise.all([
+      this.loadArtifactRegistryNote(),
+      this.loadArtifactPaths(),
+    ]);
     if (artifactNote) {
       messages.push({ role: 'system', content: artifactNote });
     }
 
-    const userMsg: ChatMessage = { role: 'user', content: userMessage };
+    // ─── Structured execution state ──────────────────────────────────────────
+    // Load or create compact task state so the model has a structured summary of
+    // what has been done, what files exist, and what to do next — without needing
+    // to replay raw transcript narration.
+    const stateManager = new ExecutionStateManager(this.workspaceRoot);
+    let execState: ExecutionStateData = await stateManager.load(agentId) ??
+      stateManager.createFresh(agentId, userMessage.slice(0, 500), mode);
+    const stateNote = stateManager.buildContextNote(execState);
+    messages.push({ role: 'system', content: stateNote });
+
+    // ─── Continue contract ────────────────────────────────────────────────────
+    // When the user says "continue" / "proceed", skip generic rediscovery and
+    // resume from the first pending action in the execution state.
+    const CONTINUE_PATTERN = /^\s*(continu[ei]|proceed|keep going|go on|go ahead|resume)\s*[.!]?\s*$/i;
+    const effectiveUserContent =
+      CONTINUE_PATTERN.test(userMessage) && execState.nextActions.length > 0
+        ? `Continue from where you stopped. Next pending action: ${execState.nextActions[0]}`
+        : userMessage;
+
+    const userMsg: ChatMessage = { role: 'user', content: effectiveUserContent };
     messages.push(userMsg);
     // Defer adding to persistent session history until after a successful response.
     // Adding eagerly causes the message to strand in history when the session fails
@@ -776,9 +799,11 @@ export class AgentRunner {
             });
           }
         } else if (event.type === 'text') {
-          onText(event.delta);
-          fullResponse += event.delta;
-          turnAssistantText += event.delta;
+          // Strip Gemini internal thinking-mode tokens that leak through as plain text.
+          const cleanDelta = event.delta.replace(/<｜(?:begin|end)▁of▁thinking｜>/g, '');
+          onText(cleanDelta);
+          fullResponse += cleanDelta;
+          turnAssistantText += cleanDelta;
         } else if (event.type === 'tool_use') {
           toolsUsed.push(event.name);
           agentLog.logToolCall(event.name, event.input);
@@ -815,12 +840,60 @@ export class AgentRunner {
             turnMemory.addToolResult(event.name, rejection);
             toolResultContent = `[Tool result: ${event.name}]\n${rejection}`;
             onThought({ type: 'error', label: `Rewrite blocked: ${toolCallPath}`, detail: rejection, timestamp: new Date() });
+          } else if (isFileWrite && toolCallPath && registeredArtifactPaths.has(this.normalizeWorkspacePath(toolCallPath))) {
+            // ─── Cross-session artifact guard ────────────────────────────────
+            // File was created in a PREVIOUS session. Prevent silent re-creation
+            // that discards prior work. Force the model to use edit_file instead.
+            const normalizedGuard = this.normalizeWorkspacePath(toolCallPath);
+            const rejection = `[SYSTEM ERROR] write_file REJECTED: "${normalizedGuard}" already exists from a previous session (artifact registry). The file has NOT been changed. Use edit_file to modify it, or read it first to see what was already written.`;
+            agentLog.logToolResult(event.name, rejection);
+            turnMemory.addToolResult(event.name, rejection);
+            toolResultContent = `[Tool result: ${event.name}]\n${rejection}`;
+            onThought({ type: 'error', label: `Cross-session artifact guard: ${normalizedGuard}`, detail: rejection, timestamp: new Date() });
+          } else if (event.name === 'update_task_state') {
+            // ─── In-process execution state update ───────────────────────────
+            // Handled directly here so the agent can write back to the state
+            // without needing a separate MCP server.
+            const updates = event.input as {
+              completed_step?: string;
+              next_actions?: string[];
+              blockers?: string[];
+              tech_stack?: Record<string, string>;
+            };
+            if (updates.completed_step) {
+              execState.completedSteps.push(updates.completed_step);
+            }
+            if (updates.next_actions !== undefined) {
+              execState.nextActions = updates.next_actions;
+            }
+            if (updates.blockers !== undefined) {
+              execState.blockers = updates.blockers;
+            }
+            if (updates.tech_stack) {
+              execState.techStack = { ...execState.techStack, ...updates.tech_stack };
+            }
+            // Save immediately so the state is durable even if max-iterations hit
+            stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+            const summary = [
+              updates.completed_step ? `completed_step recorded` : '',
+              updates.next_actions !== undefined ? `next_actions: ${execState.nextActions.length}` : '',
+              updates.tech_stack ? `tech_stack: ${JSON.stringify(execState.techStack)}` : '',
+            ].filter(Boolean).join(', ');
+            agentLog.logToolResult(event.name, summary);
+            toolResultContent = `[Task state updated — ${summary}]`;
           } else {
             const toolResult = await this.toolDispatcher.dispatch(
               event, agentId, onApproval, onDiff, onThought
             );
             agentLog.logToolResult(event.name, String(toolResult));
             turnMemory.addToolResult(event.name, String(toolResult));
+            // Track read_file inputs in execution state to enforce the no-re-read rule
+            if (event.name === 'read_file' && toolCallPath) {
+              const normalizedInput = this.normalizeWorkspacePath(toolCallPath);
+              if (!execState.resolvedInputs.includes(normalizedInput)) {
+                execState.resolvedInputs.push(normalizedInput);
+              }
+            }
             // Truncate very large tool results so they don't dominate the context
             // window on subsequent iterations and cause the model to output tiny
             // narrations instead of the next tool call.
@@ -838,6 +911,18 @@ export class AgentRunner {
               // Record in cross-session artifact registry so future sessions (e.g. code mode
               // after plan mode) know what files were created and where.
               this.recordArtifact(agentId, toolCallPath).catch(() => { /* non-fatal */ });
+              // Update execution state with newly created artifact
+              const normalizedArtifact = this.normalizeWorkspacePath(toolCallPath);
+              if (!execState.artifactsCreated.includes(normalizedArtifact)) {
+                execState.artifactsCreated.push(normalizedArtifact);
+              }
+              // Verify all written files are still on disk every 5 writes
+              if (writtenPaths.size % 5 === 0) {
+                const missingFiles = await this.verifyWrittenFiles(Array.from(writtenPaths));
+                if (missingFiles.length > 0) {
+                  toolResultContent += `\n\n[Verification] Warning: ${missingFiles.length} file(s) appear missing from disk: ${missingFiles.join(', ')}. Investigate before continuing.`;
+                }
+              }
             }
           }
           messages.push({ role: 'user', content: toolResultContent });
@@ -881,7 +966,17 @@ export class AgentRunner {
           timestamp: new Date()
         });
         continueLoop = false;
-        fullResponse += `\n\n[System]: The agent exceeded the maximum allowed tool iterations (${maxToolIterations}) and the operation was terminated early to prevent an infinite loop.`;
+        const systemNote = `\n\n[System]: The agent exceeded the maximum allowed tool iterations (${maxToolIterations}) and the operation was terminated early to prevent an infinite loop.`;
+        fullResponse += systemNote;
+        // Replace lastAssistantText with a clean progress summary so the session
+        // history is not polluted with the full concatenation of all narrations.
+        // The summary tells the next session exactly what was accomplished.
+        if (writtenPaths.size > 0) {
+          const written = Array.from(writtenPaths);
+          lastAssistantText = `Progress checkpoint: completed ${written.length} file(s) in this session — ${written.slice(0, 8).join(', ')}${written.length > 8 ? `, ... and ${written.length - 8} more` : ''}. Session paused at the tool iteration limit; continue to resume implementation.`;
+        } else {
+          lastAssistantText = `Session paused at tool iteration limit after ${toolsUsed.length} operations. Continue to resume.`;
+        }
       }
 
       if (!calledATool) {
@@ -1054,6 +1149,13 @@ export class AgentRunner {
         }
       }
     }
+
+    // Always save execution state — even for incomplete sessions — so the
+    // continue contract can resume from the last known position next invocation.
+    execState.iterationsUsed += iterationCount;
+    execState.mode = mode;
+    execState.updatedAt = new Date().toISOString();
+    stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
   }
 
   // WF-202: Structured completion for workflow orchestration.
@@ -1198,6 +1300,29 @@ export class AgentRunner {
     return out;
   }
 
+  // ─── Path utilities ───────────────────────────────────────────────────────
+
+  /** Strip leading slashes so "/foo/bar.ts" → "foo/bar.ts" (workspace-relative). */
+  private normalizeWorkspacePath(input: string): string {
+    return input.replace(/^[/\\]+/, '');
+  }
+
+  /**
+   * Check which of the given paths are missing from disk.
+   * Used by the write-then-verify gate to catch silent write failures early.
+   */
+  private async verifyWrittenFiles(paths: string[]): Promise<string[]> {
+    const missing: string[] = [];
+    for (const filePath of paths) {
+      try {
+        await fs.access(path.resolve(this.workspaceRoot, filePath));
+      } catch {
+        missing.push(filePath);
+      }
+    }
+    return missing;
+  }
+
   // ─── Artifact registry ────────────────────────────────────────────────────
   // Tracks files created across sessions so mode transitions (plan → code) can
   // inject a "files already created" note into the next session's context.
@@ -1207,6 +1332,7 @@ export class AgentRunner {
   }
 
   private async recordArtifact(agentId: string, filePath: string): Promise<void> {
+    const normalizedPath = this.normalizeWorkspacePath(filePath);
     const registryPath = this.artifactRegistryPath();
     let entries: Array<{ agentId: string; path: string; timestamp: string }> = [];
     try {
@@ -1214,10 +1340,21 @@ export class AgentRunner {
       entries = JSON.parse(raw);
     } catch { /* first run or corrupt — start fresh */ }
     // Avoid duplicate entries for the same path
-    if (!entries.some(e => e.path === filePath)) {
-      entries.push({ agentId, path: filePath, timestamp: new Date().toISOString() });
+    if (!entries.some(e => e.path === normalizedPath)) {
+      entries.push({ agentId, path: normalizedPath, timestamp: new Date().toISOString() });
       await fs.mkdir(path.dirname(registryPath), { recursive: true });
       await fs.writeFile(registryPath, JSON.stringify(entries, null, 2), 'utf8');
+    }
+  }
+
+  /** Returns the set of normalized paths stored in the artifact registry. */
+  async loadArtifactPaths(): Promise<Set<string>> {
+    try {
+      const raw = await fs.readFile(this.artifactRegistryPath(), 'utf8');
+      const entries: Array<{ path: string }> = JSON.parse(raw);
+      return new Set(entries.map(e => this.normalizeWorkspacePath(e.path)));
+    } catch {
+      return new Set();
     }
   }
 

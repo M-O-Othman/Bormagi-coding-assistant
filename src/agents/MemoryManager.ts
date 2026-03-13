@@ -78,6 +78,29 @@ export class MemoryManager {
     this.publishedKnowledge.resetAll(agentId);
   }
 
+  /**
+   * Strip noise from agent response text before writing to persistent memory.
+   * Removes:
+   *   - DeepSeek / Gemini thinking-token wrappers that leak through as plain text.
+   *   - Alternate <think>…</think> format used by some models.
+   *   - Pure narration lines ("Let me read…", "Now I'll…") that add no factual value.
+   */
+  private sanitizeForPersistence(text: string): string {
+    return text
+      // DeepSeek / Gemini internal thinking sentinels
+      .replace(/<｜(?:begin|end)▁of▁thinking｜>/g, '')
+      // <think>…</think> style used by some models
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      // Leading narration-only lines carrying no factual content
+      .replace(
+        /^(let me|now (i('ll)?|let me)|i('ll| will) now)\s+(read|check|list|examine|look at|search|write|run|create)\b[^\n]*/gim,
+        ''
+      )
+      // Collapse runs of 3+ blank lines left by the removals above
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
   async persistTurn(
     agentId: string,
     userMessage: string,
@@ -88,10 +111,12 @@ export class MemoryManager {
     const dateStr = now.toISOString().replace('T', ' ').split('.')[0];
     const toolLine = toolsUsed.length > 0 ? `\n**Tools Used:** ${toolsUsed.join(', ')}` : '';
 
+    const sanitized = this.sanitizeForPersistence(agentResponse);
+
     const entry =
       `### ${dateStr} — ${agentId}\n` +
       `**User:** ${userMessage}\n\n` +
-      `**Agent:** ${agentResponse}` +
+      `**Agent:** ${sanitized}` +
       toolLine +
       `\n\n---`;
 

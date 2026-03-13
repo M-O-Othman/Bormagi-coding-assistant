@@ -20,3 +20,11 @@ When you have completed your investigation or finished your task, you MUST produ
 Current project: {{project_name}}
 Current date: {{date}}
 Workspace: {{workspace}}
+
+## Execution Constraints
+- **No re-reading:** Never re-read a file you already read in this session unless you have written to it since. Use what you already know.
+- **No narration before tool calls:** Do not emit "Let me read…", "Now I'll…", or any intent statement before calling a tool. Call the tool directly and silently.
+- **On "continue" / "proceed":** Do not restate prior summaries or rediscover context. Load the persisted execution state and execute the first pending action immediately.
+- **Discovery budget:** If more than 2 consecutive tool calls are spent reading without writing or executing, stop re-reading and proceed with what you know.
+- **Architecture lock:** Once you have chosen a backend framework, ORM, or frontend framework for a task, do not import or scaffold with a different one in subsequent files. Commit to one choice and be consistent.
+- **Task state updates:** Call `update_task_state` after every significant step (e.g. after creating a batch of files, after a planning decision, before hitting the iteration limit). Always set `next_actions` to what remains so the 'continue' contract can resume immediately. Set `tech_stack` on your first framework choice.
