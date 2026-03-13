@@ -554,6 +554,12 @@ export class AgentRunner {
     const stateNote = stateManager.buildContextNote(execState);
     messages.push({ role: 'system', content: stateNote });
 
+    // ─── #16 Greenfield repo detector ────────────────────────────────────────
+    // Classify the workspace maturity and inject a short guidance note so the
+    // model knows whether to scaffold from scratch or build on existing files.
+    const wsType = await this.detectWorkspaceType();
+    messages.push({ role: 'system', content: this.buildWorkspaceTypeNote(wsType) });
+
     // ─── Continue contract ────────────────────────────────────────────────────
     // When the user says "continue" / "proceed", skip generic rediscovery and
     // resume from the first pending action in the execution state.
@@ -702,6 +708,12 @@ export class AgentRunner {
     let isFirstModelRequest = true;
     let iterationCount = 0;
     const maxToolIterations = vsConfig.get<number>('agent.maxToolIterations', 20);
+    // #6 — Discovery budget: track consecutive read-only calls with no writes.
+    let consecutiveReadCount = 0;
+    // #15 — Milestone stopping: pause the session every N writes so the agent
+    // does not attempt to scaffold an entire project in one run.
+    const milestoneWriteSize = vsConfig.get<number>('agent.milestoneWriteSize', 8);
+    let nextMilestoneAt = milestoneWriteSize;
 
     while (continueLoop) {
       continueLoop = false;
@@ -904,6 +916,21 @@ export class AgentRunner {
                 `\n\n[... result truncated: ${resultStr.length - MAX_TOOL_RESULT_CHARS} more chars omitted from history ...]`
               : resultStr;
             toolResultContent = `[Tool result: ${event.name}]\n${truncatedResult}`;
+
+            // ─── #6 Discovery budget enforcement ─────────────────────────────
+            // Count consecutive reads with no writes. After 3+, inject a hard
+            // nudge so the model stops rediscovering and starts implementing.
+            const isReadOnlyTool = ['read_file', 'list_files', 'search_files'].includes(event.name);
+            const isWriteOrActionTool = ['write_file', 'edit_file', 'run_command'].includes(event.name);
+            if (isReadOnlyTool) {
+              consecutiveReadCount++;
+            } else if (isWriteOrActionTool) {
+              consecutiveReadCount = 0;
+            }
+            if (consecutiveReadCount >= 3 && writtenPaths.size === 0) {
+              toolResultContent += `\n\n[Discovery Budget] ${consecutiveReadCount} consecutive reads with nothing written yet. Stop reading — write your first file now.`;
+            }
+
             if (isFileWrite && toolCallPath && String(toolResult).startsWith('File written')) {
               writtenPaths.add(toolCallPath);
               const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
@@ -949,6 +976,27 @@ export class AgentRunner {
             }
           }
         }
+      }
+
+      // ─── #15 Phase-level milestone stopping ──────────────────────────────────
+      // Pause every `milestoneWriteSize` writes so the agent presents progress
+      // before continuing to scaffold more files. The user types "continue" to resume.
+      if (continueLoop && milestoneWriteSize > 0 && writtenPaths.size >= nextMilestoneAt) {
+        const written = Array.from(writtenPaths);
+        const milestoneSummary =
+          `Milestone reached: ${writtenPaths.size} file(s) written this session — ` +
+          `${written.slice(0, 6).join(', ')}${written.length > 6 ? ` and ${written.length - 6} more` : ''}. ` +
+          `Session paused for review. Type "continue" to resume.`;
+        onThought({
+          type: 'thinking',
+          label: `Milestone stop at ${writtenPaths.size} writes (threshold: ${nextMilestoneAt})`,
+          detail: milestoneSummary,
+          timestamp: new Date(),
+        });
+        onText(`\n\n[Milestone] ${milestoneSummary}`);
+        lastAssistantText = milestoneSummary;
+        continueLoop = false;
+        nextMilestoneAt += milestoneWriteSize;
       }
 
       // Capture the text from this iteration so the final persist stores only the
@@ -1368,5 +1416,42 @@ export class AgentRunner {
     } catch {
       return '';
     }
+  }
+
+  // ─── #16 Greenfield repo detector ─────────────────────────────────────────
+
+  /**
+   * Classify workspace maturity based on file count and key project files.
+   * Returns 'greenfield' for empty repos, 'scaffolded' for basic skeletons,
+   * and 'mature' for established codebases.
+   */
+  private async detectWorkspaceType(): Promise<'greenfield' | 'scaffolded' | 'mature'> {
+    try {
+      const entries = await fs.readdir(this.workspaceRoot);
+      const hasPackageJson = entries.includes('package.json');
+      const hasSrc = entries.includes('src');
+      // Exclude hidden dirs and node_modules from maturity count
+      const nonHidden = entries.filter(e => !e.startsWith('.') && e !== 'node_modules');
+      if (nonHidden.length <= 2 && !hasPackageJson) {
+        return 'greenfield';
+      }
+      if (hasPackageJson && !hasSrc && nonHidden.length < 8) {
+        return 'scaffolded';
+      }
+      return 'mature';
+    } catch {
+      return 'mature'; // safe default: assume existing work is present
+    }
+  }
+
+  /** Return a short system note describing workspace maturity to the model. */
+  private buildWorkspaceTypeNote(wsType: 'greenfield' | 'scaffolded' | 'mature'): string {
+    if (wsType === 'greenfield') {
+      return '[Workspace: Greenfield] No project files detected. Start by creating a project structure (package.json, src/, README.md) before adding application code.';
+    }
+    if (wsType === 'scaffolded') {
+      return '[Workspace: Scaffolded] Basic project structure exists but is not yet mature. Build on the existing scaffolding rather than replacing it.';
+    }
+    return '[Workspace: Mature] Existing codebase detected. Read key files before modifying. Prefer edit_file over write_file for files that may already exist.';
   }
 }
