@@ -37,6 +37,14 @@ dist/**/*.js.map
 .DS_Store
 Thumbs.db
 
+# Secrets and local environment
+.env
+.env.*
+
+# Runtime temp/log files (not needed in packaged extension)
+tmp/
+.bormagi/
+
 # Keep these in the package:
 # dist/            — webpack bundle
 # media/           — icons, HTML panels

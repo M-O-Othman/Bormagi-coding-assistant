@@ -9,7 +9,8 @@
       "Bash(grep:*)",
       "Bash(npm run compile)",
       "Bash(python3:*)",
-      "WebFetch(domain:ai.google.dev)"
+      "WebFetch(domain:ai.google.dev)",
+      "Bash(npm audit:*)"
     ]
   }
 }

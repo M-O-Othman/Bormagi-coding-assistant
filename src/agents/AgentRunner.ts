@@ -784,9 +784,11 @@ export class AgentRunner {
             const sizeNote = toolCallContent ? ` (${toolCallContent.length} chars)` : '';
             assistantTurnLabel = `[${event.name}: ${toolCallPath}${sizeNote}]`;
           } else {
-            // Use a generic neutral marker — any tool-name format in the history
-            // gets learned by the model and reproduced as plain text on the next turn.
-            assistantTurnLabel = '▶';
+            // Encode as a null-byte-delimited marker so GeminiProvider can convert
+            // this into a native functionCall part.  The model never emits null bytes
+            // so it cannot reproduce this format as plain text output.
+            const argsJson = JSON.stringify(event.input ?? {});
+            assistantTurnLabel = `\x00TOOL:${event.name}:${argsJson}\x00`;
           }
           messages.push({ role: 'assistant', content: turnAssistantText || assistantTurnLabel });
           turnAssistantText = '';
@@ -879,6 +881,7 @@ export class AgentRunner {
       const looksDegenerate =
         lastText === '' ||
         lastText === '▶' ||
+        lastText.startsWith('\x00TOOL:') ||
         /^<tool:\w[^>]*>\s*$/.test(lastText) ||
         /^\[(?:calling|tool:)\s*\w[^\]]*\]\s*$/.test(lastText);
       if (looksDegenerate && toolsUsed.length > 0 && iterationCount < maxToolIterations) {

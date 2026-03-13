@@ -127,7 +127,7 @@ export class DocumentParser {
     private async parsePDF(filePath: string, id: string, filename: string): Promise<ParsedDocument> {
         try {
             // Dynamic import so the module is only loaded when needed
-            const pdfParse = require('pdf-parse');
+            const pdfParse = require(/* webpackIgnore: true */ 'pdf-parse');
             const buffer = fs.readFileSync(filePath);
             const data = await pdfParse(buffer);
             const text: string = data.text || '';
@@ -144,7 +144,7 @@ export class DocumentParser {
 
     private async parseDOCX(filePath: string, id: string, filename: string): Promise<ParsedDocument> {
         try {
-            const mammoth = require('mammoth');
+            const mammoth = require(/* webpackIgnore: true */ 'mammoth');
             const result = await mammoth.extractRawText({ path: filePath });
             const text: string = result.value || '';
             return {
@@ -160,7 +160,7 @@ export class DocumentParser {
 
     private async parseXLSX(filePath: string, id: string, filename: string): Promise<ParsedDocument> {
         try {
-            const ExcelJS = require('exceljs');
+            const ExcelJS = require(/* webpackIgnore: true */ 'exceljs');
             const workbook = new ExcelJS.Workbook();
             await workbook.xlsx.readFile(filePath);
 
