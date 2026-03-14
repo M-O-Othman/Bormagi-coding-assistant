@@ -1821,17 +1821,25 @@ export class AgentRunner {
    */
   private filterToolsByMode(tools: MCPToolDefinition[], mode: AssistantMode): MCPToolDefinition[] {
     if (mode === 'ask') {
-      // Ask / Q&A mode: read-only tools only — no writes, no command execution
+      // Ask / Q&A mode: read-only tools only — no writes, no command execution.
+      // Includes all Tier 1 code-nav tools (search/read only, no edits).
       const READ_ONLY = new Set([
         'read_file', 'list_files', 'search_files',
+        'glob_files', 'grep_content',
+        'read_file_range', 'read_head', 'read_tail', 'read_match_context',
         'git_status', 'git_diff', 'git_log',
         'get_diagnostics', 'update_task_state',
       ]);
       return tools.filter(t => READ_ONLY.has(t.name));
     }
     if (mode === 'plan') {
-      // Plan mode: allow reads + document creation; block destructive execution
-      const BLOCKED = new Set(['run_command', 'git_commit', 'git_push', 'git_create_pr', 'gcp_deploy']);
+      // Plan mode: allow reads + document creation; block destructive execution.
+      // Edit tools (replace_range, multi_edit, symbol edits) are also blocked.
+      const BLOCKED = new Set([
+        'run_command', 'git_commit', 'git_push', 'git_create_pr', 'gcp_deploy',
+        'replace_range', 'multi_edit',
+        'replace_symbol_block', 'insert_before_symbol', 'insert_after_symbol',
+      ]);
       return tools.filter(t => !BLOCKED.has(t.name));
     }
     // code (default): all tools available

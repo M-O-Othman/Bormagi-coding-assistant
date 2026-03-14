@@ -6,6 +6,7 @@ import { AuditLogger } from '../../audit/AuditLogger';
 import { generateDocx, generatePptx } from '../../utils/DocumentGenerator';
 import type { MCPToolCall, ThoughtEvent } from '../../types';
 import { getAppData } from '../../data/DataStore';
+import { DiscoveryBudget, toolCategory } from './DiscoveryBudget';
 
 import { ExecWrapper } from '../../sandbox/ExecWrapper';
 import { SandboxHandle } from '../../sandbox/types';
@@ -18,9 +19,6 @@ export type ThoughtCallback = (event: ThoughtEvent) => void;
 interface ToolGuardState {
   mode: string;
   useV2: boolean;
-  readFileCount: number;
-  listFilesCount: number;
-  consecutiveDiscoveryWithoutWrite: number;
   /** Map from normalised path → timestamp of last read. Cleared when file is written. */
   filesReadThisRun: Map<string, number>;
   /** Set of paths written this run — re-reading is allowed after a write. */
@@ -34,10 +32,10 @@ interface ToolGuardState {
 export class ToolDispatcher {
   private _activeSandbox: SandboxHandle | null = null;
   private _guardState: ToolGuardState = {
-    mode: '', useV2: false, readFileCount: 0, listFilesCount: 0,
-    consecutiveDiscoveryWithoutWrite: 0,
+    mode: '', useV2: false,
     filesReadThisRun: new Map(), filesWrittenThisRun: new Set(),
   };
+  private _budget: DiscoveryBudget = new DiscoveryBudget();
 
   constructor(
     private readonly mcpHost: MCPHost,
@@ -54,10 +52,15 @@ export class ToolDispatcher {
   /** Reset per-run guard state. Call at the start of each AgentRunner.run() invocation. */
   public resetGuardState(mode: string, useV2: boolean): void {
     this._guardState = {
-      mode, useV2, readFileCount: 0, listFilesCount: 0,
-      consecutiveDiscoveryWithoutWrite: 0,
+      mode, useV2,
       filesReadThisRun: new Map(), filesWrittenThisRun: new Set(),
     };
+    this._budget = new DiscoveryBudget();
+  }
+
+  /** Returns the current discovery budget telemetry for audit/logging. */
+  public getBudgetTelemetry() {
+    return this._budget.getState();
   }
 
   private getEffectivePath(originalPath: string): string {
@@ -107,13 +110,24 @@ export class ToolDispatcher {
       const targetPath: string | undefined =
         (inp.path as string | undefined) ??
         (inp.directory as string | undefined) ??
-        (inp.file_path as string | undefined);
+        (inp.file_path as string | undefined) ??
+        // For glob_files: also check the pattern field (e.g. pattern: '.bormagi/**')
+        (toolEvent.name === 'glob_files' ? (inp.pattern as string | undefined) : undefined);
       const EXEMPT_TOOLS = new Set(['update_task_state', 'declare_file_batch']);
-      if (!EXEMPT_TOOLS.has(toolEvent.name) && targetPath) {
-        const normalised = targetPath.replace(/\\/g, '/').replace(/^\/+/, '');
-        if (normalised.startsWith('.bormagi/') || normalised === '.bormagi') {
-          const msg = getAppData().executionMessages.toolBlocked.bormagiPath;
-          return msg;
+      const isBormagiPath = (p: string) => {
+        const n = p.replace(/\\/g, '/').replace(/^\/+/, '');
+        return n.startsWith('.bormagi/') || n === '.bormagi';
+      };
+      if (!EXEMPT_TOOLS.has(toolEvent.name)) {
+        if (targetPath && isBormagiPath(targetPath)) {
+          return getAppData().executionMessages.toolBlocked.bormagiPath;
+        }
+        // For multi_edit: check every edit's path
+        if (toolEvent.name === 'multi_edit') {
+          const edits = inp.edits as Array<{ path: string }> | undefined;
+          if (Array.isArray(edits) && edits.some(e => isBormagiPath(e.path))) {
+            return getAppData().executionMessages.toolBlocked.bormagiPath;
+          }
         }
       }
     }
@@ -139,31 +153,26 @@ export class ToolDispatcher {
 
       // Discovery budget enforcement (code mode only)
       if (g.mode === 'code') {
-        const READ_LIMIT = 3;
-        const LIST_LIMIT = 2;
-        const CONSEC_LIMIT = 3;
-        const budgetExhausted =
-          (toolEvent.name === 'read_file' && g.readFileCount >= READ_LIMIT) ||
-          (toolEvent.name === 'list_files' && g.listFilesCount >= LIST_LIMIT) ||
-          (g.consecutiveDiscoveryWithoutWrite >= CONSEC_LIMIT &&
-            ['read_file', 'list_files', 'search_files'].includes(toolEvent.name));
-        if (budgetExhausted) {
-          return msgs.budgetExhausted;
+        const category = toolCategory(toolEvent.name);
+        const check = this._budget.record(category);
+        if (!check.allowed) {
+          const hint = check.suggestion ? `\n${check.suggestion}` : '';
+          return `${check.reason ?? msgs.budgetExhausted}${hint}`;
+        }
+      } else {
+        // Still track writes/validates for reread prevention in non-code modes
+        const category = toolCategory(toolEvent.name);
+        if (category === 'write_or_edit' || category === 'validate') {
+          this._budget.record(category);
         }
       }
 
-      // Track counts for budget (done before dispatch so even blocked paths update state)
-      if (toolEvent.name === 'read_file') { g.readFileCount++; g.consecutiveDiscoveryWithoutWrite++; }
-      else if (toolEvent.name === 'list_files') { g.listFilesCount++; g.consecutiveDiscoveryWithoutWrite++; }
-      else if (toolEvent.name === 'search_files') { g.consecutiveDiscoveryWithoutWrite++; }
-      else if (['write_file', 'edit_file', 'run_command'].includes(toolEvent.name)) {
-        g.consecutiveDiscoveryWithoutWrite = 0;
-        if (normPath) { g.filesWrittenThisRun.add(normPath); }
-      }
-
-      // Mark file as read for reread prevention
+      // Track file-level reread state
       if (toolEvent.name === 'read_file' && normPath) {
         g.filesReadThisRun.set(normPath, Date.now());
+      }
+      if (['write_file', 'edit_file'].includes(toolEvent.name) && normPath) {
+        g.filesWrittenThisRun.add(normPath);
       }
     }
 

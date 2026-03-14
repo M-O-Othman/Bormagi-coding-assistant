@@ -125,7 +125,7 @@ Use the \`write_file\` tool to write a plan document to \`.bormagi/plans/<task-n
 - **Steps**: numbered implementation steps
 - **Files**: files to create or modify
 - **Risks**: potential issues or open questions
-Do NOT implement any code — the plan is for user review before execution.`,
+Do not write code — produce the plan document only, for user review before execution.`,
 
   code: `## Output Contract
 You MUST use the \`write_file\` tool to write every file — do NOT just describe the code in text.

@@ -137,7 +137,7 @@ const TOOLS = [
   },
   {
     name: 'search_files',
-    description: 'Search for a text pattern (regex) across workspace files.',
+    description: 'Search for a text pattern (regex) across workspace files. Deprecated: prefer grep_content which returns structured JSON with line numbers, context lines, include/exclude globs, and result caps.',
     inputSchema: {
       type: 'object',
       properties: {

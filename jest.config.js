@@ -6,6 +6,8 @@ module.exports = {
     '**/src/tests/integration/**/*.test.ts',
     '**/src/tests/unit/**/*.test.ts',
     '**/src/tests/execution/**/*.test.ts',
+    '**/src/tests/tools/**/*.test.ts',
+    '**/src/tests/skills/**/*.test.ts',
   ],
   moduleNameMapper: {
     '^vscode$': '<rootDir>/src/__mocks__/vscode.ts',

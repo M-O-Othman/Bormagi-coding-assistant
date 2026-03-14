@@ -29,7 +29,7 @@ const MODE_PATTERNS: ModePattern[] = [
   {
     mode: 'ask',
     strong: [
-      /\b(what\s+is|what\s+are|what\s+does|how\s+does|how\s+do\s+I|explain|describe|tell\s+me|why\s+is|why\s+does|clarify|understand|overview|summary\s+of|walk\s+me\s+through)\b/i,
+      /\b(what\s+is|what\s+are|what\s+does|how\s+does|how\s+do\s+I|explain|describe|tell\s+me|why\s+is|why\s+does|clarify|understand|overview|summary\s+of|walk\s+me\s+through|find\s+the|where\s+is|where\s+are|locate\s+the|show\s+me\s+where)\b/i,
     ],
     weak: [
       /\b(question|curious|wondering|help\s+me\s+understand|can\s+you\s+explain)\b/i,

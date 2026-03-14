@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../../types';
 import { sanitiseTranscript } from './TranscriptSanitiser';
+import { loadSkillFragment } from '../../skills/skillLoader';
 
 /**
  * Input context for building a compact LLM message array.
@@ -21,6 +22,12 @@ export interface PromptContext {
    * Used only on resume when nextAction is being executed.
    */
   milestoneSummary?: string;
+  /**
+   * Optional list of skill fragment names to inject as system messages.
+   * Each skill is loaded from src/skills/<name>.md at runtime.
+   * Skills appear as system messages between the workspace summary and user instruction.
+   */
+  activeSkills?: string[];
 }
 
 /**
@@ -53,9 +60,10 @@ export class PromptAssembler {
    *   1. system: stable system prompt
    *   2. system: compact execution-state summary
    *   3. system: compact workspace summary
-   *   4. assistant: prior milestone summary (if provided)
-   *   5. user: current instruction
-   *   6. tool_result messages from the current step
+   *   4. system: skill fragments (one per active skill, if any)
+   *   5. assistant: prior milestone summary (if provided)
+   *   6. user: current instruction
+   *   7. tool_result messages from the current step
    */
   assembleMessages(ctx: PromptContext): ChatMessage[] {
     const msgs: ChatMessage[] = [];
@@ -79,7 +87,17 @@ export class PromptAssembler {
       });
     }
 
-    // 4. Optional prior milestone (one line max)
+    // 4. Skill fragments (loaded at runtime from src/skills/)
+    if (ctx.activeSkills && ctx.activeSkills.length > 0) {
+      for (const skillName of ctx.activeSkills) {
+        const fragment = loadSkillFragment(skillName);
+        if (fragment) {
+          msgs.push({ role: 'system', content: fragment });
+        }
+      }
+    }
+
+    // 5. Optional prior milestone (one line max)
     if (ctx.milestoneSummary) {
       msgs.push({
         role: 'assistant',
@@ -87,10 +105,10 @@ export class PromptAssembler {
       });
     }
 
-    // 5. Current user instruction
+    // 6. Current user instruction
     msgs.push({ role: 'user', content: ctx.currentInstruction });
 
-    // 6. Current-step tool results only
+    // 7. Current-step tool results only
     for (const tr of ctx.currentStepToolResults) {
       msgs.push(tr);
     }

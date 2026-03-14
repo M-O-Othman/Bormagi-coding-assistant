@@ -1,0 +1,50 @@
+{
+  "pathPolicy": {
+    "outsideWorkspace": "Access denied: path is outside the workspace.",
+    "blockedDirectory": "[BLOCKED] Direct agent access to this path is not permitted.",
+    "bormagiBlocked": "[BLOCKED] Agent access to .bormagi/ is not permitted. This is internal framework state."
+  },
+  "codeNav": {
+    "blockedPath": "[BLOCKED] Access to this path is not permitted.",
+    "fileNotFound": "File not found: {path}",
+    "invalidPattern": "Invalid pattern: {error}",
+    "noMatches": "No matches found.",
+    "truncated": "Results truncated at {max}. Refine your pattern or increase max_results."
+  },
+  "discoveryBudget": {
+    "wholeFileExhausted": "[BUDGET] Whole-file read limit reached ({limit} reads). Use read_file_range, read_head, read_tail, or read_match_context for targeted reads instead.",
+    "targetedReadExhausted": "[BUDGET] Targeted read limit reached ({limit} reads). Consolidate reads or proceed to write.",
+    "globExhausted": "[BUDGET] Glob/list limit reached ({limit} calls). Use grep_content to search within the files you already found.",
+    "grepExhausted": "[BUDGET] Grep limit reached ({limit} calls). Proceed with the matches you have.",
+    "consecutiveExhausted": "[BUDGET] {limit} consecutive discovery operations without a write or edit. Use the files you have found to make progress (write_file, edit_file, replace_range, multi_edit).",
+    "suggestion_wholeFile": "Try read_file_range (read_file_range), read_head, or grep_content instead of whole-file reads.",
+    "suggestion_glob": "Try grep_content to search file contents directly rather than listing directories.",
+    "suggestion_consecutive": "Proceed to write or edit a file — you have done enough discovery."
+  },
+  "editPolicy": {
+    "blockedInMode": "[BLOCKED] Edit tools (replace_range, multi_edit, replace_symbol_block, insert_before_symbol, insert_after_symbol) are not available in {mode} mode. Switch to code mode to make changes.",
+    "previewRecommended": "Tip: use preview_only=true first to verify the diff before applying large edits.",
+    "atomicRollback": "Edit transaction rolled back — all files restored. Failed edit: {reason}",
+    "redirectedWriteToEdit": "Existing file detected at {path} — redirected write_file to edit_file"
+  },
+  "editTransaction": {
+    "backupFailed": "Could not create backup for {path}: {error}",
+    "writeFailed": "Edit failed at {path}: {error}. Rolling back all changes.",
+    "rollbackSuccess": "Rollback complete — all {count} files restored.",
+    "rollbackFailed": "Rollback partially failed: {errors}. Manual inspection may be required."
+  },
+  "symbolTools": {
+    "symbolNotFound": "Symbol '{symbol}' not found in {path}.",
+    "parseError": "Could not parse {path}: {error}",
+    "ambiguousSymbol": "Multiple symbols named '{symbol}' found. Use symbol_kind to disambiguate.",
+    "unsupportedFileType": "Symbol tools work best with TypeScript/JavaScript files. Falling back to regex heuristics for {ext}."
+  },
+  "searchFirstPolicy": {
+    "instruction": "Search before reading. Use glob_files to find files, grep_content to search contents, then read only the relevant slices with read_file_range or read_match_context. Use read_file for whole-file reads only when the file is short (< 150 lines) or targeted reads are insufficient."
+  },
+  "indexStatus": {
+    "notReady": "Workspace index is not ready. Run workspace_index_status to check, or wait for the background indexer.",
+    "stale": "Workspace index is stale. Symbol search results may be out of date.",
+    "buildStarted": "Building workspace symbol index in the background..."
+  }
+}

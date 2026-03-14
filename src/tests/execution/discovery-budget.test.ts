@@ -45,42 +45,44 @@ describe('ToolDispatcher — discovery budget (code mode)', () => {
     dispatcher.resetGuardState('code', true);
   });
 
-  test('allows first 3 read_file calls', async () => {
-    for (let i = 0; i < 3; i++) {
+  test('allows first 2 read_file calls (new whole-file limit is 2)', async () => {
+    for (let i = 0; i < 2; i++) {
       const result = await dispatcher.dispatch(
         { id: `${i}`, name: 'read_file', input: { path: `src/file${i}.ts` } },
         'agent', mockOnApproval, mockOnDiff, mockOnThought
       );
-      expect(result).not.toContain('[BUDGET EXHAUSTED]');
+      expect(result).not.toContain('[BUDGET]');
     }
   });
 
-  test('blocks 4th read_file in code mode', async () => {
-    for (let i = 0; i < 3; i++) {
+  test('blocks 3rd read_file in code mode (whole-file limit = 2)', async () => {
+    for (let i = 0; i < 2; i++) {
       await dispatcher.dispatch(
         { id: `${i}`, name: 'read_file', input: { path: `src/file${i}.ts` } },
         'agent', mockOnApproval, mockOnDiff, mockOnThought
       );
     }
     const result = await dispatcher.dispatch(
-      { id: '4', name: 'read_file', input: { path: 'src/file4.ts' } },
+      { id: '3', name: 'read_file', input: { path: 'src/file3.ts' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(result).toContain('[BUDGET EXHAUSTED]');
+    expect(result).toContain('[BUDGET]');
+    expect(result).toContain('Whole-file read limit reached');
   });
 
-  test('blocks list_files after 2 calls in code mode', async () => {
-    for (let i = 0; i < 2; i++) {
+  test('blocks list_files after 3 calls in code mode (glob limit = 3)', async () => {
+    for (let i = 0; i < 3; i++) {
       await dispatcher.dispatch(
         { id: `${i}`, name: 'list_files', input: { directory: `src/dir${i}` } },
         'agent', mockOnApproval, mockOnDiff, mockOnThought
       );
     }
     const result = await dispatcher.dispatch(
-      { id: '3', name: 'list_files', input: { directory: 'src/dir3' } },
+      { id: '4', name: 'list_files', input: { directory: 'src/dir4' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(result).toContain('[BUDGET EXHAUSTED]');
+    expect(result).toContain('[BUDGET]');
+    expect(result).toContain('Glob/list limit reached');
   });
 });
 
@@ -92,13 +94,13 @@ describe('ToolDispatcher — discovery budget (ask mode)', () => {
     dispatcher.resetGuardState('ask', true); // ask mode — no budget limits
   });
 
-  test('does NOT block read_file after 3 calls in ask mode', async () => {
-    for (let i = 0; i < 4; i++) {
+  test('does NOT block read_file after 3 calls in ask mode (no budget in non-code modes)', async () => {
+    for (let i = 0; i < 5; i++) {
       const result = await dispatcher.dispatch(
         { id: `${i}`, name: 'read_file', input: { path: `src/file${i}.ts` } },
         'agent', mockOnApproval, mockOnDiff, mockOnThought
       );
-      expect(result).not.toContain('[BUDGET EXHAUSTED]');
+      expect(result).not.toContain('[BUDGET]');
     }
   });
 });

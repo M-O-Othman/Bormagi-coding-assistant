@@ -83,6 +83,7 @@ export class AgentManager {
     await this.mcpHost.startBuiltin('git', workspaceRoot);
     await this.mcpHost.startBuiltin('gcp', workspaceRoot);
     await this.mcpHost.startBuiltin('collaboration', workspaceRoot);
+    await this.mcpHost.startBuiltin('code-nav', workspaceRoot);
 
     // Start any custom MCP servers defined for this agent
     for (const serverConfig of agentConfig.mcp_servers) {

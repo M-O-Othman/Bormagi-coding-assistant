@@ -1018,3 +1018,514 @@ What should the new plan's scope be?
 * This is the most practical and lowest-risk path.
 
 ---
+
+
+---
+# Open Questions — New Tool Stack & Skill Upgrade (0_newtools / 0_newtools_detailed_design)
+
+> Questions raised while analysing `docs/New-Requirements/0_newtools.md` and `docs/New-Requirements/0_newtools_detailed_design.md` against the current codebase.
+> **Do not begin implementation until all questions below are answered.**
+
+---
+
+## Section NT-A — Tool Implementation Location
+
+### NT-1: Where should the new tools be implemented?
+
+* **A** New tool handlers inside existing `filesystem-server.ts` (current pattern for read_file, write_file, etc.)
+* **B** New standalone MCP builtin server (e.g. `code-nav-server.ts`) keeping `filesystem-server.ts` unchanged
+* **C** Tier 1 read/search tools as virtual tools in ToolDispatcher (no MCP round-trip, faster, simpler)
+
+Impact: A keeps everything together but filesystem-server.ts is already large. B isolates concerns but adds server overhead. C is fastest for stateless operations but mixes responsibilities.
+
+**Answer:**
+**ANSWER**
+Choose **B**.
+
+Implement the new tool stack in a new standalone builtin server such as `code-nav-server.ts`.
+
+Reasoning:
+
+* `filesystem-server.ts` already owns basic file primitives; adding grep/glob/range/symbol logic there will overgrow it further.
+* Tier 1 tools are not just dispatch tricks; they are reusable navigation capabilities and deserve a proper tool boundary.
+* Putting them directly inside `ToolDispatcher` would blur orchestration vs tool execution responsibilities and make testing harder.
+* A separate builtin server gives clear ownership, simpler telemetry, clearer permissions, and a clean place to add Tier 2/Tier 3 later.
+
+Implementation guidance:
+
+* Keep `filesystem-server.ts` unchanged except for any shared helper extraction.
+* Add `code-nav-server.ts` for:
+
+  * `glob_files`
+  * `grep_content`
+  * `read_file_range`
+  * `read_head`
+  * `read_tail`
+  * `read_match_context`
+  * later symbol tools
+* ToolDispatcher should only:
+
+  * expose/hide tools by mode,
+  * enforce permissions/budgets,
+  * dispatch to the builtin server.
+
+---
+
+---
+
+## Section NT-B — `search_files` vs `grep_content`
+
+### NT-2: Should `search_files` be deprecated or upgraded?
+
+The existing `search_files` tool does regex search but with simpler output than the proposed `grep_content` (which adds structured JSON, context lines, include/exclude globs, result caps).
+
+* **A** Keep `search_files` as-is and add `grep_content` as a separate richer tool
+* **B** Upgrade `search_files` in-place to match the `grep_content` spec (same tool name, backward compat)
+* **C** Add `grep_content` as new preferred tool and deprecate `search_files` for future removal
+
+**Answer:**
+**ANSWER**
+Choose **C**.
+
+Add `grep_content` as the new preferred tool and deprecate `search_files` for later removal.
+
+Reasoning:
+
+* `grep_content` is materially richer and should become the canonical search primitive.
+* Upgrading `search_files` in place risks hidden compatibility breaks and ambiguous semantics.
+* Keeping both forever would create prompt/tool-choice confusion.
+
+Implementation guidance:
+
+* Keep `search_files` temporarily for backward compatibility.
+* Mark it deprecated in tool metadata and agent instructions.
+* Update prompts/skills to prefer `grep_content`.
+* Add telemetry to measure residual `search_files` usage.
+* Remove `search_files` in a later cleanup once no active flows depend on it.
+
+---
+
+---
+
+## Section NT-C — Symbol Navigation Implementation
+
+### NT-3: What parsing approach for Tier 2 symbol tools?
+
+`find_symbols`, `read_symbol_block`, `replace_symbol_block`, `insert_before/after_symbol` require parsing symbol boundaries.
+
+* **A** Regex heuristics — match class X, function X, const X = etc. Fast, zero deps, works cross-language, brittle for complex nesting
+* **B** TypeScript Compiler API — precise AST for .ts/.js only, adds ~1-2 MB to bundle
+* **C** tree-sitter npm — language-agnostic, robust, but adds native binary (~10 MB) and per-language grammars
+* **D** Defer symbol tools entirely — implement only Tier 1 now and revisit Tier 2 with a clearer commitment
+
+**Answer:**
+**ANSWER**
+Choose **B**.
+
+Use the **TypeScript Compiler API** for Tier 2 symbol tools, scoped to `.ts`, `.tsx`, `.js`, and `.jsx`.
+
+Reasoning:
+
+* The Bormagi codebase is TypeScript-heavy, so this gives high value immediately.
+* It is much more reliable than regex heuristics for classes, methods, exported functions, and nested structures.
+* It avoids the operational complexity and bundle/native overhead of tree-sitter in the first implementation.
+* Regex heuristics are too brittle for safe edit tools like `replace_symbol_block`.
+
+Implementation guidance:
+
+* Tier 2 symbol tools should initially support TS/JS family files only.
+* For unsupported languages, return a structured `blocked` or `unsupported_language` result.
+* Do not delay Tier 2 entirely; it is worth doing once Tier 1 is stable.
+
+---
+
+---
+
+## Section NT-D — Discovery Budget Redesign
+
+### NT-4: Should the discovery budget be extracted into a dedicated module?
+
+The spec defines a new multi-category budget (whole-file reads <=2, targeted reads <=12, grep calls <=4, glob calls <=3) more nuanced than the current single-counter in `ToolDispatcher._guardState`.
+
+* **A** Extract into `src/agents/execution/DiscoveryBudget.ts` with per-category counters — clean and testable, refactor needed
+* **B** Extend existing `_guardState` in ToolDispatcher with new counters — minimal disruption, no new file
+* **C** Keep current budget unchanged, only add new tool implementations without touching budget logic
+
+**Answer:**
+**ANSWER**
+Choose **A**.
+
+Extract the budget into a dedicated `DiscoveryBudget.ts` module.
+
+Reasoning:
+
+* The new policy is no longer a simple counter; it is a real rules engine with categories and reset semantics.
+* Keeping it inside `_guardState` will make ToolDispatcher larger and harder to test.
+* A dedicated module is cleaner, reusable, and easier to regression-test.
+
+Implementation guidance:
+
+* Create `src/agents/execution/DiscoveryBudget.ts`.
+* It should own:
+
+  * counters by category,
+  * consecutive-discovery tracking,
+  * reset rules,
+  * blocking decisions,
+  * structured violation results.
+* ToolDispatcher should call this module, not implement the logic inline.
+
+---
+
+---
+
+## Section NT-E — `multi_edit` Atomicity
+
+### NT-5: How strict must the atomicity guarantee be for `multi_edit`?
+
+* **A** In-memory: apply all edits in-memory first, validate, then write all files at once
+* **B** Backup-and-restore: copy target files to .tmp before applying; restore all on failure
+* **C** Best-effort: apply sequentially; on failure report which succeeded and which failed, no rollback
+* **D** Per-file atomic (temp+rename): each file written via temp file rename, no cross-file coordination
+
+**Answer:**
+**ANSWER**
+Choose **B**.
+
+Use **backup-and-restore** for the first implementation.
+
+Reasoning:
+
+* Cross-file atomicity matters for multi-edit.
+* In-memory-only validation is not enough because writes can still fail mid-application.
+* Best-effort is too weak for a tool whose value proposition includes coordinated edits.
+* Per-file atomic rename is useful but does not solve multi-file rollback by itself.
+
+Implementation guidance:
+
+* Before applying edits, snapshot all target files to temporary backups.
+* Apply edits.
+* If any edit/write fails, restore all touched files from backup.
+* Return a structured result showing rollback occurred.
+* This is the best practical balance without overengineering.
+
+---
+
+---
+
+## Section NT-F — Text Externalization Scope
+
+### NT-6: What is the intended scope of the hardcoded-text externalization work?
+
+Codebase is already ~90% externalized. Remaining inline strings:
+
+1. Fallback contract strings in `src/context/ModePromptLoader.ts`
+2. HTML labels/help text in `src/ui/AgentSettingsPanel.ts`
+3. Inline JS strings in `media/chat.html`
+4. Default agent prompt fragment in `src/agents/AgentManager.ts`
+5. A few remaining tool-blocked messages in `ToolDispatcher.ts`
+
+* **A** Externalize only strings introduced by the new tool work
+* **B** Externalize the full remaining set (items 1-5) as a dedicated early phase before tool implementation
+* **C** Externalize incrementally — fix any file touched during tool implementation, leave others for later
+
+**Answer:**
+**ANSWER**
+Choose **C**.
+
+Externalize incrementally: if a file is touched during this tool-stack rollout, externalize its remaining inline user-facing strings before closing the change.
+
+Reasoning:
+
+* A separate early full externalization phase would add unnecessary scope and delay.
+* Only externalizing brand-new strings is too weak and leaves obvious inline debt in touched files.
+* Incremental cleanup is the practical middle path.
+
+Implementation guidance:
+
+* Mandatory rule: if a tool-stack change touches one of the listed files, externalize the remaining inline user-facing strings in that file.
+* Do not open unrelated files solely for text cleanup in this phase.
+
+---
+
+---
+
+## Section NT-G — Phase 6 / V2 Default Flip
+
+### NT-7: Should Phase 6 (flip `executionEngineV2` default to `true` and remove V1 branches) be part of this new plan?
+
+This is the only outstanding item from the previous execution-layer plan and would clean up ~1000 lines of dead V1 code from `AgentRunner.ts`.
+
+* **A** Include as Phase 0 of the new plan — do it first before adding new tools (cleaner codebase)
+* **B** Do it as a small independent task in parallel
+* **C** Defer until new tools are stable — avoids touching AgentRunner.ts twice in quick succession
+
+**Answer:**
+**ANSWER**
+Choose **B**.
+
+Do it as a **small independent task in parallel**, but do not block the tool-stack rollout on completing full V1 removal.
+
+Reasoning:
+
+* V2 default flip is important and should happen soon.
+* But making it a hard prerequisite for the new tool stack couples two substantial tracks unnecessarily.
+* Full V1 branch removal will touch the hot path and should not be bundled into every tool-stack change.
+
+Implementation guidance:
+
+* Parallel task 1:
+
+  * enable `executionEngineV2=true` by default after verification,
+  * keep V1 available briefly behind fallback if needed.
+* Parallel task 2:
+
+  * remove dead V1 branches once regression/live-session verification passes.
+* The tool-stack project should assume V2 path as the target integration surface.
+
+---
+
+---
+
+## Section NT-H — Mode-Specific Tool Permissions
+
+### NT-8: How should new edit tools be blocked in read-only modes (ask/plan/review)?
+
+* **A** Via `filterToolsByMode()` only — edit tools simply don't appear in the tool list in read-only modes
+* **B** Via ToolDispatcher only — tools appear in the list but calls are rejected with a structured blocked result
+* **C** Both — hide in prompt AND reject at dispatch (defense in depth, current pattern for .bormagi blocking)
+
+**Answer:**
+**ANSWER**
+Choose **C**.
+
+Use both visibility filtering and dispatch-layer enforcement.
+
+Reasoning:
+
+* Hiding tools reduces bad model choices.
+* Dispatcher blocking is still required for safety and consistency.
+* This matches the existing defense-in-depth approach and is the right pattern for edit tools.
+
+Implementation guidance:
+
+* `filterToolsByMode()` should hide edit tools in ask/plan/review.
+* ToolDispatcher should still reject any illegal call with a structured blocked result.
+* Do not rely on prompt/tool visibility alone.
+
+---
+
+---
+
+## Section NT-I — Skill Playbooks
+
+### NT-9: Should new skill playbooks (codebase-navigator, implement-feature, bug-investigator, dependency-auditor) be included in this plan?
+
+* **A** Add as new agent definitions in `.bormagi/agents-definition/<name>/system-prompt.md` — selectable in UI
+* **B** Add as injectable skill fragments in `src/skills/` — loaded on demand
+* **C** Encode as additions to existing mode prompts (code.md, ask.md)
+* **D** Skip skill playbooks — focus on tool implementation only, add skills afterwards
+
+**Answer:**
+**ANSWER**
+Choose **B**.
+
+Add them as **injectable skill fragments** in `src/skills/`, loaded on demand.
+
+Reasoning:
+
+* These are reusable operating playbooks, not new persona-level agents.
+* Agent-definition proliferation would overcomplicate the UI and agent catalog.
+* Hardcoding them into mode prompts would make mode prompts too large and less composable.
+* Skill fragments give the best balance of reuse, control, and future extensibility.
+
+Implementation guidance:
+
+* Add:
+
+  * `src/skills/codebase-navigator.md`
+  * `src/skills/implement-feature.md`
+  * `src/skills/bug-investigator.md`
+  * `src/skills/dependency-auditor.md`
+* Load them based on task type/mode/tooling context.
+* Keep initial skill loading rules simple and deterministic.
+
+---
+
+---
+
+# Open Questions — Agent Productivity Fixes
+
+> Questions for the implementation of `00-fixing_agent_productivity.md` + `00-fixing-agent_productivity_detailed_desgin.md`
+> **Do not begin implementation until all questions below are answered.**
+
+---
+
+## Section P — Architecture & Scope
+
+### PQ-1: Two competing design documents — which is primary?
+
+`0high_priority fixes.md` uses Phases A–J (A=ExecutionState, B=AgentRunner, C=ToolDispatcher, D=BatchPlanner/ArchitectureLock, E=ConsistencyValidator, F=PromptComposer, G=Transcript sanitisation, H=Extension commands, I=Dependency audit, J=Regression tests).
+
+`00-fixing-agent_productivity_detailed_desgin.md` uses Phases 0–10 (0=Stabilize, 1=ExecutionKernel/FSM, 2=Transcript-free, 3=Resume/recovery, 4=DiscoveryBudget redesign, 5=Nav tools, 6=Symbol tools, 7=Validation gate, 8=Task templates, 9=Mode permissions, 10=Default flip).
+
+These overlap significantly but are not identical. Options:
+
+- **A** Use `0high_priority fixes.md` as primary (it is closer to what the logs show as broken); treat `detailed_design` as supplementary
+- **B** Use `detailed_design.md` as primary (it is more comprehensive and structured); treat `0high_priority fixes.md` as context
+- **C** Produce a merged unified plan that resolves conflicts
+
+**Answer:**
+
+---
+
+### PQ-2: Already-implemented phases — include in plan or skip?
+
+The following have already been implemented in previous sessions:
+
+- Phases 5 and 6 from `detailed_design.md` (navigation tools + symbol tools) — **Done**
+- Phase 8.2 (skill playbooks: all 4 `.md` files + skillLoader.ts) — **Done**
+- Phase 4 (DiscoveryBudget.ts with 7 categories) — **Done**
+- Phase 7 severity model (ConsistencyValidator with info/warning/critical) — **Done** (but not wired to hard post-write gate)
+- Phase 3.3 (RecoveryManager with 5 triggers) — **Done**
+- Phase 2.1/2.2 (PromptAssembler in V2 code-mode path) — **Done**
+- Phase 3.1 (nextToolCall field in ExecutionStateManager) — **Done**
+
+Options:
+
+- **A** Plan only covers remaining gaps; list completed items as baseline
+- **B** Plan is comprehensive and re-describes everything including what is done
+
+**Answer:**
+
+---
+
+## Section Q — AgentRunner Split (Phase 1.4 / Phase B)
+
+### PQ-3: Is splitting AgentRunner a hard requirement?
+
+`AgentRunner.ts` is currently 1,914 lines. The detailed design requires splitting it into:
+
+- `ExecutionKernel.ts` — phase control and step execution
+- `ResumeController.ts` — resume logic
+- `MilestoneFinalizer.ts` — continue/validate/wait/complete decisions
+- `RecoveryController.ts` — recovery logic (RecoveryManager.ts already exists)
+
+This is the highest-risk change in the plan. Options:
+
+- **A** Hard requirement: AgentRunner must be split; the thin-coordinator goal is mandatory
+- **B** Optional but preferred: AgentRunner can remain if wiring is clean; split is a nice-to-have
+- **C** Incremental: extract one module at a time; first priority is wiring not splitting
+
+**Answer:**
+
+---
+
+## Section R — StepContract and LLM Output (Phase 1.2)
+
+### PQ-4: How should StepContract work with Claude's tool_use API?
+
+The plan requires the LLM to return a `StepContract` (tool/pause/complete/blocked). Claude's API uses native `tool_use` blocks — the model calls a tool by name. Options:
+
+- **A** Implement StepContract as a virtual tool the LLM calls: `declare_next_step({ kind, tool, input, reason })`. The dispatcher intercepts it, validates it, then executes.
+- **B** Infer StepContract from the existing tool_use stream: when the model returns a tool call, wrap it in the StepContract shape; when model returns text only in silent mode, classify as pause/complete/blocked.
+- **C** Skip StepContract as a separate concept; the existing tool_use + silent execution flag achieves the same goal without a new layer.
+
+**Answer:**
+
+---
+
+## Section S — Execution Phase FSM (Phase 1.1)
+
+### PQ-5: New FSM vs extending existing SessionPhase?
+
+`ExecutionStateManager` already has `runPhase: SessionPhase` with states: `RUNNING | WAITING_FOR_USER_INPUT | BLOCKED_BY_VALIDATION | COMPLETED | PARTIAL_BATCH_COMPLETE | RECOVERY_REQUIRED`.
+
+The detailed design wants a new FSM with more granular states: `INITIALISING | DISCOVERING | PLANNING_BATCH | EXECUTING_STEP | VALIDATING_STEP | WAITING_FOR_USER_INPUT | COMPLETED | BLOCKED | RECOVERING`.
+
+Options:
+
+- **A** Replace `runPhase`/`SessionPhase` entirely with the new granular FSM
+- **B** Keep `runPhase`/`SessionPhase` for terminal states; add a separate `executionPhase` field for granular sub-states during a run
+- **C** Skip the FSM abstraction; use the existing `runPhase` with minor additions
+
+**Answer:**
+
+---
+
+## Section T — TypeScript Compiler API (Phase 6)
+
+### PQ-6: Is the TypeScript Compiler API required for Phase 6, or is the regex approach sufficient?
+
+Phase 6 symbol tools are already implemented using regex + brace-counting. The detailed design calls for `TypeScriptSymbolService` using the TypeScript Compiler API. However, the TypeScript package adds ~5MB to the bundle and was deferred in the previous session for this reason.
+
+Options:
+
+- **A** Regex approach is sufficient; Phase 6 is complete as-is
+- **B** TypeScript Compiler API is required; bundle size must be accepted or the server must be run externally
+- **C** TypeScript Compiler API is required; implement as a separately loadable module (not bundled with main extension)
+
+**Answer:**
+
+---
+
+## Section U — Task Classifier (Phase 8.1)
+
+### PQ-7: Should TaskClassifier use LLM or rule-based classification?
+
+Phase 8.1 requires classifying tasks into templates: `document_then_wait | greenfield_scaffold | existing_project_patch | multi_file_refactor | investigate_then_report | plan_only`.
+
+Options:
+
+- **A** Rule/keyword-based classification only (no LLM call, zero cost, deterministic — similar to current ModeClassifier)
+- **B** Secondary LLM call (haiku-class model, cheap, better accuracy for complex prompts)
+- **C** User explicitly selects the task template before sending (with rule-based auto-suggest as fallback)
+
+**Answer:**
+
+---
+
+## Section V — Silent Execution Enforcement (Phase 9.2)
+
+### PQ-8: How should narration be handled in strict silent mode?
+
+When `silentExecution=true` and the model emits narrative text before a tool call, options are:
+
+- **A** Strip it silently (do not show to user, do not count it as an iteration)
+- **B** Reprompt internally once: send a terse system message "TOOL ONLY — call the next tool immediately, no text", count as one extra iteration
+- **C** Show a brief "(narration suppressed)" indicator in the UI, then strip and continue
+- **D** Do nothing extra beyond the current implementation (silentExecution already set as flag in state)
+
+**Answer:**
+
+---
+
+## Section W — executionEngineV2 Default Flip (Phase 10)
+
+### PQ-9: Can the default flip happen within this implementation batch?
+
+The plan says flip `executionEngineV2` default to `true` only after regression tests + live session verification pass. Options:
+
+- **A** Yes — flip can happen at end of this batch if all regression tests pass (no live session required)
+- **B** No — live session verification is required before flip; defer flip to next session
+- **C** Flip the default now; add a user-visible migration notice and a one-click rollback option
+
+**Answer:**
+
+---
+
+## Section X — Dispatcher-Level Edit Tool Blocking (Phase 9.1)
+
+### PQ-10: Should ToolDispatcher block write/edit tools in ask/plan modes?
+
+Currently, `ContextEnvelope` places no editable files in ask/plan modes, and the system prompt tells the LLM not to write. But `ToolDispatcher.dispatch()` does not enforce this at the API level — if the LLM calls `write_file` in ask mode, it goes through.
+
+Options:
+
+- **A** Add dispatcher-level block: reject write/edit tools in ask/plan modes with a structured error message
+- **B** Keep current approach (prompt-level only); dispatcher enforcement is over-engineering for rare edge case
+- **C** Log and warn but do not block; the system prompt constraint is sufficient
+
+**Answer:**
+
+---
