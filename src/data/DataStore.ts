@@ -97,6 +97,10 @@ export interface AppData {
     continueResume: Record<string, string>;
     stateContextNote: Record<string, string>;
     validatorIssues: Record<string, string>;
+    promptAssembly?: Record<string, string>;
+    artifactRedirect?: Record<string, string>;
+    terminalStates?: Record<string, string>;
+    recovery?: Record<string, string>;
   };
 
   // prompts/default-system-prompt.md

@@ -2,6 +2,28 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 /**
+ * Structured pointer to the next tool call to execute on resume.
+ * Allows the engine to dispatch directly without an LLM interpretation call.
+ */
+export interface NextToolCall {
+  tool: string;
+  input: Record<string, unknown>;
+  description?: string;
+}
+
+/**
+ * Terminal / milestone phase for the current run.
+ * RUNNING = actively executing; all others terminate the run loop.
+ */
+export type SessionPhase =
+  | 'RUNNING'
+  | 'WAITING_FOR_USER_INPUT'
+  | 'BLOCKED_BY_VALIDATION'
+  | 'COMPLETED'
+  | 'PARTIAL_BATCH_COMPLETE'
+  | 'RECOVERY_REQUIRED';
+
+/**
  * A single tool execution record — only real tool dispatches are recorded here,
  * never speculative assistant text.
  */
@@ -59,10 +81,27 @@ export interface ExecutionStateData {
   executedTools?: ExecutedToolEntry[];
   /** Name of the last successfully executed tool. V2 only. */
   lastExecutedTool?: string;
-  /** Current phase of the session. V2 only. */
-  sessionPhase?: 'discover' | 'plan' | 'execute' | 'verify' | 'summarise';
+  /**
+   * Terminal/milestone state for the current run.
+   * 'RUNNING' means actively executing; all others terminate the run loop.
+   * V2 only. Default: 'RUNNING'.
+   */
+  runPhase?: SessionPhase;
+  /** Human-readable reason stored when runPhase is WAITING_FOR_USER_INPUT. V2 only. */
+  waitStateReason?: string;
   /** Subset of plannedFileBatch that have been successfully written. V2 only. */
   completedBatchFiles?: string[];
+  /**
+   * Structured pointer to the next tool call to execute on resume.
+   * Set alongside nextActions for direct dispatch without an extra LLM call. V2 only.
+   */
+  nextToolCall?: NextToolCall;
+  /** Number of times a read was blocked this run (for recovery trigger). V2 only. */
+  blockedReadCount?: number;
+  /** Number of times user typed "continue" this run (for recovery trigger). V2 only. */
+  continueCount?: number;
+  /** Value of iterationsUsed at the time of the last continue (for progress check). V2 only. */
+  continueIterationSnapshot?: number;
 }
 
 export class ExecutionStateManager {
@@ -124,8 +163,13 @@ export class ExecutionStateManager {
       // v2 fields
       executedTools: [],
       lastExecutedTool: undefined,
-      sessionPhase: 'discover',
+      runPhase: 'RUNNING',
+      waitStateReason: undefined,
       completedBatchFiles: [],
+      nextToolCall: undefined,
+      blockedReadCount: 0,
+      continueCount: 0,
+      continueIterationSnapshot: 0,
     };
   }
 
@@ -210,6 +254,74 @@ export class ExecutionStateManager {
     return state.artifactsCreated.includes(filePath);
   }
 
+  /**
+   * Set the structured next tool call for direct dispatch on resume.
+   * Call after setting nextActions[0] to keep both fields in sync.
+   */
+  setNextToolCall(
+    state: ExecutionStateData,
+    tool: string,
+    input: Record<string, unknown>,
+    description?: string
+  ): void {
+    state.nextToolCall = { tool, input, description };
+    state.updatedAt = new Date().toISOString();
+  }
+
+  /** Clear the structured next tool call (called after it is dispatched on resume). */
+  clearNextToolCall(state: ExecutionStateData): void {
+    state.nextToolCall = undefined;
+    state.updatedAt = new Date().toISOString();
+  }
+
+  /**
+   * Set the terminal/milestone phase for the current run.
+   * Once set to anything other than 'RUNNING', the AgentRunner loop will exit.
+   */
+  setRunPhase(state: ExecutionStateData, phase: SessionPhase, reason?: string): void {
+    state.runPhase = phase;
+    if (reason !== undefined) { state.waitStateReason = reason; }
+    state.updatedAt = new Date().toISOString();
+  }
+
+  /**
+   * Build a compact one-block summary string for use in PromptAssembler.
+   * Targets ~300 chars for typical tasks to minimise token overhead.
+   */
+  buildCompactSummary(state: ExecutionStateData): string {
+    const lines: string[] = [
+      `Objective: ${state.objective.slice(0, 200)}`,
+      `Mode: ${state.mode} | Iterations: ${state.iterationsUsed}`,
+    ];
+
+    if (state.techStack && Object.keys(state.techStack).length > 0) {
+      lines.push(`Tech stack: ${JSON.stringify(state.techStack)}`);
+    }
+
+    if (state.artifactsCreated.length > 0) {
+      const files = state.artifactsCreated.slice(-5);
+      lines.push(`Files written: ${files.join(', ')}${state.artifactsCreated.length > 5 ? ` (+${state.artifactsCreated.length - 5} more)` : ''}`);
+    }
+
+    if (state.nextActions.length > 0) {
+      lines.push(`Next: ${state.nextActions[0]}`);
+      if (state.nextToolCall) {
+        lines.push(`Next tool: ${state.nextToolCall.tool}(${JSON.stringify(state.nextToolCall.input).slice(0, 80)})`);
+      }
+    }
+
+    const planned = state.plannedFileBatch ?? [];
+    if (planned.length > 0) {
+      const completed = state.completedBatchFiles ?? [];
+      const remaining = planned.filter(f => !completed.includes(f));
+      if (remaining.length > 0) {
+        lines.push(`Batch remaining: ${remaining.slice(0, 3).join(', ')}${remaining.length > 3 ? ` +${remaining.length - 3} more` : ''}`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
   // ── Context note builder ──────────────────────────────────────────────────
 
   /**
@@ -273,9 +385,13 @@ export class ExecutionStateManager {
       data.version = 2;
       data.executedTools ??= [];
       data.lastExecutedTool ??= undefined;
-      data.sessionPhase ??= 'execute'; // assume mid-task for migrated state
       data.completedBatchFiles ??= [...(data.artifactsCreated ?? [])];
     }
+    // Ensure v2 terminal-phase fields exist (may be missing from older v2 saves)
+    data.runPhase ??= 'RUNNING';
+    data.blockedReadCount ??= 0;
+    data.continueCount ??= 0;
+    data.continueIterationSnapshot ??= 0;
     return data;
   }
 }

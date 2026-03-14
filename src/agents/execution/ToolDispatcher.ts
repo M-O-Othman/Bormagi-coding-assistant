@@ -205,8 +205,37 @@ export class ToolDispatcher {
       }
     } else if (toolEvent.name === 'write_file') {
       const inp = toolEvent.input as { path: string; content: string };
-      const originalPath = inp.path;
       inp.path = this.getEffectivePath(inp.path);
+
+      // ─── V2: artifact-aware write→edit redirect ───────────────────────────
+      // If the target file already exists (in the artifact registry or on disk),
+      // redirect write_file to edit_file so an existing file is never silently
+      // overwritten with a full rewrite. Returns a structured result so the agent
+      // knows the redirect occurred (EQ-19, Option D).
+      if (vscode.workspace.getConfiguration('bormagi').get<boolean>('executionEngineV2', false)) {
+        const alreadyExists = await this._artifactExists(inp.path);
+        if (alreadyExists) {
+          // Redirect: call edit_file via MCP instead of write_file
+          const mcpResult = await this.mcpHost.callTool('filesystem', {
+            name: 'edit_file',
+            input: { path: inp.path, content: inp.content },
+          });
+          await this.auditLogger.logFileWrite(path.join(this.workspaceRoot, inp.path), agentId);
+          const msgs = getAppData().executionMessages as any;
+          const redirectMsg = (msgs.artifactRedirect?.redirectedWriteToEdit ?? 'Redirected write_file to edit_file for existing file: {path}')
+            .replace('{path}', inp.path);
+          const innerResult = mcpResult.content.map((c: any) => c.text).join('\n');
+          result = `${innerResult}\n[redirected: write_file → edit_file | ${redirectMsg}]`;
+          onThought({
+            type: 'tool_result',
+            label: `Result: write_file (redirected to edit_file)`,
+            detail: result.slice(0, 500),
+            timestamp: new Date(),
+          });
+          return result;
+        }
+      }
+
       result = await this.handleWriteFile(
         agentId,
         inp,
@@ -260,6 +289,21 @@ export class ToolDispatcher {
     });
 
     return result;
+  }
+
+  /**
+   * Check if a path already exists in the artifact registry or on disk.
+   * Used by the write→edit redirect guard.
+   * @param relativePath - path relative to workspaceRoot
+   */
+  private async _artifactExists(relativePath: string): Promise<boolean> {
+    const absPath = path.join(this.workspaceRoot, relativePath);
+    try {
+      await vscode.workspace.fs.stat(vscode.Uri.file(absPath));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async handleWriteFile(

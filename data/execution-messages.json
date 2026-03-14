@@ -31,5 +31,24 @@
     "missingPackageJson": "TypeScript/JavaScript files were written but no package.json exists in the workspace root.",
     "brokenScriptRef": "Script \"{script}\" references \"{file}\" which does not exist on disk.",
     "brokenMainField": "package.json \"main\" field points to \"{file}\" which does not exist on disk."
+  },
+  "promptAssembly": {
+    "executionStateHeader": "[Execution State — resume context]",
+    "workspaceHeader": "[Workspace]",
+    "milestoneSummaryPrefix": "Prior milestone: "
+  },
+  "artifactRedirect": {
+    "redirectedWriteToEdit": "Existing file detected at {path} — redirected write_file to edit_file."
+  },
+  "terminalStates": {
+    "waitingForUserInput": "Paused — waiting for your input. {reason}",
+    "blockedByValidation": "Blocked — validation issues must be resolved before continuing.",
+    "sessionCompleted": "Task completed.",
+    "partialBatchComplete": "Batch phase complete. Resume when ready.",
+    "recoveryRequired": "Execution state is inconsistent. Recovery required — use bormagi.resetExecutionState to reset."
+  },
+  "recovery": {
+    "rebuilding": "Inconsistent execution state detected — rebuilding from execution history.",
+    "rebuildFailed": "Recovery failed — execution state cannot be rebuilt. Use bormagi.resetExecutionState to start fresh."
   }
 }

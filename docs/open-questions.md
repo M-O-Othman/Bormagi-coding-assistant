@@ -737,3 +737,284 @@ Should text externalisation be:
 
 
 ---
+
+# Open Questions — Execution Layer Fixes v2 (00high priority fixes2.md + Log Analysis)
+> Questions for the new 25-item implementation plan from `docs/New-Requirements/00high priority fixes2.md`.
+> Log analysis (`tmp/.bormagi/logs/advanced-coder.log`) confirms all bugs are real and occurring in production sessions.
+> **Do not begin planning until all questions below are answered.**
+
+---
+
+## EQ-15: Prompt assembly redesign — approach and scope
+
+Item 3 says "stop replaying full system prompt + resume blocks + old conversation fragments on every LLM call."
+
+The log confirms: every call (#1–#9) replays the full 5,444-char system prompt, the execution state block, the workspace status block, and the entire prior conversation including all tool results as raw [USER]/<tool_result> messages. The current Phase 2 fix (`prepareMessagesForProvider`) strips XML wrappers from the assembled messages but does NOT change the fact that the full history is assembled and sent every call.
+
+Which approach should the redesign take?
+
+* **A** New `PromptAssembler` class that builds a fresh, compact message array for each LLM call (system prompt once, compact state note, current instruction, current-step tool results only — no prior chat turns replayed)
+* **B** Surgical patch to AgentRunner's existing `messages.push()` calls — trim the messages array before calling `provider.stream()` to a rolling window of the last N turns
+* **C** Keep full history for the live run but stop including it on `continue`/resume calls (resume gets compact context only)
+* **D** Apply option A for code mode, option C for ask/plan mode
+
+Additional sub-questions:
+
+* What is the maximum number of prior conversation turns that should be sent to the LLM in a single call?
+* Should the stable system prompt still be sent on every call, or once at session start only?
+
+**Answer:**
+
+
+* Choose **A**.
+* Build a new `PromptAssembler` and make it the only prompt-construction path for code mode execution.
+* Do not keep transcript replay as the primary context source.
+* For code mode, each LLM call should include only:
+
+  1. the stable system prompt,
+  2. one compact execution-state summary,
+  3. one compact workspace/project summary,
+  4. the current user instruction or current run objective,
+  5. current-step structured tool results only,
+  6. optionally one very short prior assistant milestone summary if needed.
+* Maximum prior conversation turns to send in a single call: **0 by default** for code mode.
+  If you insist on a small carry-over, cap it at **1 assistant milestone summary + 1 latest user instruction**, not raw historical turns.
+* The stable system prompt should still be sent **on every call**, because provider sessions are stateless at the API level and you need deterministic behavior per request.
+* Do not rely on “once at session start only” unless your provider/session layer truly guarantees persistent server-side context, which this flow should not assume.
+* Ask/plan modes may keep a somewhat richer history later if needed, but this redesign should be implemented first and authoritatively for code mode.
+
+---
+
+---
+
+## EQ-16: `nextAction` — structured or free text?
+
+Items 6 and 11 require `nextAction` to be the authoritative resume pointer. The current execution state stores `nextAction` as a free-text string (e.g., "Write src/index.ts as the project entrypoint").
+
+For the engine to actually execute from `nextAction` on resume without re-reading the transcript, it needs to know WHAT tool to call and with WHAT inputs.
+
+* **A** Keep `nextAction` as free text — the LLM reads it and decides which tool to call (current approach, simpler but still requires an LLM call to interpret intent)
+* **B** Make `nextAction` structured: `{ tool: string, input: Record<string, unknown>, description: string }` — the engine can dispatch the tool directly without an interpretation LLM call
+* **C** Two-field approach: `nextAction` (free text for LLM context) + `nextToolCall` (structured, for direct dispatch)
+
+**Answer:**
+
+
+* Choose **C**.
+* Store both:
+
+  * `nextAction`: short human-readable text for summaries/UI/debugging
+  * `nextToolCall`: structured tool payload for direct resume
+* Recommended shape:
+
+  ```ts
+  nextAction: string;
+  nextToolCall?: {
+    tool: string;
+    input: Record<string, unknown>;
+    description?: string;
+  };
+  ```
+* Resume behavior:
+
+  * if `nextToolCall` exists and is valid, dispatch it directly,
+  * if it is missing or invalid, fall back to `nextAction` plus one compact recovery LLM call,
+  * do not reconstruct resume from transcript.
+* This is the best balance between reliability and observability.
+
+---
+
+---
+
+## EQ-17: Terminal/wait states — signaling and UX
+
+Items 7 and 18 require the agent to stop cleanly when it reaches a wait state. The log confirms: after writing `open_questions.md` (the terminal deliverable), the agent continued listing `.bormagi/` and reading `project.json` instead of stopping.
+
+**A — How does the agent signal a wait state?**
+
+* **A1** The agent calls `update_task_state` with a special `sessionPhase` value (e.g., `WAITING_FOR_USER_INPUT`) — framework detects this and ends the run loop
+* **A2** A new virtual tool `signal_wait_state(reason, state)` — explicit and self-documenting
+* **A3** The framework detects the condition automatically (e.g., file was written that matches task objective) without the agent needing to signal it
+* **A4** The agent emits a structured completion payload (`__bormagi_outcome__: WAITING_FOR_USER_INPUT`)
+
+**B — What does the user see when a wait state is reached?**
+
+* **B1** A formatted message in chat: "Paused — waiting for your input on `open_questions.md`" with no further agent output
+* **B2** Silent stop — agent just stops, no special message
+* **B3** A status bar update only (no chat message)
+
+**Answer:**
+
+* For signaling, choose **A1**.
+* Use the existing task/execution-state update path rather than adding a new virtual tool.
+* Add a required enum such as:
+
+  * `RUNNING`
+  * `WAITING_FOR_USER_INPUT`
+  * `BLOCKED_BY_VALIDATION`
+  * `COMPLETED`
+  * `RECOVERY_REQUIRED`
+* When the agent or framework sets `sessionPhase = WAITING_FOR_USER_INPUT`, the framework must immediately terminate the run loop after persisting state.
+* Also allow framework-side auto-detection as a secondary safeguard, but the primary mechanism should be explicit state update, not heuristic detection.
+* For UX, choose **B1**.
+* Show a short formatted chat message such as:
+
+  * `Paused — waiting for your input on open_questions.md`
+* Then stop with no further tool calls or narration.
+* Do not use silent stop as the default, because it looks like failure.
+* Do not rely on status-bar-only signaling.
+
+---
+
+---
+
+## EQ-18: Recovery mode — trigger subset and user experience
+
+Item 19 describes 5 recovery triggers. For the first implementation:
+
+**A — Which triggers should be active?**
+
+* **A1** All 5 from the spec: repeated blocked reads, repeated `continue` with no progress, artifact-registry/write conflict, protocol text in transcript, missing/invalid `nextAction`
+* **A2** Only the most impactful subset: missing/invalid `nextAction` + protocol text in transcript
+* **A3** Manual recovery only in v1 — explicit user command triggers rebuild, no automatic triggering
+
+**B — What happens when recovery fires?**
+
+* **B1** Framework silently rebuilds compact state from executed tool history and resumes automatically
+* **B2** Framework rebuilds state and shows a brief notice ("Inconsistent state detected — rebuilding from execution history") before continuing
+* **B3** Framework stops the run, shows the user a state report, and waits for user `continue` to resume
+
+**Answer:**
+
+
+* For triggers, choose **A1**, but implement them with simple thresholds.
+* Active triggers in v1:
+
+  1. repeated blocked reads,
+  2. repeated `continue` with no progress,
+  3. artifact-registry/write conflict,
+  4. protocol text detected in assembled transcript,
+  5. missing or invalid `nextAction` / `nextToolCall`.
+* These are all real failure modes already observed, so deferring them would leave known loops unfixed.
+* For behavior, choose **B2**.
+* Recovery should:
+
+  1. rebuild compact state from executed tool history and artifact state,
+  2. show a brief notice,
+  3. continue automatically if recovery succeeds.
+* Example UX:
+
+  * `Inconsistent execution state detected — rebuilding from execution history`
+* If automatic recovery fails, then stop and enter `RECOVERY_REQUIRED`.
+* Do not make normal users manually recover by default.
+* Do not recover silently, because that hides important behavior during debugging and rollout.
+
+---
+
+---
+
+## EQ-19: Artifact-aware write/edit selection (item 13)
+
+Item 13 says: before any write, check artifact registry; if file exists, use `edit_file` instead of `write_file`. The log confirms `write_file open_questions.md` failing because the file already existed from a previous session.
+
+Where should this check live?
+
+* **A** In `ToolDispatcher.dispatch()` — before dispatching `write_file`, check artifact registry; if path exists, automatically redirect to `edit_file` with same content
+* **B** In `AgentRunner` — intercept `write_file` calls in the tool dispatch branch and switch to `edit_file`
+* **C** Prompt instruction only — tell agent to check artifact registry first (current behavior, fails as confirmed by log)
+* **D** Both A and C — dispatch-layer enforcement + prompt instruction as defence-in-depth
+
+When redirecting, should the framework silently redirect (agent sees success) or notify the agent that a redirect occurred?
+
+**Answer:**
+
+* Choose **D**.
+* Enforcement must live in **`ToolDispatcher.dispatch()`**.
+* Also keep a short prompt instruction for defence-in-depth, but do not rely on the model to get this right.
+* Dispatcher behavior:
+
+  * if `write_file(path)` targets an existing artifact/file, convert it to `edit_file(path, content)` before execution.
+* The framework should **notify the agent in structured form** that a redirect occurred.
+* Recommended result shape:
+
+  ```ts
+  {
+    status: "success",
+    toolName: "edit_file",
+    redirectedFrom: "write_file",
+    summary: "Existing file detected; redirected write_file to edit_file"
+  }
+  ```
+* Do not silently redirect with no signal, because the execution state and model reasoning may otherwise drift.
+* Do not expose this as normal chat text; keep it in the structured tool-result channel.
+
+---
+
+---
+
+## EQ-20: Workspace classification fix (item 23)
+
+The log shows "currently editing ` (empty)`" (session 1) and "currently editing `open_questions.md`" (session 2). Both are inaccurate — the first is a stale VS Code active editor state, the second points to a file the agent already finished writing.
+
+The system prompt includes: `currently editing {lastActiveFile}, as of {date}`. This comes from VS Code's active editor tab, which drifts.
+
+* **A** Remove "currently editing" from the system prompt entirely — it causes confusion more than it helps
+* **B** Replace with the most recently written file by the agent this session (from execution state `filesWritten`)
+* **C** Replace with the next planned file from the current batch (most useful for orientation)
+* **D** Keep it but populate from execution state only, not from VS Code's active editor
+
+**Answer:**
+
+
+* Choose **A**.
+* Remove `currently editing ...` from the system prompt entirely.
+* It is unstable, often wrong, and not important enough to justify prompt noise.
+* If orientation is needed, provide it in the compact execution-state summary instead, for example:
+
+  * current batch id,
+  * next planned file,
+  * last completed file,
+  * current task phase.
+* Do not couple execution logic to VS Code active editor state.
+* Do not keep this field in the stable system prompt.
+
+---
+
+---
+
+## EQ-21: Scope of new plan relative to Phase 1–5 work
+
+The previous session (Phases 1–5) already addressed several of the 25 items: tool result isolation, `.bormagi` blocking, discovery budget enforcement, transcript sanitisation, batch enforcement, architecture lock, ConsistencyValidator, and developer commands. 52 regression tests pass.
+
+The log was recorded before those fixes were applied (or with `executionEngineV2=false`). The new requirements document largely confirms the same problems and extends them with items 3, 7, 13, 18, 19, and 23.
+
+What should the new plan's scope be?
+
+* **A** Treat Phase 1–5 as the baseline and plan only the remaining unaddressed items (3, 7, 13, 18, 19, 23 + flip V2 default)
+* **B** Treat Phase 1–5 as a prior attempt — re-examine and re-implement everything from the 25-item list from scratch
+* **C** Treat Phase 1–5 as the baseline, but first write a verification pass (run tests with `executionEngineV2=true` and do a live session test) to confirm what actually works before planning remaining items
+
+**Answer:**
+
+* Choose **C**.
+* Treat Phases 1–5 as the baseline.
+* Do **not** restart the whole 25-item program from scratch.
+* First do a verification pass with:
+
+  1. `executionEngineV2=true`,
+  2. the current regression suite,
+  3. at least one live greenfield session,
+  4. at least one continue/resume session,
+  5. at least one wait-state scenario.
+* Then plan only what is still unaddressed or not actually working in production behavior.
+* Expected likely remaining scope:
+
+  * item 3 (prompt assembly redesign),
+  * item 7 / 18 (wait-state and milestone finaliser),
+  * item 13 (artifact-aware write/edit enforcement),
+  * item 19 (recovery mode),
+  * item 23 (workspace classification cleanup),
+  * flip V2 default after verification.
+* This is the most practical and lowest-risk path.
+
+---

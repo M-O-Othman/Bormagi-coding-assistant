@@ -42,11 +42,13 @@ import { GitService } from '../git/GitService';
 import { CheckpointManager } from '../git/CheckpointManager';
 import { ValidationService } from '../git/ValidationService';
 import { CommitProposalGenerator } from '../git/CommitProposalGenerator';
-import { ExecutionStateManager, type ExecutionStateData } from './ExecutionStateManager';
+import { ExecutionStateManager, type ExecutionStateData, type SessionPhase } from './ExecutionStateManager';
 import { ConsistencyValidator } from './execution/ConsistencyValidator';
 import { BatchEnforcer } from './execution/BatchEnforcer';
 import { ArchitectureLock } from './execution/ArchitectureLock';
-import { sanitiseContent } from './execution/TranscriptSanitiser';
+import { sanitiseContent, sanitiseTranscript } from './execution/TranscriptSanitiser';
+import { PromptAssembler, buildWorkspaceSummary, type PromptContext } from './execution/PromptAssembler';
+import { RecoveryManager } from './execution/RecoveryManager';
 
 // ─── Sandbox imports ────────────────────────────────────────────────────────
 import { SandboxHandle } from '../sandbox/types';
@@ -244,8 +246,18 @@ export class AgentRunner {
     const vsConfig = vscode.workspace.getConfiguration('bormagi');
     const isSandboxEnabled = vsConfig.get<boolean>('sandbox.enabled', false);
     // executionEngineV2: enables authoritative state mutations, tool-result isolation,
-    // hard runtime guards, and the improved continue/resume contract (Phase 1–3).
+    // hard runtime guards, and the improved continue/resume contract (Phase 1–6).
     const useV2 = vsConfig.get<boolean>('executionEngineV2', false);
+
+    // V2: PromptAssembler builds compact, no-history messages for each LLM call in code mode.
+    // Initialized here so it can be referenced throughout the run() method.
+    const _paMsgs = getAppData().executionMessages as Record<string, unknown>;
+    const _paSection = (_paMsgs.promptAssembly ?? {}) as Record<string, string>;
+    const promptAssembler = new PromptAssembler({
+      executionStateHeader: _paSection.executionStateHeader ?? '[Execution State — resume context]',
+      workspaceHeader: _paSection.workspaceHeader ?? '[Workspace]',
+      milestoneSummaryPrefix: _paSection.milestoneSummaryPrefix ?? 'Prior milestone: ',
+    });
 
     // Initialise sandbox
     if (this.sandboxManager && !this.activeSandbox && isSandboxEnabled) {
@@ -579,6 +591,17 @@ export class AgentRunner {
     const wsType = await this.detectWorkspaceType();
     messages.push({ role: 'system', content: this.buildWorkspaceTypeNote(wsType) });
 
+    // Capture workspace type as the enum expected by PromptAssembler / RecoveryManager.
+    const wsTypeStr = String(wsType).toLowerCase();
+    const detectedWsType: 'greenfield' | 'scaffolded' | 'mature' =
+      wsTypeStr.includes('green') ? 'greenfield'
+        : wsTypeStr.includes('scaffold') ? 'scaffolded'
+          : 'mature';
+
+    // V2: per-iteration tool results — reset each loop so PromptAssembler only sees
+    // the CURRENT step's results, not the full replayed history.
+    const currentStepToolResults: ChatMessage[] = [];
+
     // ─── Continue contract ────────────────────────────────────────────────────
     // When the user says "continue" / "proceed", skip generic rediscovery and
     // resume from the first pending action in the execution state.
@@ -586,10 +609,37 @@ export class AgentRunner {
     const isContinueRequest = CONTINUE_PATTERN.test(userMessage);
     let effectiveUserContent = userMessage;
     if (useV2 && isContinueRequest) {
-      if (execState.nextActions.length > 0) {
+      // Increment continue counter for recovery trigger tracking
+      execState.continueCount = (execState.continueCount ?? 0) + 1;
+      execState.continueIterationSnapshot = execState.iterationsUsed;
+      stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+
+      // Phase 2: prefer structured nextToolCall for direct dispatch
+      if (execState.nextToolCall) {
+        const ntc = execState.nextToolCall;
+        const label = ntc.description ?? ntc.tool;
+        onText(`\n[Resuming: ${label}]\n\n`);
+        // Dispatch the tool directly — no LLM call needed for resume
+        try {
+          const directResult = await this.toolDispatcher.dispatch(
+            { id: `resume-${Date.now()}`, name: ntc.tool, input: ntc.input },
+            agentId, onApproval, onDiff, onThought
+          );
+          stateManager.markToolExecuted(execState, ntc.tool, undefined, directResult.slice(0, 150));
+          stateManager.clearNextToolCall(execState);
+          stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+          // Continue with the result as the current user content
+          const toolResultMsg: ChatMessage = { role: 'tool_result', content: directResult, toolCallId: `resume-${Date.now()}` };
+          currentStepToolResults.push(toolResultMsg);
+          messages.push(toolResultMsg);
+          effectiveUserContent = `Resumed from nextToolCall: ${label}. Continue with the next step.`;
+        } catch {
+          // Fall back to text-based resume if direct dispatch fails
+          effectiveUserContent = `Resume implementation. Next action: ${execState.nextActions[0] ?? 'continue'}. Do not re-read unchanged files.`;
+        }
+      } else if (execState.nextActions.length > 0) {
         const nextAction = execState.nextActions[0];
         const lastTool = execState.lastExecutedTool;
-        // Emit brief resume summary before executing (EQ-11)
         const resumeSummary = lastTool
           ? `Resuming from last completed: ${lastTool} → Next: ${nextAction}`
           : `Resuming: ${nextAction}`;
@@ -765,6 +815,35 @@ export class AgentRunner {
     let nextMilestoneAt = milestoneWriteSize;
 
     while (continueLoop) {
+      // Phase 4: terminal state check — exit immediately if runPhase is no longer RUNNING
+      if (useV2 && (execState.runPhase ?? 'RUNNING') !== 'RUNNING') {
+        const phase = execState.runPhase!;
+        const tsMsgs = getAppData().executionMessages.terminalStates ?? {};
+        const reason = execState.waitStateReason ?? '';
+        let terminalMsg: string;
+        switch (phase) {
+          case 'WAITING_FOR_USER_INPUT':
+            terminalMsg = (tsMsgs.waitingForUserInput ?? 'Paused — waiting for your input. {reason}').replace('{reason}', reason);
+            break;
+          case 'BLOCKED_BY_VALIDATION':
+            terminalMsg = tsMsgs.blockedByValidation ?? 'Blocked — validation issues must be resolved before continuing.';
+            break;
+          case 'COMPLETED':
+            terminalMsg = tsMsgs.sessionCompleted ?? 'Task completed.';
+            break;
+          case 'PARTIAL_BATCH_COMPLETE':
+            terminalMsg = tsMsgs.partialBatchComplete ?? 'Batch phase complete. Resume when ready.';
+            break;
+          case 'RECOVERY_REQUIRED':
+            terminalMsg = tsMsgs.recoveryRequired ?? 'Execution state is inconsistent. Recovery required — use bormagi.resetExecutionState to reset.';
+            break;
+          default:
+            terminalMsg = `Session stopped (phase: ${phase}).`;
+        }
+        onText(`\n\n${terminalMsg}`);
+        break;
+      }
+
       continueLoop = false;
       let calledATool = false;
       // Accumulate the model's text output for the current turn so we can add
@@ -823,8 +902,45 @@ export class AgentRunner {
         isFirstModelRequest = false;
       }
 
-      // V2: sanitise every provider call — strip tool_result role and XML patterns
-      const messagesForProvider = useV2 ? this.prepareMessagesForProvider(messages) : messages;
+      // Phase 5: RecoveryManager — check all 5 triggers before each LLM call (V2 only)
+      if (useV2) {
+        const recoveryManager = new RecoveryManager(execState, messages, promptAssembler, fullSystem, detectedWsType);
+        const trigger = recoveryManager.shouldRecover();
+        if (trigger) {
+          const result = recoveryManager.rebuild(trigger);
+          const recovMsgs = getAppData().executionMessages.recovery ?? {};
+          if (result.success && result.cleanMessages) {
+            onText(`\n${recovMsgs.rebuilding ?? 'Inconsistent execution state detected — rebuilding from execution history.'}\n`);
+            messages.splice(0, messages.length, ...result.cleanMessages);
+          } else {
+            stateManager.setRunPhase(execState, 'RECOVERY_REQUIRED');
+            stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+            onText(`\n${recovMsgs.rebuildFailed ?? 'Recovery failed — execution state cannot be rebuilt.'}\n`);
+            break;
+          }
+        }
+      }
+
+      // Phase 1: PromptAssembler — V2 code mode uses compact, no-history messages per EQ-15.
+      // All other modes still use prepareMessagesForProvider (V2) or raw messages (V1).
+      let messagesForProvider: ChatMessage[];
+      if (useV2 && mode === 'code') {
+        messagesForProvider = promptAssembler.assembleMessages({
+          systemPrompt: fullSystem,
+          executionStateSummary: stateManager.buildCompactSummary(execState),
+          workspaceSummary: buildWorkspaceSummary(detectedWsType, execState.artifactsCreated.slice(-3)),
+          currentInstruction: effectiveUserContent,
+          currentStepToolResults: [...currentStepToolResults],
+          milestoneSummary: execState.lastExecutedTool
+            ? `Last tool: ${execState.lastExecutedTool}`
+            : undefined,
+        });
+        // Reset after use — tool results from THIS iteration will repopulate it below
+        currentStepToolResults.length = 0;
+      } else {
+        // V2 non-code modes: sanitise tool_result roles; V1: pass through unchanged
+        messagesForProvider = useV2 ? this.prepareMessagesForProvider(messages) : messages;
+      }
       for await (const event of provider.stream(messagesForProvider, this.filterToolsByMode(tools, mode), actualMaxOutputTokens)) {
         if (event.type === 'provider_headers') {
           const importantHeaders = this.selectImportantHeaders(event.headers);
@@ -940,6 +1056,11 @@ export class AgentRunner {
               next_actions?: string[];
               blockers?: string[];
               tech_stack?: Record<string, string>;
+              // Phase 4: terminal/wait state fields
+              session_phase?: string;
+              wait_state_reason?: string;
+              // Phase 2: structured next tool call for direct dispatch on resume
+              next_tool_call?: { tool: string; input: Record<string, unknown>; description?: string };
             };
             if (updates.completed_step) {
               execState.completedSteps.push(updates.completed_step);
@@ -953,12 +1074,23 @@ export class AgentRunner {
             if (updates.tech_stack) {
               execState.techStack = { ...execState.techStack, ...updates.tech_stack };
             }
+            // Phase 4: terminal/wait state (V2 only)
+            if (useV2 && updates.session_phase) {
+              stateManager.setRunPhase(execState, updates.session_phase as SessionPhase, updates.wait_state_reason);
+            }
+            // Phase 2: structured next tool call for direct dispatch (V2 only)
+            if (useV2 && updates.next_tool_call) {
+              const ntc = updates.next_tool_call;
+              stateManager.setNextToolCall(execState, ntc.tool, ntc.input, ntc.description);
+            }
             // Save immediately so the state is durable even if max-iterations hit
             stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
             const summary = [
               updates.completed_step ? `completed_step recorded` : '',
               updates.next_actions !== undefined ? `next_actions: ${execState.nextActions.length}` : '',
               updates.tech_stack ? `tech_stack: ${JSON.stringify(execState.techStack)}` : '',
+              updates.session_phase ? `session_phase: ${updates.session_phase}` : '',
+              updates.next_tool_call ? `next_tool_call: ${updates.next_tool_call.tool}` : '',
             ].filter(Boolean).join(', ');
             agentLog.logToolResult(event.name, summary);
             toolResultContent = `[Task state updated — ${summary}]`;
@@ -1066,8 +1198,11 @@ export class AgentRunner {
           // V2: push as 'tool_result' role so it is distinguishable from genuine user
           // messages.  prepareMessagesForProvider() converts it back to 'user' (stripping
           // the XML wrapper) just before the next provider.stream() call.
+          // Also accumulate in currentStepToolResults for PromptAssembler (Phase 1).
           if (useV2) {
-            messages.push({ role: 'tool_result', content: toolResultContent, toolCallId: event.id });
+            const toolResultMsg: ChatMessage = { role: 'tool_result', content: toolResultContent, toolCallId: event.id };
+            messages.push(toolResultMsg);
+            currentStepToolResults.push(toolResultMsg);
           } else {
             messages.push({ role: 'user', content: toolResultContent });
           }

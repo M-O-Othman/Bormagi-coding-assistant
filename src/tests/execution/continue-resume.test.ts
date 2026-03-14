@@ -92,4 +92,53 @@ describe('ExecutionStateManager — continue/resume contract', () => {
     expect(note).toContain('express');
     expect(note).toContain('prisma');
   });
+
+  // ── Phase 2: nextToolCall structured field ────────────────────────────────
+
+  test('setNextToolCall persists tool name and input', () => {
+    const state = mgr.createFresh(agentId, 'build API', 'code');
+    mgr.setNextToolCall(state, 'write_file', { path: 'src/index.ts', content: '// hello' }, 'Write entry point');
+    expect(state.nextToolCall).toBeDefined();
+    expect(state.nextToolCall!.tool).toBe('write_file');
+    expect(state.nextToolCall!.input).toEqual({ path: 'src/index.ts', content: '// hello' });
+    expect(state.nextToolCall!.description).toBe('Write entry point');
+  });
+
+  test('setNextToolCall works without description', () => {
+    const state = mgr.createFresh(agentId, 'build API', 'code');
+    mgr.setNextToolCall(state, 'read_file', { path: 'README.md' });
+    expect(state.nextToolCall!.description).toBeUndefined();
+  });
+
+  test('clearNextToolCall removes the structured next tool call', () => {
+    const state = mgr.createFresh(agentId, 'build API', 'code');
+    mgr.setNextToolCall(state, 'write_file', { path: 'a.ts', content: '' });
+    expect(state.nextToolCall).toBeDefined();
+    mgr.clearNextToolCall(state);
+    expect(state.nextToolCall).toBeUndefined();
+  });
+
+  test('nextToolCall survives save/load cycle', async () => {
+    const state = mgr.createFresh(agentId, 'build API', 'code');
+    mgr.setNextToolCall(state, 'run_command', { command: 'npm install' }, 'Install dependencies');
+    await mgr.save(agentId, state);
+
+    const loaded = await mgr.load(agentId);
+    expect(loaded!.nextToolCall).toBeDefined();
+    expect(loaded!.nextToolCall!.tool).toBe('run_command');
+    expect(loaded!.nextToolCall!.description).toBe('Install dependencies');
+  });
+
+  test('fresh state has no nextToolCall', () => {
+    const state = mgr.createFresh(agentId, 'build API', 'code');
+    expect(state.nextToolCall).toBeUndefined();
+  });
+
+  test('buildCompactSummary includes nextToolCall info when present', () => {
+    const state = mgr.createFresh(agentId, 'build API', 'code');
+    state.nextActions = ['Install deps'];
+    mgr.setNextToolCall(state, 'run_command', { command: 'npm install' });
+    const summary = mgr.buildCompactSummary(state);
+    expect(summary).toContain('run_command');
+  });
 });

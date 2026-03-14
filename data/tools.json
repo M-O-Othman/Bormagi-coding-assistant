@@ -43,6 +43,25 @@
             "type": "object",
             "additionalProperties": { "type": "string" },
             "description": "Framework choices to lock for this task (e.g. {\"backend\": \"express\", \"orm\": \"prisma\", \"frontend\": \"react-vite\"}). Merged with existing entries — cannot be unset once written."
+          },
+          "session_phase": {
+            "type": "string",
+            "enum": ["RUNNING", "WAITING_FOR_USER_INPUT", "BLOCKED_BY_VALIDATION", "COMPLETED", "PARTIAL_BATCH_COMPLETE", "RECOVERY_REQUIRED"],
+            "description": "Terminal phase for the current run. Once set to anything other than RUNNING, the execution loop exits and the user is notified. Use WAITING_FOR_USER_INPUT after writing a deliverable that needs review (e.g. open_questions.md, a plan). Use COMPLETED when the task is fully done."
+          },
+          "wait_state_reason": {
+            "type": "string",
+            "description": "Human-readable reason shown to the user when session_phase is WAITING_FOR_USER_INPUT (e.g. 'Waiting for answers to open_questions.md before implementing')."
+          },
+          "next_tool_call": {
+            "type": "object",
+            "properties": {
+              "tool": { "type": "string", "description": "Exact tool name to dispatch on resume (e.g. 'write_file', 'run_command')." },
+              "input": { "type": "object", "additionalProperties": true, "description": "Full input object for the tool." },
+              "description": { "type": "string", "description": "One-line human-readable label shown in the resume summary." }
+            },
+            "required": ["tool", "input"],
+            "description": "Structured pointer to the next tool call. When present, the framework dispatches it directly on resume without an extra LLM interpretation call."
           }
         }
       }
