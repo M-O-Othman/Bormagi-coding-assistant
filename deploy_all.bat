@@ -111,6 +111,7 @@ mkdir "%WORKSPACE_TO_OPEN%"
 echo Done.
 echo.
 
+xcopy "src\tests\Sample Input" "%WORKSPACE_TO_OPEN%" /E /I /Y
 echo ============================================================
 echo  SUCCESS — Bormagi installed from %VSIX_FILE%
 echo  Bormagi stays installed and enabled in normal VS Code sessions.

@@ -15,7 +15,8 @@
       "Bash(find:*)",
       "Bash(cat:*)",
       "Read(//tmp/**)",
-      "Bash(jq:*)"
+      "Bash(jq:*)",
+      "Bash(npm show:*)"
     ]
   }
 }

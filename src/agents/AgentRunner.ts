@@ -822,6 +822,10 @@ export class AgentRunner {
     let continueLoop = true;
     let isFirstModelRequest = true;
     let iterationCount = 0;
+    // Phase 5 — Recovery: limit how many times recovery can fire per run.
+    // Without a cap, recovery → same trigger → recovery creates an infinite loop.
+    let recoveryAttempts = 0;
+    const MAX_RECOVERY_ATTEMPTS = 2;
     const maxToolIterations = vsConfig.get<number>('agent.maxToolIterations', 20);
     // #6 — Discovery budget: track consecutive read-only calls with no writes.
     let consecutiveReadCount = 0;
@@ -941,16 +945,26 @@ export class AgentRunner {
         isFirstModelRequest = false;
       }
 
-      // Phase 5: RecoveryManager — check all 5 triggers before each LLM call
-      {
+      // Phase 5: RecoveryManager — check all 5 triggers before each LLM call.
+      // Skip if we've already exhausted recovery attempts for this run — prevents
+      // infinite recovery loops where the same trigger fires every iteration.
+      if (recoveryAttempts < MAX_RECOVERY_ATTEMPTS) {
         const recoveryManager = new RecoveryManager(execState, messages, promptAssembler, fullSystem, detectedWsType);
         const trigger = recoveryManager.shouldRecover();
         if (trigger) {
+          recoveryAttempts++;
           const result = recoveryManager.rebuild(trigger);
           const recovMsgs = getAppData().executionMessages.recovery ?? {};
           if (result.success && result.cleanMessages) {
             onText(`\n${recovMsgs.rebuilding ?? 'Inconsistent execution state detected — rebuilding from execution history.'}\n`);
             messages.splice(0, messages.length, ...result.cleanMessages);
+            // Reset reread-prevention state so the agent can re-read files it needs
+            // after the context has been rebuilt without their content.
+            this.toolDispatcher.resetGuardState(mode, true);
+            // Reset recovery-related counters so they don't immediately re-trigger.
+            execState.blockedReadCount = 0;
+            execState.continueCount = 0;
+            consecutiveReadCount = 0;
           } else {
             stateManager.setRunPhase(execState, 'RECOVERY_REQUIRED');
             stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
@@ -1061,8 +1075,11 @@ export class AgentRunner {
           const toolCallContent = (event.input as Record<string, unknown>)?.content as string | undefined;
           let assistantTurnLabel: string;
           if (toolCallPath && (event.name === 'write_file' || event.name === 'edit_file')) {
+            // Use a format that does NOT match the sanitiser's [write_file: ...] pattern,
+            // which would trigger false-positive PROTOCOL_TEXT_IN_TRANSCRIPT recovery.
+            const verb = event.name === 'write_file' ? 'Wrote' : 'Edited';
             const sizeNote = toolCallContent ? ` (${toolCallContent.length} chars)` : '';
-            assistantTurnLabel = `[${event.name}: ${toolCallPath}${sizeNote}]`;
+            assistantTurnLabel = `${verb} ${toolCallPath}${sizeNote}`;
           } else {
             // Encode as a null-byte-delimited marker so GeminiProvider can convert
             // this into a native functionCall part.  The model never emits null bytes
@@ -1099,6 +1116,12 @@ export class AgentRunner {
           } else if (isFileWrite && toolCallPath && (() => {
             // ─── Batch enforcement (Phase 4) ─────────────────────────────────
             // Greenfield/scaffolded: must declare a batch before first write_file.
+            // Exempt plan mode document writes — plans are single-file documentation,
+            // not code artifacts that need batch coordination.
+            const docExt = toolCallPath.split('.').pop()?.toLowerCase() ?? '';
+            if (mode === 'plan' && ['md', 'txt', 'rst'].includes(docExt)) {
+              return null; // skip batch enforcement for plan documents
+            }
             const normalizedBatchPath = this.normalizeWorkspacePath(toolCallPath);
             const batchMsg = getAppData().executionMessages.toolBlocked.offBatch;
             return batchEnforcer.checkWritePermission(
@@ -1193,10 +1216,18 @@ export class AgentRunner {
             // Only successful dispatches reach this branch; speculative assistant
             // text never mutates state (it is sanitised before persistence).
             {
-              const outputSummary = String(toolResult).slice(0, 150);
-              stateManager.markToolExecuted(execState, event.name, toolCallPath, outputSummary);
-              if (event.name === 'read_file' && toolCallPath) {
-                stateManager.markFileRead(execState, this.normalizeWorkspacePath(toolCallPath));
+              const resultStr0 = String(toolResult);
+              const isBlockedResult = resultStr0.startsWith('[BLOCKED]');
+              if (isBlockedResult) {
+                // Track blocked reads so REPEATED_BLOCKED_READS recovery trigger can fire.
+                execState.blockedReadCount = (execState.blockedReadCount ?? 0) + 1;
+              }
+              if (!isBlockedResult) {
+                // Only record successful (non-blocked) executions as ground-truth state.
+                stateManager.markToolExecuted(execState, event.name, toolCallPath, resultStr0.slice(0, 150));
+                if (event.name === 'read_file' && toolCallPath) {
+                  stateManager.markFileRead(execState, this.normalizeWorkspacePath(toolCallPath));
+                }
               }
             }
 

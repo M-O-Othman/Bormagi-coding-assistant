@@ -57,12 +57,15 @@ export class RecoveryManager {
       return 'PROTOCOL_TEXT_IN_TRANSCRIPT';
     }
 
-    // Trigger 4: nextAction is missing/empty while run is still active
+    // Trigger 4: nextAction is missing/empty while run is still active.
+    // Only fire after 5+ iterations so agents have room to work before being required
+    // to call update_task_state. Firing on iteration 1-4 causes unnecessary churn.
     if (
       (this.execState.runPhase ?? 'RUNNING') === 'RUNNING' &&
-      this.execState.iterationsUsed > 0 &&
+      this.execState.iterationsUsed >= 5 &&
       (this.execState.nextActions ?? []).length === 0 &&
-      !this.execState.nextToolCall
+      !this.execState.nextToolCall &&
+      this.execState.artifactsCreated.length === 0
     ) {
       return 'MISSING_NEXT_ACTION';
     }
@@ -133,21 +136,35 @@ export class RecoveryManager {
   }
 
   private _hasProtocolText(): boolean {
+    // Patterns that indicate genuine protocol text leaking into conversational messages.
+    // These should only fire on LLM-generated text that mimics tool protocol syntax,
+    // NOT on framework-generated labels or tool outputs.
     const PROTOCOL_PATTERNS = [
       /\[write_file:/,
       /\[edit_file:/,
-      /\x00TOOL:/,
       /<tool_result/,
       /TOOL:(?:read_file|list_files|write_file|search_files):/,
     ];
     for (const msg of this.messages) {
+      // tool_result messages legitimately contain <tool_result> XML, [BLOCKED] prefixes,
+      // [BATCH VIOLATION] etc. — these are valid tool outputs, not protocol leaks.
+      if (msg.role === 'tool_result') { continue; }
+      // system messages are framework-generated (system prompt, execution state, etc.)
+      // and never contain LLM-generated protocol leaks.
+      if (msg.role === 'system') { continue; }
+
+      // Strip null-byte sentinels from assistant messages before checking.
+      // \x00TOOL:name:{...}\x00 is how AgentRunner labels tool calls with no text —
+      // it is expected and is NOT a protocol leak. sanitiseContent also strips these,
+      // so they must be excluded before we call the sanitiseContent divergence check.
+      const content = msg.content.replace(/\x00TOOL:[^\x00]*\x00/g, '').trim();
+      if (!content) { continue; }
+
       for (const pattern of PROTOCOL_PATTERNS) {
-        if (pattern.test(msg.content)) {
-          return true;
-        }
+        if (pattern.test(content)) { return true; }
       }
+      if (sanitiseContent(content) !== content) { return true; }
     }
-    // Also check if sanitiseContent would change any message (protocol noise present)
-    return this.messages.some(m => sanitiseContent(m.content) !== m.content);
+    return false;
   }
 }

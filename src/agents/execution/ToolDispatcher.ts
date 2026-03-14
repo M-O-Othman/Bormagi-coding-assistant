@@ -118,8 +118,17 @@ export class ToolDispatcher {
         const n = p.replace(/\\/g, '/').replace(/^\/+/, '');
         return n.startsWith('.bormagi/') || n === '.bormagi';
       };
+      // Allow writes to .bormagi/plans/ for plan documents (.md/.txt).
+      // Plans are agent output, not framework state.
+      const isBormagiPlansWrite = (p: string, tool: string) => {
+        if (tool !== 'write_file' && tool !== 'edit_file') { return false; }
+        const n = p.replace(/\\/g, '/').replace(/^\/+/, '');
+        if (!n.startsWith('.bormagi/plans/')) { return false; }
+        const ext = n.split('.').pop()?.toLowerCase() ?? '';
+        return ['md', 'txt', 'rst'].includes(ext);
+      };
       if (!EXEMPT_TOOLS.has(toolEvent.name)) {
-        if (targetPath && isBormagiPath(targetPath)) {
+        if (targetPath && isBormagiPath(targetPath) && !isBormagiPlansWrite(targetPath, toolEvent.name)) {
           return getAppData().executionMessages.toolBlocked.bormagiPath;
         }
         // For multi_edit: check every edit's path
@@ -143,9 +152,24 @@ export class ToolDispatcher {
         'create_document', 'create_presentation',
       ]);
       if (MUTATION_TOOLS_READONLY.has(toolEvent.name)) {
-        const modeDisallowsMsg: string = (getAppData().executionMessages.toolBlocked as Record<string, string>).modeDisallowsMutation
-          ?? `[BLOCKED] Mode '${this._guardState.mode}' does not permit file mutations. Switch to Code mode to make changes.`;
-        return modeDisallowsMsg.replace('{mode}', this._guardState.mode);
+        // Plan mode: allow writing documentation files (.md, .txt, .rst).
+        // A plan agent's primary output IS a written plan document.
+        if (this._guardState.mode === 'plan' &&
+            (toolEvent.name === 'write_file' || toolEvent.name === 'edit_file')) {
+          const targetPath = ((toolEvent.input as Record<string, unknown>).path as string | undefined) ?? '';
+          const ext = targetPath.split('.').pop()?.toLowerCase() ?? '';
+          if (['md', 'txt', 'rst'].includes(ext)) {
+            // Allow — fall through to normal dispatch
+          } else {
+            const modeDisallowsMsg: string = (getAppData().executionMessages.toolBlocked as Record<string, string>).modeDisallowsMutation
+              ?? `[BLOCKED] Mode 'plan' does not permit writing source files. Switch to Code mode to make changes.`;
+            return modeDisallowsMsg.replace('{mode}', 'plan');
+          }
+        } else {
+          const modeDisallowsMsg: string = (getAppData().executionMessages.toolBlocked as Record<string, string>).modeDisallowsMutation
+            ?? `[BLOCKED] Mode '${this._guardState.mode}' does not permit file mutations. Switch to Code mode to make changes.`;
+          return modeDisallowsMsg.replace('{mode}', this._guardState.mode);
+        }
       }
     }
 

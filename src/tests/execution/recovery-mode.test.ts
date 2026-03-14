@@ -73,22 +73,35 @@ describe('RecoveryManager.shouldRecover()', () => {
     expect(mgr.shouldRecover()).not.toBe('REPEATED_CONTINUE_NO_PROGRESS');
   });
 
-  it('returns MISSING_NEXT_ACTION when RUNNING with no nextActions and no nextToolCall', () => {
+  it('returns MISSING_NEXT_ACTION when RUNNING with no nextActions after 5+ iterations with no artifacts', () => {
     const mgr = makeManager(makeState({
       runPhase: 'RUNNING',
-      iterationsUsed: 1,
+      iterationsUsed: 5,
       nextActions: [],
       nextToolCall: undefined,
+      artifactsCreated: [],
     }));
     expect(mgr.shouldRecover()).toBe('MISSING_NEXT_ACTION');
   });
 
-  it('does NOT return MISSING_NEXT_ACTION when iterationsUsed is 0', () => {
+  it('does NOT return MISSING_NEXT_ACTION when iterationsUsed < 5', () => {
     const mgr = makeManager(makeState({
       runPhase: 'RUNNING',
-      iterationsUsed: 0,
+      iterationsUsed: 4,
       nextActions: [],
       nextToolCall: undefined,
+      artifactsCreated: [],
+    }));
+    expect(mgr.shouldRecover()).toBeNull();
+  });
+
+  it('does NOT return MISSING_NEXT_ACTION when artifacts have been created', () => {
+    const mgr = makeManager(makeState({
+      runPhase: 'RUNNING',
+      iterationsUsed: 10,
+      nextActions: [],
+      nextToolCall: undefined,
+      artifactsCreated: ['src/index.ts'],
     }));
     expect(mgr.shouldRecover()).toBeNull();
   });

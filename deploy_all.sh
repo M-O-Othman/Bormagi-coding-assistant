@@ -95,6 +95,7 @@ printf " SUCCESS — Bormagi installed from %s\n" "$VSIX_FILE"
 printf " Bormagi stays installed and enabled in normal VS Code sessions.\n"
 printf " Reload VS Code (Ctrl+Shift+P -> Developer: Reload Window) if already open.\n"
 printf "=============================================================\n\n"
+cp -r "$SCRIPT_DIR/src/tests/Sample Input/" "$WORKSPACE_TO_OPEN"
 
 printf "Opening test workspace: %s\n" "$WORKSPACE_TO_OPEN"
 "$CODE_CMD" "$WORKSPACE_TO_OPEN" >/dev/null 2>&1 || true
