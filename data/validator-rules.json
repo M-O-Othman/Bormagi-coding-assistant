@@ -1,0 +1,40 @@
+{
+  "rules": {
+    "missingPackageJson": {
+      "code": "MISSING_PACKAGE_JSON",
+      "severity": "critical",
+      "autoFixable": false,
+      "message": "TypeScript/JavaScript files were written but no package.json exists in the workspace root."
+    },
+    "brokenScriptRef": {
+      "code": "BROKEN_SCRIPT_REF",
+      "severity": "critical",
+      "autoFixable": false,
+      "message": "Script \"{script}\" references \"{file}\" which does not exist on disk."
+    },
+    "brokenMainField": {
+      "code": "BROKEN_MAIN_FIELD",
+      "severity": "critical",
+      "autoFixable": false,
+      "message": "package.json \"main\" field points to \"{file}\" which does not exist on disk."
+    },
+    "missingDependency": {
+      "code": "MISSING_DEPENDENCY",
+      "severity": "warning",
+      "autoFixable": true,
+      "message": "Package \"{package}\" is imported in source files but not listed in package.json dependencies."
+    },
+    "architectureConflict": {
+      "code": "ARCHITECTURE_CONFLICT",
+      "severity": "critical",
+      "autoFixable": false,
+      "message": "File uses \"{detected}\" which conflicts with the committed architecture lock (\"{locked}\")."
+    },
+    "batchIncomplete": {
+      "code": "BATCH_INCOMPLETE",
+      "severity": "critical",
+      "autoFixable": false,
+      "message": "Declared file batch is incomplete: {remaining} file(s) not yet written."
+    }
+  }
+}

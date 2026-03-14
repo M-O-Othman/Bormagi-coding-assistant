@@ -108,6 +108,16 @@
         "category": "Bormagi"
       },
       {
+        "command": "bormagi.showExecutionState",
+        "title": "Bormagi: Show Execution State (Developer)",
+        "category": "Bormagi"
+      },
+      {
+        "command": "bormagi.resetExecutionState",
+        "title": "Bormagi: Reset Execution State (Developer)",
+        "category": "Bormagi"
+      },
+      {
         "command": "bormagi.openDashboard",
         "title": "Bormagi: Open Dashboard",
         "category": "Bormagi"
@@ -556,6 +566,21 @@
           "type": "boolean",
           "default": false,
           "description": "When sandbox is disabled, require manual confirmation before writing or editing files. Defaults to false."
+        },
+        "bormagi.executionEngineV2": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable the V2 execution engine with authoritative state mutations, tool-result channel isolation, hard runtime guards (reread prevention, discovery budget), and improved continue/resume. Phases 1–3 of the execution layer fixes."
+        },
+        "bormagi.validatorEnforcement": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled alongside executionEngineV2, the consistency validator will auto-fix safe issues (e.g. adding missing package.json dependencies). Requires executionEngineV2 to be true."
+        },
+        "bormagi.developerMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable developer-mode debug commands: bormagi.showExecutionState and bormagi.resetExecutionState. Commands are hidden when this setting is false."
         }
       }
     },
@@ -608,6 +633,14 @@
         {
           "command": "bormagi.disableSandbox",
           "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "bormagi.showExecutionState",
+          "when": "workspaceFolderCount > 0 && config.bormagi.developerMode"
+        },
+        {
+          "command": "bormagi.resetExecutionState",
+          "when": "workspaceFolderCount > 0 && config.bormagi.developerMode"
         }
       ]
     }

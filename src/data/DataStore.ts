@@ -84,6 +84,21 @@ export interface AppData {
   // data/artifact-commands.json
   artifactCommands: ArtifactCommand[];
 
+  // data/architecture-patterns.json
+  architecturePatterns: Record<string, unknown>;
+
+  // data/validator-rules.json
+  validatorRules: { rules: Record<string, { code: string; severity: string; autoFixable: boolean; message: string }> };
+
+  // data/execution-messages.json
+  executionMessages: {
+    toolBlocked: { bormagiPath: string; reread: string; budgetExhausted: string; offBatch: string };
+    toolSummary: { format: string; formatNoPath: string };
+    continueResume: Record<string, string>;
+    stateContextNote: Record<string, string>;
+    validatorIssues: Record<string, string>;
+  };
+
   // prompts/default-system-prompt.md
   defaultSystemPrompt: string;
 
@@ -169,6 +184,15 @@ function loadAll(extensionPath: string): AppData {
   // ── artifact-commands.json ─────────────────────────────────────────────────
   const artifactCommands = readJson<ArtifactCommand[]>(path.join(dataDir, 'artifact-commands.json'));
 
+  // ── execution-messages.json ───────────────────────────────────────────────
+  const executionMessages = readJson<AppData['executionMessages']>(path.join(dataDir, 'execution-messages.json'));
+
+  // ── architecture-patterns.json ────────────────────────────────────────────
+  const architecturePatterns = readJson<AppData['architecturePatterns']>(path.join(dataDir, 'architecture-patterns.json'));
+
+  // ── validator-rules.json ──────────────────────────────────────────────────
+  const validatorRules = readJson<AppData['validatorRules']>(path.join(dataDir, 'validator-rules.json'));
+
   // ── prompts/ ───────────────────────────────────────────────────────────────
   const defaultSystemPrompt = readText(path.join(promptsDir, 'default-system-prompt.md'));
 
@@ -202,6 +226,9 @@ function loadAll(extensionPath: string): AppData {
     injectionPatterns: toRegexArray(securityJson.injectionPatterns),
 
     artifactCommands,
+    executionMessages,
+    architecturePatterns,
+    validatorRules,
 
     defaultSystemPrompt,
     artifactPrompts,
@@ -242,6 +269,15 @@ function emptyAppData(): AppData {
     secretPatterns:     [],
     injectionPatterns:  [],
     artifactCommands:   [],
+    architecturePatterns: {} as Record<string, unknown>,
+    validatorRules: { rules: {} },
+    executionMessages:  {
+      toolBlocked: { bormagiPath: '', reread: '', budgetExhausted: '', offBatch: '' },
+      toolSummary: { format: '', formatNoPath: '' },
+      continueResume: {},
+      stateContextNote: {},
+      validatorIssues: {},
+    },
     defaultSystemPrompt: '',
     artifactPrompts:    {},
   };

@@ -161,6 +161,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       AgentSettingsPanel.createOrShow(context.extensionUri, agentManager!, secretsManager!, configManager!);
     }),
 
+    vscode.commands.registerCommand('bormagi.refreshAgents', async () => {
+      if (chatController) {
+        await chatController.refreshAgentList();
+      }
+    }),
+
     vscode.commands.registerCommand('bormagi.newAgent', () => {
       AgentSettingsPanel.createOrShow(context.extensionUri, agentManager!, secretsManager!, configManager!, 'new');
     }),
@@ -264,6 +270,48 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.window.showWarningMessage('Bormagi Sandbox disabled. Agents will write directly to your workspace.');
     })
   );
+
+  // ─── Phase 5: Developer-mode debug commands (gated on bormagi.developerMode) ─
+  if (vscode.workspace.getConfiguration('bormagi').get<boolean>('developerMode', false)) {
+    context.subscriptions.push(
+      vscode.commands.registerCommand('bormagi.showExecutionState', async () => {
+        const agentId = chatController?.activeAgentName;
+        if (!agentId) {
+          vscode.window.showWarningMessage('Bormagi: No active agent — cannot show execution state.');
+          return;
+        }
+        const statePath = path.join(workspaceRoot, '.bormagi', `exec-state-${agentId}.json`);
+        if (!fs.existsSync(statePath)) {
+          vscode.window.showInformationMessage(`Bormagi: No execution state found for agent "${agentId}".`);
+          return;
+        }
+        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(statePath));
+        await vscode.window.showTextDocument(doc);
+      }),
+
+      vscode.commands.registerCommand('bormagi.resetExecutionState', async () => {
+        const agentId = chatController?.activeAgentName;
+        if (!agentId) {
+          vscode.window.showWarningMessage('Bormagi: No active agent — cannot reset execution state.');
+          return;
+        }
+        const statePath = path.join(workspaceRoot, '.bormagi', `exec-state-${agentId}.json`);
+        if (!fs.existsSync(statePath)) {
+          vscode.window.showInformationMessage(`Bormagi: No execution state found for agent "${agentId}".`);
+          return;
+        }
+        const confirm = await vscode.window.showWarningMessage(
+          `Reset execution state for agent "${agentId}"? This deletes .bormagi/exec-state-${agentId}.json.`,
+          { modal: true },
+          'Reset'
+        );
+        if (confirm === 'Reset') {
+          fs.unlinkSync(statePath);
+          vscode.window.showInformationMessage(`Bormagi: Execution state reset for "${agentId}".`);
+        }
+      })
+    );
+  }
 
   // ─── Auto-initialise or run first-launch wizard ───────────────────────────
   const existingConfig = await configManager.readProjectConfig();

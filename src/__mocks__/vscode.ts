@@ -57,10 +57,32 @@ export const workspace = {
     },
   },
   workspaceFolders: undefined as undefined,
-  getConfiguration: (_section?: string) => ({
-    get: <T>(_key: string, defaultValue?: T): T | undefined => defaultValue,
+  getConfiguration: (section?: string) => ({
+    get: <T>(key: string, defaultValue?: T): T | undefined => {
+      const store = _configStore[section ?? ''] ?? {};
+      return (key in store ? store[key] : defaultValue) as T | undefined;
+    },
   }),
 };
+
+/** Internal config store for test overrides. */
+const _configStore: Record<string, Record<string, unknown>> = {};
+
+/**
+ * Set mock VS Code configuration values for tests.
+ * Call in beforeEach to set up per-test config, e.g.:
+ *   vscode.__setConfig('bormagi', { executionEngineV2: true })
+ */
+export function __setConfig(section: string, values: Record<string, unknown>): void {
+  _configStore[section] = { ..._configStore[section], ...values };
+}
+
+/** Clear all mock config overrides. Call in afterEach if needed. */
+export function __clearConfig(): void {
+  for (const key of Object.keys(_configStore)) {
+    delete _configStore[key];
+  }
+}
 
 // ─── window ──────────────────────────────────────────────────────────────────
 

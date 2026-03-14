@@ -1,0 +1,55 @@
+{
+  "backend": {
+    "@nestjs/core": "nestjs",
+    "express": "express",
+    "fastify": "fastify",
+    "koa": "koa",
+    "hapi": "hapi",
+    "fastapi": "fastapi",
+    "flask": "flask",
+    "django": "django"
+  },
+  "orm": {
+    "prisma": "prisma",
+    "@prisma/client": "prisma",
+    "typeorm": "typeorm",
+    "sequelize": "sequelize",
+    "mongoose": "mongoose",
+    "drizzle-orm": "drizzle",
+    "sqlalchemy": "sqlalchemy"
+  },
+  "frontend": {
+    "react": "react",
+    "react-dom": "react",
+    "vue": "vue",
+    "@angular/core": "angular",
+    "svelte": "svelte",
+    "solid-js": "solid",
+    "preact": "preact"
+  },
+  "testFramework": {
+    "jest": "jest",
+    "vitest": "vitest",
+    "mocha": "mocha",
+    "jasmine": "jasmine",
+    "pytest": "pytest"
+  },
+  "configFiles": {
+    "requirements.txt": "python",
+    "go.mod": "go",
+    "Cargo.toml": "rust",
+    "pom.xml": "java",
+    "build.gradle": "java",
+    "pyproject.toml": "python"
+  },
+  "conflictImportPrefixes": {
+    "nestjs": ["express", "fastify", "koa"],
+    "express": ["fastify", "koa"],
+    "fastify": ["express", "koa"],
+    "react": ["vue", "angular", "svelte"],
+    "vue": ["react", "angular", "svelte"],
+    "angular": ["react", "vue", "svelte"],
+    "prisma": ["typeorm", "sequelize"],
+    "typeorm": ["prisma", "sequelize"]
+  }
+}

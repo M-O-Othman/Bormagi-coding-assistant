@@ -190,3 +190,550 @@ Each round completes, the moderator LLM summarizes the discussion, then the huma
 
 ### Q4: Inline minutes — Append each response + final summary ✅
 Append each agent response to minutes as it arrives. Add a full meeting summary + action items section at the end when the meeting concludes.
+
+---
+
+# Open Questions — Execution Layer Fixes & Enhancements
+
+> Questions for the implementation of fixes from `0logissues.md` and `0high_priority fixes.md`
+> **Do not begin implementation until all questions below are answered.**
+
+---
+
+## EQ-1: Missing content in `0Logfixes.md`
+
+The file `docs/New-Requirements/0Logfixes.md` appears to be empty (only 1 line). Was there supposed to be content there (a separate list of proposed fixes), or is the content in `0high_priority fixes.md` the definitive merged fix plan?
+
+**Answer:**
+File updated
+---
+
+## EQ-2: Feature flags vs. hard cutover
+
+The `0high_priority fixes.md` recommends 5 feature flags (`executionStateV2`, `toolResultIsolation`, `silentExecution`, `batchPlanner`, `validatorEnforcement`). Given the previous decision on context pipeline was "hard cutover, no fallback" (OQ-14), should the execution layer fixes also be:
+
+- **A** Feature-flagged — old behaviour preserved behind flags, new behaviour opt-in (safer rollout, more code)
+- **B** Hard cutover — replace old behaviour directly, no flags (simpler, less code, but riskier)
+- **C** Feature-flagged initially, flags removed after regression tests pass (best of both)
+
+**Answer:**
+Option C
+1. Choose **Option C** for execution-layer rollout.
+2. Implement the new execution path behind a **single top-level feature flag**: `executionEngineV2`.
+3. Put under `executionEngineV2` all core fixes together:
+
+   * authoritative `ExecutionStateManager`
+   * tool-result isolation from user chat
+   * `nextAction`-based continue/resume
+   * silent-execution enforcement
+   * reread blocking
+   * batch enforcement
+   * automatic validator invocation
+4. Keep the old execution behavior temporarily available only while `executionEngineV2` is being tested.
+5. Do **not** create many small feature flags for each sub-behavior unless absolutely necessary.
+6. Add a second flag only if required: `validatorEnforcement`.
+7. Use `validatorEnforcement` only if validator strictness may block rollout while repo drift is being cleaned up.
+8. Enable `executionEngineV2` in targeted regression testing first.
+9. Run regression tests covering:
+
+   * no tool results in user chat
+   * continue resumes from `nextAction`
+   * reread guard works
+   * silent execution suppresses narration
+   * batch rules are enforced
+   * validator catches obvious scaffold inconsistencies
+10. Run real-session validation on:
+
+* greenfield workspace flow
+* continue/resume flow
+* existing-project flow
+
+11. If tests and real-session validation pass, make `executionEngineV2` the default path.
+12. Keep the old path only for a short stabilization period.
+13. Remove the old execution path after regression tests and live validation pass.
+14. Remove the temporary feature flag(s) after cutover is proven stable.
+15. Keep the final architecture simple: one authoritative execution path, no permanent dual-mode behavior.
+
+---
+
+## EQ-3: Tool result injection — current state assessment
+
+The log analysis says "tool results are still flowing through the conversational stream." My codebase analysis shows `AgentRunner.ts` is 82KB with complex message flow. The tool results appear to be passed back to the LLM as part of the conversation history for multi-turn tool use.
+
+Clarification needed: Should tool results be:
+
+- **A** Completely removed from conversation history (the LLM never sees tool output text — only a structured summary is injected as a system note)
+- **B** Kept in conversation but in a structured format (not as "user" role messages — using a dedicated "tool" role or system injection)
+- **C** Kept as-is for multi-turn tool use (LLM needs to see tool output to decide next action) but stripped from **persisted** state/transcript for resume
+
+**Answer:**
+1. Choose **Option B** for tool-result handling.
+2. Keep tool results visible to the LLM during the live run.
+3. Stop sending tool results as `user` role messages.
+4. Introduce a dedicated **tool-result channel** in the execution pipeline.
+5. Use native provider `tool` role where supported.
+6. Where native tool role is unavailable, inject tool results as a dedicated structured system/tool block.
+7. Keep raw tool outputs out of ordinary conversation history.
+8. Persist only compact tool execution summaries in execution state.
+9. Do not let raw tool-result text pollute resume transcript or persisted state.
+10. Update `AgentRunner` so multi-turn tool use consumes structured tool results instead of fake chat messages.
+11. Preserve enough tool-result detail for the LLM to decide the next action during the same live run.
+12. Keep resume context compact by storing summaries and metadata rather than replaying raw tool outputs.
+
+Ready for the next question.
+
+---
+
+## EQ-4: Scope of "silent execution mode"
+
+The requirement says when the user says "do not narrate", set `silentExecution=true`. This suppresses assistant text before tool calls.
+
+- **A** Silent mode applies only to the current run/turn — resets on next user message
+- **B** Silent mode persists in execution state until the user explicitly turns it off
+- **C** Silent mode is a per-agent setting (some agents always run silent in code mode)
+- **D** Code mode is always silent by default; ask/plan modes are always verbose
+
+**Answer:**
+1. Choose **Option A** for `silentExecution`.
+2. Apply silent mode only to the **current run/turn** when the user explicitly says things like “do not narrate” or “execute immediately”.
+3. Reset `silentExecution` automatically on the next user message unless the user explicitly asks for silent behavior again.
+4. Do **not** persist silent mode in long-lived execution state as a default behavior.
+5. Do **not** make silent mode a per-agent permanent setting.
+6. Do **not** make all code mode runs silent by default.
+7. Keep code mode normally concise, but only enforce hard no-narration when the user explicitly requests it in that run.
+8. Store `silentExecution=true` only as a short-lived run-context flag, not as a durable preference.
+9. Allow resume/continue within the same run to keep silent mode active until that run completes.
+10. On the next separate user request, fall back to normal code-mode behavior unless the user again requests silent execution.
+
+Ready for the next question.
+
+---
+
+## EQ-5: Batch planning — mandatory or optional?
+
+The `0high_priority fixes.md` requires "greenfield code mode must declare batch before first write." This adds overhead for simple tasks (e.g., "add a logging statement to this file").
+
+- **A** Batch planning is mandatory for all code-mode tasks (strict, as described)
+- **B** Batch planning is mandatory only for greenfield/multi-file tasks; single-file edits skip it
+- **C** Batch planning is always optional but recommended — the agent can write freely, batch just provides structure
+- **D** Batch planning is mandatory for greenfield, optional for existing-project edits
+
+**Answer:**
+1. Choose **Option D** for batch planning.
+2. Make batch planning **mandatory for greenfield code-mode tasks**.
+3. Make batch planning **optional for existing-project edits**.
+4. Treat a workspace as greenfield when there is no real project scaffold or when the task is clearly creating a new implementation structure.
+5. Require a declared file batch before the first write in greenfield code mode.
+6. Keep the first greenfield batch small and coherent, such as 3–5 files.
+7. For existing-project edits, allow direct single-file or small-scope edits without mandatory batch declaration.
+8. Permit the agent to skip batch planning for simple existing-file changes such as adding a log statement, fixing a bug in one file, or updating a small function.
+9. Still allow optional batch planning for existing-project work when the task is multi-file, high-risk, or structurally significant.
+10. Add a simple task classifier to decide whether the task is:
+
+    * greenfield scaffold
+    * existing-project single-file edit
+    * existing-project multi-file change
+11. Enforce batch rules automatically only for the greenfield scaffold path.
+12. For existing-project edits, keep batch planning available as a tool for structure, not as mandatory overhead.
+13. Persist declared batches in execution state only when a batch is actually created.
+14. Use validator checkpoints automatically after each mandatory greenfield batch.
+15. Avoid universal mandatory batching, because it would add unnecessary friction to small maintenance edits.
+
+
+---
+
+## EQ-6: Architecture lock — scope and override
+
+The proposal includes an "architecture lock" that prevents the agent from switching frameworks mid-task. Questions:
+
+- Should the architecture lock be derived automatically from existing project files (e.g., detect NestJS from `package.json`), or should the user explicitly set it?
+- Can the user override/change the lock mid-session if needed?
+- Does this apply only to greenfield projects, or also when modifying existing codebases?
+
+**Answer:**
+1. Derive the architecture lock **automatically by default** from the existing project when modifying an existing codebase.
+2. Detect the architecture lock from concrete signals such as:
+
+   * `package.json` dependencies and scripts
+   * framework-specific config files
+   * existing folder structure
+   * existing entrypoints and imports
+3. For greenfield tasks, derive an initial architecture lock from:
+
+   * the plan/design documents
+   * workspace classification
+   * the first scaffold decision made by the execution layer
+4. Do **not** require the user to explicitly set the architecture lock in normal cases.
+5. Allow the user to **explicitly override** the architecture lock when needed.
+6. Treat a user override as an intentional change request, not as a normal automatic adjustment.
+7. If the user overrides the lock mid-session, update the execution state and invalidate any incompatible pending batch.
+8. When a mid-session override happens, require the execution layer to:
+
+   * clear or amend the current planned batch
+   * re-run architecture-sensitive validation
+   * set a new `nextAction`
+9. Do **not** allow the model to silently change the architecture lock on its own mid-task.
+10. Allow automatic lock updates only when the current lock is unset and strong project evidence is discovered.
+11. Apply architecture lock to **both**:
+
+* greenfield projects
+* existing codebase modifications
+
+12. In existing codebases, make the architecture lock **stricter** because preserving current conventions is more important than in greenfield work.
+13. In greenfield work, allow the architecture lock to be established after initial discovery and before the first scaffold batch.
+14. In existing projects, establish the architecture lock before any structural write.
+15. Store the architecture lock in execution state as part of the authoritative task state.
+16. Include in the lock at minimum:
+
+* backend framework
+* ORM/data layer
+* repo shape/structure
+* frontend framework if relevant
+
+17. Use the architecture lock during validation to detect drift, such as framework imports or file structures inconsistent with the locked architecture.
+18. If project evidence is ambiguous, prefer existing codebase conventions over plan/general templates.
+19. If no reliable evidence exists in an existing project, fall back to a compact inferred lock with low-confidence status and allow validation warnings instead of hard blocking.
+20. Keep the solution simple: automatic by default, user-overridable, enforced in both greenfield and existing-project contexts, with stronger enforcement for existing codebases.
+
+
+---
+
+## EQ-7: Discovery budget — hard numbers
+
+The requirement says discovery budget should be "blocking, not advisory." What specific limits do you want?
+
+- Maximum `read_file` calls per run: ___
+- Maximum `list_files` calls per run: ___
+- Maximum consecutive discovery calls without a write: ___
+- Should these be configurable per-agent or global?
+
+**Answer:**
+1. Set the **maximum `read_file` calls per run to 3** by default.
+2. Set the **maximum `list_files` calls per run to 2** by default.
+3. Set the **maximum consecutive discovery calls without a write to 3**.
+4. Apply these limits as **hard blocking limits**, not advisory hints.
+5. Use these limits primarily for **code mode** runs.
+6. Count as discovery calls:
+
+   * `read_file`
+   * `list_files`
+   * similar workspace-inspection tools
+7. Do **not** count writes, edits, validation, or test execution as discovery calls.
+8. Reset the consecutive discovery counter immediately after a successful `write_file` or `edit_file`.
+9. If the read/list budget is exhausted, block further discovery calls for that run unless:
+
+   * a validation failure explicitly requires rereading a changed file
+   * the framework enters a controlled recovery path
+10. Make the limits **global defaults**, not per-agent by default.
+11. Allow optional per-agent overrides only later if a real need emerges.
+12. Keep the first implementation simple: one shared set of discovery-budget defaults for all agents in code mode.
+13. Recommended default budget profile:
+
+* `read_file`: 3
+* `list_files`: 2
+* consecutive discovery without write: 3
+
+14. For greenfield tasks, require the agent to move from discovery to architecture lock or batch declaration once the discovery budget is reached.
+15. For existing-project edits, allow the same default limits initially; do not complicate the first rollout with different per-task numeric budgets.
+16. Persist budget usage in execution state for the current run.
+17. If a blocked discovery call is attempted, return a structured error telling the execution layer to:
+
+* declare a batch
+* perform a write/edit
+* run validation
+* or enter recovery mode
+
+18. Add regression tests to verify that discovery calls are blocked after these limits are reached.
+
+
+---
+
+## EQ-8: `.bormagi` access filtering
+
+The requirement says block agent access to `.bormagi/**` during normal task execution. However, some agents legitimately need to read `.bormagi/` files (e.g., reading Memory.md, exec-state files, workflow state).
+
+- **A** Block all `.bormagi/` access from the agent's tool calls; framework code reads what it needs and injects into context
+- **B** Block `.bormagi/` by default but allow specific patterns (e.g., `Memory.md`, `instructions/`)
+- **C** Block only during code mode; allow in ask/plan modes
+
+**Answer:**
+1. Choose **Option A** for `.bormagi/` access filtering.
+2. Block **all direct `.bormagi/**` access** from normal agent tool calls.
+3. Treat `.bormagi/` as **framework/internal control data**, not normal project workspace content.
+4. Do **not** let the model decide which `.bormagi/` files to read directly.
+5. Move all legitimate `.bormagi/` reads into **framework code**, not agent-exposed tool execution.
+6. Have the framework read required `.bormagi/` data such as:
+
+   * memory/context files
+   * execution state
+   * workflow state
+   * internal instructions
+7. Inject only the **minimum required structured summary** from `.bormagi/` into the agent context.
+8. Do **not** expose raw `.bormagi/` file contents to the agent unless there is a very specific framework-controlled reason.
+9. Apply the block in **all modes**: ask, plan, and code.
+10. Keep the mode behavior simple and consistent; do not create special `.bormagi/` access rules per mode.
+11. Implement the deny rule in the authoritative tool-dispatch layer, not only in prompt text.
+12. Return a structured blocked-access result if an agent tries to read `.bormagi/**`.
+13. Add explicit framework-owned helper functions for safe internal reads of `.bormagi/` content.
+14. Ensure resume state, memory, workflow metadata, and internal instructions are passed through controlled summaries instead of direct file access.
+15. Add regression tests to verify that agent tool calls cannot directly access `.bormagi/**`.
+16. Add regression tests to verify that framework code can still read needed `.bormagi/` data and inject the correct summaries.
+17. Keep the first implementation strict and simple: full direct block for agents, framework-mediated access only.
+
+
+---
+
+## EQ-9: ConsistencyValidator — failure action
+
+When the validator detects issues (e.g., missing dependency in `package.json`, broken import), what should happen?
+
+- **A** Hard block — refuse to continue until issues are fixed (agent must auto-fix)
+- **B** Warn the user — show issues but allow continuation
+- **C** Auto-fix what can be fixed, warn on what can't, block on critical issues only
+- **D** Log and surface in UI — never block the agent
+
+**Answer:**
+1. Choose **Option C** for `ConsistencyValidator` failure handling.
+2. Automatically fix issues that are clearly safe and mechanically resolvable.
+3. Examples of safe auto-fixes include:
+
+   * adding a missing dependency that is directly required by newly written code
+   * fixing a script entrypoint path when the intended generated file clearly exists
+   * updating a declared batch file status after a successful write if state drift is purely bookkeeping
+4. Warn the user about issues that cannot be safely auto-fixed.
+5. Treat as **critical issues** anything that would make the generated scaffold or edit clearly invalid or unsafe to continue.
+6. Examples of critical issues include:
+
+   * unresolved imports with no clear dependency choice
+   * architecture-lock violations
+   * missing required entrypoint with no obvious correct target
+   * writes outside the declared mandatory batch
+   * incompatible framework/ORM mismatch
+7. Block further execution on critical issues until they are fixed.
+8. Allow execution to continue after non-critical issues if:
+
+   * safe auto-fixes were applied, and
+   * remaining issues are warnings only
+9. Persist validator results in execution state with severity levels:
+
+   * `info`
+   * `warning`
+   * `critical`
+10. Record for each validator issue:
+
+* file
+* rule
+* severity
+* auto-fixed or not
+* blocking or not
+
+11. Surface validator results in the UI and final run summary.
+12. When auto-fixes are applied, include them in the final summary so the user can see what was changed.
+13. Do not silently ignore validator failures.
+14. Do not hard-block on every validator issue, because that would create too much friction.
+15. Do not make validator purely informational, because that would fail to prevent broken scaffolds and drift.
+16. Add a simple decision rule:
+
+* auto-fix safe issues
+* warn on non-critical unresolved issues
+* block on critical issues
+
+17. Run the validator after each mandatory greenfield batch and after meaningful multi-file existing-project changes.
+18. Add regression tests to verify:
+
+* safe issues are auto-fixed
+* warnings are surfaced without blocking
+* critical issues stop further execution
+
+19. Keep the first implementation simple with a small set of well-defined critical rules.
+20. Expand the auto-fix set only after the initial validator flow is stable.
+
+
+---
+
+## EQ-10: Transcript sanitisation — retroactive or forward-only?
+
+Should the transcript sanitisation (stripping `[write_file: ...]`, `TOOL:...`, XML wrappers, fake bootstrap text):
+
+- **A** Apply retroactively to existing conversation history in memory
+- **B** Apply only to new messages going forward
+- **C** Apply on every prompt assembly (clean the transcript each time before sending to LLM)
+
+**Answer:**
+1. Choose **Option C** for transcript sanitisation.
+2. Apply transcript sanitisation **on every prompt assembly** before sending context to the LLM.
+3. Clean both:
+
+   * newly generated messages
+   * any retained prior conversation history included in the next prompt
+4. Strip protocol-like noise each time, including:
+
+   * `[write_file: ...]`
+   * `TOOL:...`
+   * XML tool wrappers
+   * fake bootstrap/acknowledgment text
+   * internal control markers
+5. Do **not** rely on forward-only sanitisation, because old polluted transcript entries may still be replayed into future prompts.
+6. Do **not** mutate or rewrite raw historical storage immediately unless you explicitly choose to do a separate cleanup migration later.
+7. Keep the first implementation simple: sanitize the prompt input view, not the stored raw conversation log.
+8. Treat sanitisation as a **prompt-assembly step**, not a one-time historical rewrite.
+9. Ensure sanitisation runs before every LLM call in all modes: ask, plan, and code.
+10. Preserve legitimate user and assistant content while removing only tool/protocol/control noise.
+11. Keep structured execution state separate from transcript sanitisation; do not depend on transcript cleanup to fix state corruption.
+12. Add regression tests to verify that polluted historical transcript content is removed from the assembled prompt even if it still exists in stored history.
+13. Add regression tests to verify that new protocol-like noise is stripped before prompt send.
+14. Consider optional retroactive storage cleanup later as a maintenance task, but do not make it part of the first implementation.
+15. Use sanitisation on every prompt assembly as the default long-term behavior.
+
+
+---
+
+## EQ-11: Continue/resume semantics — user UX
+
+When the user types "continue", the plan says to resume from `nextAction`. Should the chat UI:
+
+- **A** Show a brief summary of what's being resumed before executing ("Resuming: writing src/index.ts from batch 1...")
+- **B** Just silently resume and start executing
+- **C** Show the execution state and ask for confirmation before resuming
+
+**Answer:**
+1. Choose **Option A** for continue/resume UX.
+2. When the user types `continue`, resume from `nextAction` automatically.
+3. Before executing, show a **brief one-line summary** of what is being resumed.
+4. Keep the resume summary short and operational, for example:
+
+   * `Resuming: write src/index.ts from batch 1`
+   * `Resuming: run validation for current batch`
+   * `Resuming: continue Phase 1 scaffold from next planned file`
+5. Do **not** silently resume with no visible indication.
+6. Do **not** ask for confirmation before every resume.
+7. Avoid turning `continue` into an extra approval step unless the next action is unusually risky.
+8. Keep the normal continue flow fast:
+
+   * show brief summary
+   * execute immediately
+9. If `silentExecution=true` is active for the current run, still allow a **minimal resume summary** unless the user explicitly requested zero narration.
+10. If the user explicitly requested absolute silence, skip the resume summary and execute immediately.
+11. If `nextAction` is missing or invalid, show a short recovery message instead of guessing, for example:
+
+* `Cannot resume: next action is missing; rebuilding execution state`
+
+12. If the resumed action is blocked by validator or policy, show a short status explaining the block.
+13. Keep the continue UX consistent across ask, plan, and code modes, but it matters most in code mode.
+14. Persist enough state so the UI can generate the resume summary without rereading transcript history.
+15. Add regression tests to verify:
+
+* `continue` resumes from `nextAction`
+* a brief resume summary is shown by default
+* confirmation is not requested in normal resume flow
+* explicit silent mode can suppress even the brief resume summary
+
+Ready for the next question.
+
+---
+
+## EQ-12: Extension debug commands — visibility
+
+The plan proposes `bormagi.showExecutionState` and `bormagi.resetExecutionState` commands. Should these be:
+
+- **A** Always visible in the command palette (all users can access)
+- **B** Hidden behind a "developer mode" setting
+- **C** Available as slash commands in chat (`/exec-state`, `/reset-state`)
+
+**Answer:**
+1. Choose **Option B** for execution-state debug commands.
+2. Put `bormagi.showExecutionState` behind a **developer mode** setting.
+3. Put `bormagi.resetExecutionState` behind the same **developer mode** setting.
+4. Keep these commands out of the normal default user surface.
+5. Do **not** make them always visible to all users by default.
+6. Do **not** make chat slash commands the primary first implementation.
+7. Add a simple setting such as `bormagi.developerMode: true|false`.
+8. Register the commands only when developer mode is enabled, or make them discoverable only in that mode.
+9. Keep the commands available through the **command palette**, not only through internal tooling.
+10. Treat `showExecutionState` as low-risk debug visibility for developers and testers.
+11. Treat `resetExecutionState` as a higher-risk recovery command and keep it developer-only.
+12. Add a confirmation step for `resetExecutionState` before destructive reset is performed.
+13. Allow `showExecutionState` to display compact task state, not raw internal files.
+14. Ensure `resetExecutionState` resets execution state only, not workspace/project files.
+15. Add telemetry or audit logging when either debug command is used.
+16. Keep slash-command support as a possible later enhancement, not part of the first rollout.
+17. Add regression tests to verify the commands are hidden when developer mode is off.
+18. Add regression tests to verify the commands are available when developer mode is on.
+19. Add regression tests to verify reset affects execution state only and does not delete user code.
+20. Keep the first implementation simple: developer-mode-gated command palette commands only.
+
+
+---
+
+## EQ-13: Dependency audit scope
+
+The plan includes a "dependency and runtime alignment" phase. The current `package.json` has many dependencies. Should we:
+
+- **A** Do a full audit — verify every import resolves, remove dead deps, add missing ones
+- **B** Minimal audit — only ensure the new execution layer files compile and their deps exist
+- **C** Full audit + add verification scripts (`verify:imports`, `verify:execution`, `verify:state`) to CI
+
+**Answer:**
+1. Choose **Option B** for the first implementation phase.
+2. Perform a **minimal dependency audit** focused on the new execution-layer changes only.
+3. Verify that all files touched by the execution-layer rollout compile and their dependencies exist.
+4. Scope the first audit to files such as:
+
+   * `AgentRunner`
+   * `ExecutionStateManager`
+   * `ToolDispatcher`
+   * `PromptComposer`
+   * `ConsistencyValidator`
+   * any new batch/architecture-lock helpers
+5. Add any missing dependencies required by these modified execution-layer files.
+6. Do **not** start by removing dead dependencies across the whole repo.
+7. Do **not** block the execution-layer rollout on a full repository-wide dependency cleanup.
+8. Keep the first audit focused on avoiding breakage in the hot execution path.
+9. Run compile/lint/test checks against the modified execution-layer scope before widening the audit.
+10. Defer full dead-dependency cleanup until after the execution-layer fixes are stable.
+11. Defer broad repo-wide import verification until after regression tests for the new execution path pass.
+12. Add lightweight verification only where needed to support the rollout, not a full CI policy change yet.
+13. Treat full audit and CI hardening as a later follow-up phase once the new execution path is working reliably.
+14. Keep the solution simple and practical: stabilize the execution layer first, then expand dependency hygiene later.
+15. Record any broader dependency drift discovered during the minimal audit as backlog items rather than expanding scope immediately.
+
+
+---
+
+## EQ-14: Text externalisation priority
+
+The codebase is ~95% externalised already. The remaining inline text is in:
+1. `AgentSettingsPanel.ts` — ~600 lines of inline HTML/CSS/JS with UI labels
+2. `ChatController.ts` — mode labels, help text (~10 lines)
+3. `ModePromptLoader.ts` — fallback mode contracts (~3 short strings)
+4. `AgentManager.ts` — default agent prompt template (~4 lines)
+5. `chat.html` — ~15 hardcoded UI strings (placeholders, tooltips, empty states)
+
+Should text externalisation be:
+
+- **A** Done as part of each phase (externalise strings in files being modified)
+- **B** Done as a dedicated phase after execution fixes are stable
+- **C** Only externalise `AgentSettingsPanel.ts` (the biggest offender) — the rest is fine as fallbacks
+
+**Answer:**
+1. Choose **Option A** for text externalisation priority.
+2. Externalise text **incrementally as part of each phase** when the file is already being modified.
+3. Do **not** create a separate dedicated externalisation phase before the execution fixes are complete.
+4. Do **not** expand the first rollout into a broad repo-wide text cleanup task.
+5. Prioritise externalisation in files that are touched by the current implementation work.
+6. Treat `AgentSettingsPanel.ts` as the **highest-priority externalisation target** when that file is modified, because it is the largest remaining inline-text area.
+7. Externalise `ChatController.ts` strings when modifying that file for execution/resume UX changes.
+8. Externalise `ModePromptLoader.ts` fallback strings when modifying that file, but keep simple fallback behavior intact.
+9. Externalise `AgentManager.ts` default prompt-template text when modifying that file, but avoid changing prompt behavior unnecessarily.
+10. Externalise `chat.html` strings when modifying chat UI behavior, placeholders, tooltips, or empty states.
+11. Keep small fallback strings acceptable temporarily if the file is not otherwise being changed in the current phase.
+12. Avoid opening files solely for minor text externalisation during the execution-fix rollout unless the file is already part of the active patch set.
+13. Preserve existing functionality while externalising: no UX wording changes unless required.
+14. Use the current externalisation pattern already used elsewhere in the codebase; do not introduce a second text-loading mechanism.
+15. Add a simple rule for the implementation team: **if you touch a file during this rollout, externalise its remaining inline user-facing strings before closing the change**.
+16. Track remaining non-externalised strings as backlog items, but do not block execution-layer fixes on them.
+17. Keep the solution practical: opportunistic cleanup during active edits, not a standalone cleanup campaign.
+18. Reassess after execution fixes stabilize whether any remaining inline text still justifies a focused cleanup pass.
+
+
+---

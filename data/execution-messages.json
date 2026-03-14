@@ -1,0 +1,35 @@
+{
+  "continueResume": {
+    "summary": "Resuming: {nextAction}",
+    "summaryWithLast": "Resuming from last completed: {lastTool} → Next: {nextAction}",
+    "missingNextAction": "Cannot resume: next action is missing; rebuilding execution state.",
+    "prompt": "Resume implementation. Last completed: {lastTool}. Next action: {nextAction}. Do not re-read unchanged files."
+  },
+  "stateContextNote": {
+    "header": "[Execution State — resume context]",
+    "objective": "Objective: {objective}",
+    "modeIterations": "Mode: {mode} | Iterations used so far: {iterationsUsed}",
+    "architectureLock": "Architecture lock — committed tech stack: {techStack}. Do NOT use other frameworks.",
+    "filesCreated": "Files already created (do not recreate, use edit_file):",
+    "completedSteps": "Completed steps:",
+    "nextActions": "Next pending actions:",
+    "blockers": "Blockers from last session:",
+    "alreadyRead": "Files already read this task (skip re-reading unless you wrote to them): {files}",
+    "declaredBatch": "Declared file batch ({count} files): {files}"
+  },
+  "toolBlocked": {
+    "bormagiPath": "[BLOCKED] Agent access to .bormagi/ is not permitted. This is internal framework state.",
+    "reread": "[BLOCKED] File already read and unchanged this session. Use the content from your earlier read. Write to it first if you need to re-read.",
+    "budgetExhausted": "[BUDGET EXHAUSTED] Discovery limit reached for this run. Allowed tools now: write_file, edit_file, declare_file_batch, run_command.",
+    "offBatch": "[BATCH VIOLATION] Path not in declared batch. Amend batch first with declare_file_batch, then write files in the declared order."
+  },
+  "toolSummary": {
+    "format": "[tool: {name} | path: {path} | status: {status} | {size} chars]",
+    "formatNoPath": "[tool: {name} | status: {status}]"
+  },
+  "validatorIssues": {
+    "missingPackageJson": "TypeScript/JavaScript files were written but no package.json exists in the workspace root.",
+    "brokenScriptRef": "Script \"{script}\" references \"{file}\" which does not exist on disk.",
+    "brokenMainField": "package.json \"main\" field points to \"{file}\" which does not exist on disk."
+  }
+}

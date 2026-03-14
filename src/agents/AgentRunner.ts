@@ -44,6 +44,9 @@ import { ValidationService } from '../git/ValidationService';
 import { CommitProposalGenerator } from '../git/CommitProposalGenerator';
 import { ExecutionStateManager, type ExecutionStateData } from './ExecutionStateManager';
 import { ConsistencyValidator } from './execution/ConsistencyValidator';
+import { BatchEnforcer } from './execution/BatchEnforcer';
+import { ArchitectureLock } from './execution/ArchitectureLock';
+import { sanitiseContent } from './execution/TranscriptSanitiser';
 
 // ─── Sandbox imports ────────────────────────────────────────────────────────
 import { SandboxHandle } from '../sandbox/types';
@@ -240,6 +243,9 @@ export class AgentRunner {
 
     const vsConfig = vscode.workspace.getConfiguration('bormagi');
     const isSandboxEnabled = vsConfig.get<boolean>('sandbox.enabled', false);
+    // executionEngineV2: enables authoritative state mutations, tool-result isolation,
+    // hard runtime guards, and the improved continue/resume contract (Phase 1–3).
+    const useV2 = vsConfig.get<boolean>('executionEngineV2', false);
 
     // Initialise sandbox
     if (this.sandboxManager && !this.activeSandbox && isSandboxEnabled) {
@@ -327,6 +333,18 @@ export class AgentRunner {
       }
     }
     const mode: AssistantMode = userMode ?? modeDecision.mode;
+    // V2: reset per-run guard state in ToolDispatcher (reread prevention + discovery budget)
+    // Also initialise BatchEnforcer and ArchitectureLock for Phase 4 enforcement.
+    const batchEnforcer = new BatchEnforcer(this.workspaceRoot);
+    const archLock = new ArchitectureLock(
+      this.workspaceRoot,
+      getAppData().architecturePatterns
+    );
+    let detectedWorkspaceType: 'greenfield' | 'scaffolded' | 'mature' = 'mature';
+    if (useV2) {
+      this.toolDispatcher.resetGuardState(mode, true);
+      detectedWorkspaceType = await batchEnforcer.detectWorkspaceType();
+    }
     const requestId = `${agentId}-${Date.now()}`;
     const agentLog = new AgentLogger(this.workspaceRoot, agentId);
     agentLog.sessionStart(mode);
@@ -565,10 +583,28 @@ export class AgentRunner {
     // When the user says "continue" / "proceed", skip generic rediscovery and
     // resume from the first pending action in the execution state.
     const CONTINUE_PATTERN = /^\s*(continu[ei]|proceed|keep going|go on|go ahead|resume)\s*[.!]?\s*$/i;
-    const effectiveUserContent =
-      CONTINUE_PATTERN.test(userMessage) && execState.nextActions.length > 0
-        ? `Continue from where you stopped. Next pending action: ${execState.nextActions[0]}`
-        : userMessage;
+    const isContinueRequest = CONTINUE_PATTERN.test(userMessage);
+    let effectiveUserContent = userMessage;
+    if (useV2 && isContinueRequest) {
+      if (execState.nextActions.length > 0) {
+        const nextAction = execState.nextActions[0];
+        const lastTool = execState.lastExecutedTool;
+        // Emit brief resume summary before executing (EQ-11)
+        const resumeSummary = lastTool
+          ? `Resuming from last completed: ${lastTool} → Next: ${nextAction}`
+          : `Resuming: ${nextAction}`;
+        onText(`\n[${resumeSummary}]\n\n`);
+        effectiveUserContent = lastTool
+          ? `Resume implementation. Last completed: ${lastTool}. Next action: ${nextAction}. Do not re-read unchanged files.`
+          : `Continue from where you stopped. Next pending action: ${nextAction}. Do not re-read unchanged files.`;
+      } else {
+        onText('\n[Cannot resume: next action is missing; rebuilding execution state.]\n\n');
+        // Fall through with original message so the agent re-assesses
+      }
+    } else if (!useV2 && isContinueRequest && execState.nextActions.length > 0) {
+      // V1 behaviour unchanged
+      effectiveUserContent = `Continue from where you stopped. Next pending action: ${execState.nextActions[0]}`;
+    }
 
     const userMsg: ChatMessage = { role: 'user', content: effectiveUserContent };
     messages.push(userMsg);
@@ -711,6 +747,18 @@ export class AgentRunner {
     const maxToolIterations = vsConfig.get<number>('agent.maxToolIterations', 20);
     // #6 — Discovery budget: track consecutive read-only calls with no writes.
     let consecutiveReadCount = 0;
+    // V2 — Silent execution: suppress pure narration turns when model is stalling.
+    // Triggered by phrases in the user message; per-run only, never persisted.
+    const SILENT_TRIGGER_PATTERNS = [
+      /do\s+not\s+narrate/i,
+      /execute\s+immediately/i,
+      /call\s+the\s+next\s+tool\s+now/i,
+    ];
+    let silentExecution = useV2 &&
+      SILENT_TRIGGER_PATTERNS.some(p => p.test(userMessage));
+    // V2 — Nudge retry cap: prevent infinite nudge loops (max 2 retries per run).
+    let nudgeRetryCount = 0;
+    const MAX_NUDGE_RETRIES = 2;
     // #15 — Milestone stopping: pause the session every N writes so the agent
     // does not attempt to scaffold an entire project in one run.
     const milestoneWriteSize = vsConfig.get<number>('agent.milestoneWriteSize', 8);
@@ -775,7 +823,9 @@ export class AgentRunner {
         isFirstModelRequest = false;
       }
 
-      for await (const event of provider.stream(messages, this.filterToolsByMode(tools, mode), actualMaxOutputTokens)) {
+      // V2: sanitise every provider call — strip tool_result role and XML patterns
+      const messagesForProvider = useV2 ? this.prepareMessagesForProvider(messages) : messages;
+      for await (const event of provider.stream(messagesForProvider, this.filterToolsByMode(tools, mode), actualMaxOutputTokens)) {
         if (event.type === 'provider_headers') {
           const importantHeaders = this.selectImportantHeaders(event.headers);
           await this.auditLogger.logLLMResponseHeaders(
@@ -846,6 +896,7 @@ export class AgentRunner {
           // model is forced to use edit_file rather than looping forever.
           const isFileWrite = event.name === 'write_file';
           let toolResultContent: string;
+
           if (isFileWrite && toolCallPath && writtenPaths.has(toolCallPath)) {
             const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
             const rejection = `[SYSTEM ERROR] write_file REJECTED: "${toolCallPath}" was already written this task. The file has NOT been changed. You MUST use edit_file for any corrections to existing files. Written paths: ${pathList}. Proceed with remaining tasks or summarise.`;
@@ -853,6 +904,23 @@ export class AgentRunner {
             turnMemory.addToolResult(event.name, rejection);
             toolResultContent = `<tool_result name="${event.name}" status="error">\n${rejection}\n</tool_result>`;
             onThought({ type: 'error', label: `Rewrite blocked: ${toolCallPath}`, detail: rejection, timestamp: new Date() });
+          } else if (useV2 && isFileWrite && toolCallPath && (() => {
+            // ─── V2: Batch enforcement (Phase 4) ─────────────────────────────
+            // Greenfield/scaffolded: must declare a batch before first write_file.
+            const normalizedBatchPath = this.normalizeWorkspacePath(toolCallPath);
+            const batchMsg = getAppData().executionMessages.toolBlocked.offBatch;
+            return batchEnforcer.checkWritePermission(
+              normalizedBatchPath, execState, batchMsg, detectedWorkspaceType
+            );
+          })()) {
+            const normalizedBatchPath = this.normalizeWorkspacePath(toolCallPath);
+            const batchMsg = getAppData().executionMessages.toolBlocked.offBatch;
+            const batchRejection = batchEnforcer.checkWritePermission(
+              normalizedBatchPath, execState, batchMsg, detectedWorkspaceType
+            ) ?? batchMsg;
+            agentLog.logToolResult(event.name, batchRejection);
+            toolResultContent = `<tool_result name="${event.name}" status="error">\n${batchRejection}\n</tool_result>`;
+            onThought({ type: 'error', label: `Batch violation: ${toolCallPath}`, detail: batchRejection, timestamp: new Date() });
           } else if (isFileWrite && toolCallPath && registeredArtifactPaths.has(this.normalizeWorkspacePath(toolCallPath))) {
             // ─── Cross-session artifact guard ────────────────────────────────
             // File was created in a PREVIOUS session. Prevent silent re-creation
@@ -908,13 +976,26 @@ export class AgentRunner {
             );
             agentLog.logToolResult(event.name, String(toolResult));
             turnMemory.addToolResult(event.name, String(toolResult));
-            // Track read_file inputs in execution state to enforce the no-re-read rule
-            if (event.name === 'read_file' && toolCallPath) {
-              const normalizedInput = this.normalizeWorkspacePath(toolCallPath);
-              if (!execState.resolvedInputs.includes(normalizedInput)) {
-                execState.resolvedInputs.push(normalizedInput);
+
+            // ── V2: authoritative state mutations from real tool execution only ──
+            // Only successful dispatches reach this branch; speculative assistant
+            // text never mutates state (it is sanitised before persistence).
+            if (useV2) {
+              const outputSummary = String(toolResult).slice(0, 150);
+              stateManager.markToolExecuted(execState, event.name, toolCallPath, outputSummary);
+              if (event.name === 'read_file' && toolCallPath) {
+                stateManager.markFileRead(execState, this.normalizeWorkspacePath(toolCallPath));
+              }
+            } else {
+              // V1: manual read tracking
+              if (event.name === 'read_file' && toolCallPath) {
+                const normalizedInput = this.normalizeWorkspacePath(toolCallPath);
+                if (!execState.resolvedInputs.includes(normalizedInput)) {
+                  execState.resolvedInputs.push(normalizedInput);
+                }
               }
             }
+
             // Truncate very large tool results so they don't dominate the context
             // window on subsequent iterations and cause the model to output tiny
             // narrations instead of the next tool call.
@@ -944,14 +1025,20 @@ export class AgentRunner {
               writtenPaths.add(toolCallPath);
               const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
               toolResultContent += `\n\nFiles written this task: ${pathList}. Use edit_file for any corrections to these paths.`;
-              // Record in cross-session artifact registry so future sessions (e.g. code mode
-              // after plan mode) know what files were created and where.
+              // Record in cross-session artifact registry so future sessions know what files exist.
               this.recordArtifact(agentId, toolCallPath).catch(() => { /* non-fatal */ });
-              // Update execution state with newly created artifact
-              const normalizedArtifact = this.normalizeWorkspacePath(toolCallPath);
-              if (!execState.artifactsCreated.includes(normalizedArtifact)) {
-                execState.artifactsCreated.push(normalizedArtifact);
+
+              if (useV2) {
+                // V2: single authoritative mutation method handles artifactsCreated + completedBatchFiles
+                stateManager.markFileWritten(execState, this.normalizeWorkspacePath(toolCallPath));
+              } else {
+                // V1: manual artifact tracking
+                const normalizedArtifact = this.normalizeWorkspacePath(toolCallPath);
+                if (!execState.artifactsCreated.includes(normalizedArtifact)) {
+                  execState.artifactsCreated.push(normalizedArtifact);
+                }
               }
+
               // Verify all written files are still on disk every 5 writes
               if (writtenPaths.size % 5 === 0) {
                 const missingFiles = await this.verifyWrittenFiles(Array.from(writtenPaths));
@@ -962,15 +1049,28 @@ export class AgentRunner {
               // ─── #7 Batch progress ───────────────────────────────────────────
               const plannedBatch = execState.plannedFileBatch ?? [];
               if (plannedBatch.length > 0) {
-                const remaining = plannedBatch.filter(p => !execState.artifactsCreated.includes(p));
+                const completedBatch = execState.completedBatchFiles ?? execState.artifactsCreated;
+                const remaining = plannedBatch.filter(p => !completedBatch.includes(p));
                 const batchNote = remaining.length === 0
                   ? `[Batch complete: all ${plannedBatch.length} planned files written.]`
-                  : `[Batch: ${execState.artifactsCreated.length}/${plannedBatch.length} done. Remaining: ${remaining.slice(0, 4).join(', ')}${remaining.length > 4 ? ` +${remaining.length - 4} more` : ''}]`;
+                  : `[Batch: ${completedBatch.length}/${plannedBatch.length} done. Remaining: ${remaining.slice(0, 4).join(', ')}${remaining.length > 4 ? ` +${remaining.length - 4} more` : ''}]`;
                 toolResultContent += `\n${batchNote}`;
               }
             }
+
+            // V2: save state after each tool dispatch to ensure durability
+            if (useV2) {
+              stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+            }
           }
-          messages.push({ role: 'user', content: toolResultContent });
+          // V2: push as 'tool_result' role so it is distinguishable from genuine user
+          // messages.  prepareMessagesForProvider() converts it back to 'user' (stripping
+          // the XML wrapper) just before the next provider.stream() call.
+          if (useV2) {
+            messages.push({ role: 'tool_result', content: toolResultContent, toolCallId: event.id });
+          } else {
+            messages.push({ role: 'user', content: toolResultContent });
+          }
           calledATool = true;
           continueLoop = true;
           // ─── Phase-5: after-edit hook for file-mutation tools ──────────────
@@ -1056,7 +1156,13 @@ export class AgentRunner {
             checkText.endsWith(':') ||
             checkText.endsWith('...') ||
             /\b(let me|i['']ll now|now let me|i will now)\s+(read|check|list|examine|look at|search|write|run|create)\b/i.test(checkText);
-          if (isNarratingNextCall) {
+
+          // V2: detect when silent execution should be activated
+          if (useV2 && isNarratingNextCall && !silentExecution) {
+            silentExecution = true;
+          }
+
+          if (isNarratingNextCall && nudgeRetryCount < MAX_NUDGE_RETRIES) {
             onThought({
               type: 'thinking',
               label: 'Narration-without-action detected — nudging model to execute',
@@ -1067,12 +1173,45 @@ export class AgentRunner {
               messages.push({ role: 'assistant', content: turnAssistantText });
               turnAssistantText = '';
             }
-            messages.push({ role: 'user', content: 'Call the next tool now. Do not narrate — execute immediately.' });
+            // V2: use system message instead of user nudge (harder constraint)
+            if (useV2) {
+              messages.push({ role: 'system', content: 'Call the next tool now. Do not narrate — execute immediately.' });
+            } else {
+              messages.push({ role: 'user', content: 'Call the next tool now. Do not narrate — execute immediately.' });
+            }
+            nudgeRetryCount++;
             continueLoop = true;
+          } else if (isNarratingNextCall && nudgeRetryCount >= MAX_NUDGE_RETRIES) {
+            // V2: nudge cap reached — force loop exit to prevent infinite nudge cycle
+            onThought({
+              type: 'error',
+              label: 'Nudge retry cap reached — forcing loop exit',
+              detail: `Model failed to call a tool after ${MAX_NUDGE_RETRIES} nudges`,
+              timestamp: new Date(),
+            });
+            continueLoop = false;
           }
         }
         if (!continueLoop) {
           continueLoop = false;
+        }
+      }
+
+      // V2: discard pure narration turns when silent execution is active
+      if (useV2 && silentExecution && !calledATool && turnAssistantText) {
+        const isPureNarration = turnAssistantText.trim().length < 500 &&
+          !turnAssistantText.includes('```') &&
+          !turnAssistantText.includes('{') &&
+          !turnAssistantText.includes('error') &&
+          !toolsUsed.length;
+        if (isPureNarration) {
+          onThought({
+            type: 'thinking',
+            label: 'Silent execution: discarding pure narration turn',
+            detail: turnAssistantText.slice(0, 120),
+            timestamp: new Date(),
+          });
+          turnAssistantText = '';
         }
       }
     }
@@ -1145,10 +1284,20 @@ export class AgentRunner {
     if (fullResponse && !isProviderError && !isIncompleteNarration) {
       agentLog.logModelText(fullResponse);
       // Persist user message first so history always has matching user/assistant pairs.
-      this.memoryManager.addMessage(agentId, userMsg);
+      // V2: sanitise the user message too before persisting (defence-in-depth).
+      const userMsgToStore = useV2
+        ? { ...userMsg, content: sanitiseContent(userMsg.content) }
+        : userMsg;
+      this.memoryManager.addMessage(agentId, userMsgToStore);
       // Store only the final text segment (not the full concatenation of all
       // iterations) so history does not contain duplicate summaries.
-      const assistantMsg: ChatMessage = { role: 'assistant', content: lastAssistantText || fullResponse };
+      // V2: sanitise before persisting to strip any tool-protocol noise that leaked
+      // into assistant text (e.g. [write_file: ...], TOOL:... sentinels).
+      const rawAssistantContent = lastAssistantText || fullResponse;
+      const assistantContent = useV2
+        ? this.sanitiseAssistantText(rawAssistantContent)
+        : rawAssistantContent;
+      const assistantMsg: ChatMessage = { role: 'assistant', content: assistantContent };
       this.memoryManager.addMessage(agentId, assistantMsg);
       await this.memoryManager.persistTurn(agentId, userMessage, fullResponse, toolsUsed);
 
@@ -1216,19 +1365,40 @@ export class AgentRunner {
       }
     }
 
-    // ─── #8 Minimal consistency validator ────────────────────────────────────
+    // ─── #8 Consistency validator ─────────────────────────────────────────────
     if (writtenPaths.size > 0) {
       const validator = new ConsistencyValidator(this.workspaceRoot);
-      const issues = await validator.validate(Array.from(writtenPaths));
+      const detectedLock = useV2 ? await archLock.detect() : null;
+      const issues = await validator.validate(
+        Array.from(writtenPaths),
+        useV2 ? execState : undefined,
+        detectedLock ?? undefined
+      );
       if (issues.length > 0) {
-        const issueText = issues.map((i: { path: string; issue: string }) => `- ${i.path}: ${i.issue}`).join('\n');
+        // V2: auto-fix safe issues when validatorEnforcement flag is on
+        if (useV2 && vsConfig.get<boolean>('validatorEnforcement', false)) {
+          const fixed = await validator.autoFix(issues);
+          if (fixed.length > 0) {
+            onThought({
+              type: 'thinking',
+              label: `Validator auto-fixed ${fixed.length} issue(s)`,
+              detail: fixed.join('\n'),
+              timestamp: new Date(),
+            });
+          }
+        }
+        const critical = issues.filter(i => i.severity === 'critical');
+        const warnings = issues.filter(i => !i.severity || i.severity !== 'critical');
+        const issueText = issues.map(i => `- [${i.severity ?? 'warning'}] ${i.path}: ${i.issue}`).join('\n');
         onThought({
-          type: 'error',
-          label: `Consistency check: ${issues.length} issue(s) found`,
+          type: critical.length > 0 ? 'error' : 'thinking',
+          label: `Consistency check: ${issues.length} issue(s) found (${critical.length} critical)`,
           detail: issueText,
           timestamp: new Date(),
         });
-        onText(`\n\n[Consistency Check]\n${issueText}`);
+        if (critical.length > 0 || warnings.length > 0) {
+          onText(`\n\n[Consistency Check]\n${issueText}`);
+        }
       }
     }
 
@@ -1258,7 +1428,12 @@ export class AgentRunner {
 
     // Always save execution state — even for incomplete sessions — so the
     // continue contract can resume from the last known position next invocation.
-    execState.iterationsUsed += iterationCount;
+    // V2: iterationsUsed is already incremented by markToolExecuted() for each
+    //     individual tool call; do NOT add iterationCount (LLM request count) again.
+    // V1: add iterationCount as before.
+    if (!useV2) {
+      execState.iterationsUsed += iterationCount;
+    }
     execState.mode = mode;
     execState.updatedAt = new Date().toISOString();
     stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
@@ -1531,11 +1706,66 @@ export class AgentRunner {
   /** Return a short system note describing workspace maturity to the model. */
   private buildWorkspaceTypeNote(wsType: 'greenfield' | 'scaffolded' | 'mature'): string {
     if (wsType === 'greenfield') {
-      return '[Workspace: Greenfield] No project files detected. Start by creating a project structure (package.json, src/, README.md) before adding application code.';
+      return '[Workspace: Greenfield] No project files. Start by creating a project structure (package.json, src/, README.md) before adding application code.';
     }
     if (wsType === 'scaffolded') {
       return '[Workspace: Scaffolded] Basic project structure exists but is not yet mature. Build on the existing scaffolding rather than replacing it.';
     }
-    return '[Workspace: Mature] Existing codebase detected. Read key files before modifying. Prefer edit_file over write_file for files that may already exist.';
+    return '[Workspace: Mature] Existing codebase. Read key files before modifying. Prefer edit_file over write_file for files that may already exist.';
+  }
+
+  // ─── V2 execution engine helpers ─────────────────────────────────────────
+
+  /**
+   * Strip tool-protocol noise from assistant text before it is persisted to
+   * session history. This prevents speculative text such as "[write_file: ...]"
+   * or "\x00TOOL:...\x00" from being replayed as real state on resume.
+   *
+   * Only strips known control-plane markers — legitimate response text is kept.
+   */
+  /**
+   * Convert internal 'tool_result' role messages to provider-compatible 'user' messages,
+   * and strip any residual control-plane patterns from all messages.
+   * Called on every provider.stream() invocation when executionEngineV2 is enabled.
+   */
+  private prepareMessagesForProvider(messages: ChatMessage[]): ChatMessage[] {
+    return messages.map(msg => {
+      if (msg.role === 'tool_result') {
+        // Strip the <tool_result ...> XML wrapper — the model needs the inner content
+        // (file contents, command output, notes) but not the XML namespace.
+        const inner = msg.content
+          .replace(/<tool_result[^>]*>\n?/g, '')
+          .replace(/\n?<\/tool_result>/g, '')
+          .trim();
+        return { role: 'user' as const, content: inner };
+      }
+      // Strip residual control patterns from any other message role
+      const clean = msg.content
+        .replace(/\x00TOOL:[^\x00]*\x00/g, '[tool call]')
+        .replace(/<tool_result[^>]*>[\s\S]*?<\/tool_result>/g, '[tool result]');
+      if (clean !== msg.content) {
+        return { ...msg, content: clean };
+      }
+      return msg;
+    });
+  }
+
+  private sanitiseAssistantText(text: string): string {
+    return text
+      // Strip [write_file: path (N chars)] style labels
+      .replace(/\[(?:write_file|edit_file|read_file|list_files|run_command)[^\]]*\]/g, '')
+      // Strip null-byte tool sentinels: \x00TOOL:name:{...}\x00
+      .replace(/\x00TOOL:[^\x00]*\x00/g, '')
+      // Strip <tool_result ...>...</tool_result> XML blocks
+      .replace(/<tool_result[^>]*>[\s\S]*?<\/tool_result>/g, '')
+      // Strip [SYSTEM ERROR] prefixes used in runtime rejections
+      .replace(/\[SYSTEM ERROR\][^\n]*/g, '')
+      // Strip [Batch: N/M done. ...] progress lines (runtime-only)
+      .replace(/\[Batch(?:: [^\]]+)?\]/g, '')
+      // Strip [Milestone] lines
+      .replace(/\[Milestone\][^\n]*/g, '')
+      // Collapse multiple blank lines to at most two
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 }

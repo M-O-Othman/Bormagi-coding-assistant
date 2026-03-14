@@ -134,6 +134,7 @@ export class AgentSettingsPanel {
 
         this.panel.webview.postMessage({ type: 'save_success', agentId: config.id });
         await this.sendAgentList();
+        vscode.commands.executeCommand('bormagi.refreshAgents');
         break;
       }
 
@@ -178,6 +179,7 @@ export class AgentSettingsPanel {
         }
         this.panel.webview.postMessage({ type: 'default_saved' });
         await this.sendAgentList();
+        vscode.commands.executeCommand('bormagi.refreshAgents');
         break;
       }
 
@@ -189,6 +191,7 @@ export class AgentSettingsPanel {
         }
         this.panel.webview.postMessage({ type: 'apply_default_done', count: allAgents.length });
         await this.sendAgentList();
+        vscode.commands.executeCommand('bormagi.refreshAgents');
         break;
       }
 

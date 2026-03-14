@@ -5,6 +5,7 @@ module.exports = {
     '**/src/workflow/tests/**/*.test.ts',
     '**/src/tests/integration/**/*.test.ts',
     '**/src/tests/unit/**/*.test.ts',
+    '**/src/tests/execution/**/*.test.ts',
   ],
   moduleNameMapper: {
     '^vscode$': '<rootDir>/src/__mocks__/vscode.ts',

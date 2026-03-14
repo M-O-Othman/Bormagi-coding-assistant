@@ -86,11 +86,13 @@ export interface AgentConfig {
 
 // ─── Chat / messaging types ────────────────────────────────────────────────────
 
-export type MessageRole = 'user' | 'assistant' | 'system';
+export type MessageRole = 'user' | 'assistant' | 'system' | 'tool_result';
 
 export interface ChatMessage {
   role: MessageRole;
   content: string;
+  /** Present when role is 'tool_result' — links back to the tool_use event that produced this result. */
+  toolCallId?: string;
 }
 
 export type ThoughtEventType = 'thinking' | 'tool_call' | 'tool_result' | 'error';

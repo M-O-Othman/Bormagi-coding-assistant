@@ -753,9 +753,9 @@ function scrollEnd() { messagesEl.scrollTop = messagesEl.scrollHeight; }
 // ── Mode picker ────────────────────────────────────────────────────────────
 
 const MODES = [
-  { id: 'ask',  label: '💬 Ask' },
-  { id: 'plan', label: '📋 Plan' },
-  { id: 'code', label: '⌨️ Code' },
+  { id: 'ask',  label: 'Ask' },
+  { id: 'plan', label: 'Plan' },
+  { id: 'code', label: 'Code' },
 ];
 
 function initModePicker() {

@@ -14,12 +14,30 @@ export type ApprovalCallback = (prompt: string) => Promise<boolean>;
 export type DiffCallback = (filePath: string, originalContent: string, newContent: string) => Promise<boolean>;
 export type ThoughtCallback = (event: ThoughtEvent) => void;
 
+/** Per-run guard state tracked by ToolDispatcher for Phase 3 runtime enforcement. */
+interface ToolGuardState {
+  mode: string;
+  useV2: boolean;
+  readFileCount: number;
+  listFilesCount: number;
+  consecutiveDiscoveryWithoutWrite: number;
+  /** Map from normalised path → timestamp of last read. Cleared when file is written. */
+  filesReadThisRun: Map<string, number>;
+  /** Set of paths written this run — re-reading is allowed after a write. */
+  filesWrittenThisRun: Set<string>;
+}
+
 /**
  * Dispatches agent tool calls to the appropriate MCP server or virtual handler.
  * Encapsulates approval gating, write-file diff flow, and document generation.
  */
 export class ToolDispatcher {
   private _activeSandbox: SandboxHandle | null = null;
+  private _guardState: ToolGuardState = {
+    mode: '', useV2: false, readFileCount: 0, listFilesCount: 0,
+    consecutiveDiscoveryWithoutWrite: 0,
+    filesReadThisRun: new Map(), filesWrittenThisRun: new Set(),
+  };
 
   constructor(
     private readonly mcpHost: MCPHost,
@@ -31,6 +49,15 @@ export class ToolDispatcher {
 
   public set activeSandbox(sandbox: SandboxHandle | null) {
     this._activeSandbox = sandbox;
+  }
+
+  /** Reset per-run guard state. Call at the start of each AgentRunner.run() invocation. */
+  public resetGuardState(mode: string, useV2: boolean): void {
+    this._guardState = {
+      mode, useV2, readFileCount: 0, listFilesCount: 0,
+      consecutiveDiscoveryWithoutWrite: 0,
+      filesReadThisRun: new Map(), filesWrittenThisRun: new Set(),
+    };
   }
 
   private getEffectivePath(originalPath: string): string {
@@ -72,6 +99,73 @@ export class ToolDispatcher {
       detail: JSON.stringify(toolEvent.input, null, 2),
       timestamp: new Date(),
     });
+
+    // ─── V2: .bormagi path blocking ──────────────────────────────────────────
+    // Prevent agents from reading or writing the internal framework state directory.
+    if (vscode.workspace.getConfiguration('bormagi').get<boolean>('executionEngineV2', false)) {
+      const inp = toolEvent.input as Record<string, unknown>;
+      const targetPath: string | undefined =
+        (inp.path as string | undefined) ??
+        (inp.directory as string | undefined) ??
+        (inp.file_path as string | undefined);
+      const EXEMPT_TOOLS = new Set(['update_task_state', 'declare_file_batch']);
+      if (!EXEMPT_TOOLS.has(toolEvent.name) && targetPath) {
+        const normalised = targetPath.replace(/\\/g, '/').replace(/^\/+/, '');
+        if (normalised.startsWith('.bormagi/') || normalised === '.bormagi') {
+          const msg = getAppData().executionMessages.toolBlocked.bormagiPath;
+          return msg;
+        }
+      }
+    }
+
+    // ─── V2: Phase 3 runtime guards ──────────────────────────────────────────
+    if (this._guardState.useV2) {
+      const msgs = getAppData().executionMessages.toolBlocked;
+      const g = this._guardState;
+      const inp = toolEvent.input as Record<string, unknown>;
+      const targetPath = (inp.path as string | undefined) ??
+        (inp.directory as string | undefined) ??
+        (inp.file_path as string | undefined);
+      const normPath = targetPath ? targetPath.replace(/\\/g, '/') : '';
+
+      // Reread prevention: reject if file was already read and not written since
+      if (toolEvent.name === 'read_file' && normPath) {
+        const wasRead = g.filesReadThisRun.has(normPath);
+        const wasWritten = g.filesWrittenThisRun.has(normPath);
+        if (wasRead && !wasWritten) {
+          return msgs.reread;
+        }
+      }
+
+      // Discovery budget enforcement (code mode only)
+      if (g.mode === 'code') {
+        const READ_LIMIT = 3;
+        const LIST_LIMIT = 2;
+        const CONSEC_LIMIT = 3;
+        const budgetExhausted =
+          (toolEvent.name === 'read_file' && g.readFileCount >= READ_LIMIT) ||
+          (toolEvent.name === 'list_files' && g.listFilesCount >= LIST_LIMIT) ||
+          (g.consecutiveDiscoveryWithoutWrite >= CONSEC_LIMIT &&
+            ['read_file', 'list_files', 'search_files'].includes(toolEvent.name));
+        if (budgetExhausted) {
+          return msgs.budgetExhausted;
+        }
+      }
+
+      // Track counts for budget (done before dispatch so even blocked paths update state)
+      if (toolEvent.name === 'read_file') { g.readFileCount++; g.consecutiveDiscoveryWithoutWrite++; }
+      else if (toolEvent.name === 'list_files') { g.listFilesCount++; g.consecutiveDiscoveryWithoutWrite++; }
+      else if (toolEvent.name === 'search_files') { g.consecutiveDiscoveryWithoutWrite++; }
+      else if (['write_file', 'edit_file', 'run_command'].includes(toolEvent.name)) {
+        g.consecutiveDiscoveryWithoutWrite = 0;
+        if (normPath) { g.filesWrittenThisRun.add(normPath); }
+      }
+
+      // Mark file as read for reread prevention
+      if (toolEvent.name === 'read_file' && normPath) {
+        g.filesReadThisRun.set(normPath, Date.now());
+      }
+    }
 
     // Approval gate for sensitive tools
     const { approvalTools, toolServerMap } = getAppData();
