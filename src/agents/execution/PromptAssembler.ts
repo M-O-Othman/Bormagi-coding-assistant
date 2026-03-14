@@ -2,6 +2,37 @@ import type { ChatMessage } from '../../types';
 import { sanitiseTranscript } from './TranscriptSanitiser';
 import { loadSkillFragment } from '../../skills/skillLoader';
 
+// ─── Protocol leak detection ──────────────────────────────────────────────────
+
+const PROTOCOL_LEAK_PATTERNS: RegExp[] = [
+  /<tool_result/i,
+  /\[write_file:/i,
+  /\[edit_file:/i,
+  /^TOOL:/m,
+  /\[ASSISTANT\]/,
+];
+
+/**
+ * Asserts that no assembled message contains protocol-layer syntax.
+ * In development/test (NODE_ENV !== 'production') this throws.
+ * In production it logs a warning but proceeds (defence in depth).
+ */
+function assertNoProtocolLeak(messages: ChatMessage[]): void {
+  for (const msg of messages) {
+    const content = typeof msg.content === 'string' ? msg.content : '';
+    for (const pattern of PROTOCOL_LEAK_PATTERNS) {
+      if (pattern.test(content)) {
+        const err = `[PromptAssembler] Protocol leak in ${msg.role} message: pattern ${pattern}`;
+        if (process.env['NODE_ENV'] !== 'production') {
+          throw new Error(err);
+        }
+        console.warn(err);
+        return;
+      }
+    }
+  }
+}
+
 /**
  * Input context for building a compact LLM message array.
  * All fields are plain strings — no raw history turns.
@@ -114,7 +145,10 @@ export class PromptAssembler {
     }
 
     // Sanitise before returning — defence in depth
-    return sanitiseTranscript(msgs);
+    const sanitised = sanitiseTranscript(msgs);
+    // Validate that sanitisation removed all protocol noise
+    assertNoProtocolLeak(sanitised);
+    return sanitised;
   }
 }
 
@@ -127,7 +161,7 @@ export function buildWorkspaceSummary(
   keyFiles: string[]
 ): string {
   if (type === 'greenfield') {
-    return '[Greenfield] No project scaffold yet. Start by creating package.json and src/.';
+    return '[Greenfield] No project scaffold yet. Workspace is empty.';
   }
   const files = keyFiles.slice(0, 5).join(', ');
   return type === 'scaffolded'

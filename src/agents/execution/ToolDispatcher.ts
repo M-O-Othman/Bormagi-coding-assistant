@@ -132,6 +132,23 @@ export class ToolDispatcher {
       }
     }
 
+    // ─── Phase 6: Mutation-tool blocking in read-only modes ─────────────────
+    // Block write/edit tools in ask and plan modes at the transport layer.
+    // ContextEnvelope already zeroes editable files for these modes, but this
+    // is a second hard guard so rogue prompts cannot bypass it (PQ-10 Option A).
+    if (this._guardState.useV2 && (this._guardState.mode === 'ask' || this._guardState.mode === 'plan')) {
+      const MUTATION_TOOLS_READONLY = new Set([
+        'write_file', 'edit_file', 'replace_range', 'multi_edit',
+        'find_and_replace_symbol_block', 'insert_after_symbol_block',
+        'create_document', 'create_presentation',
+      ]);
+      if (MUTATION_TOOLS_READONLY.has(toolEvent.name)) {
+        const modeDisallowsMsg: string = (getAppData().executionMessages.toolBlocked as Record<string, string>).modeDisallowsMutation
+          ?? `[BLOCKED] Mode '${this._guardState.mode}' does not permit file mutations. Switch to Code mode to make changes.`;
+        return modeDisallowsMsg.replace('{mode}', this._guardState.mode);
+      }
+    }
+
     // ─── V2: Phase 3 runtime guards ──────────────────────────────────────────
     if (this._guardState.useV2) {
       const msgs = getAppData().executionMessages.toolBlocked;

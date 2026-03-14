@@ -43,7 +43,12 @@ import { CheckpointManager } from '../git/CheckpointManager';
 import { ValidationService } from '../git/ValidationService';
 import { CommitProposalGenerator } from '../git/CommitProposalGenerator';
 import { ExecutionStateManager, type ExecutionStateData, type SessionPhase } from './ExecutionStateManager';
+import { DISCOVERY_TOOLS, MUTATION_TOOLS } from './execution/ExecutionPhase';
+import { inferStepContract } from './execution/StepContract';
+import { classifyTask } from './execution/TaskClassifier';
+import { TASK_TEMPLATES, TEMPLATE_SKILL_MAP } from './execution/TaskTemplate';
 import { ConsistencyValidator } from './execution/ConsistencyValidator';
+import { MilestoneFinalizer } from './execution/MilestoneFinalizer';
 import { BatchEnforcer } from './execution/BatchEnforcer';
 import { ArchitectureLock } from './execution/ArchitectureLock';
 import { sanitiseContent, sanitiseTranscript } from './execution/TranscriptSanitiser';
@@ -245,9 +250,8 @@ export class AgentRunner {
 
     const vsConfig = vscode.workspace.getConfiguration('bormagi');
     const isSandboxEnabled = vsConfig.get<boolean>('sandbox.enabled', false);
-    // executionEngineV2: enables authoritative state mutations, tool-result isolation,
-    // hard runtime guards, and the improved continue/resume contract (Phase 1–6).
-    const useV2 = vsConfig.get<boolean>('executionEngineV2', false);
+
+    const silentModeEnabled = vsConfig.get<boolean>('silentExecution', false);
 
     // V2: PromptAssembler builds compact, no-history messages for each LLM call in code mode.
     // Initialized here so it can be referenced throughout the run() method.
@@ -353,10 +357,8 @@ export class AgentRunner {
       getAppData().architecturePatterns
     );
     let detectedWorkspaceType: 'greenfield' | 'scaffolded' | 'mature' = 'mature';
-    if (useV2) {
-      this.toolDispatcher.resetGuardState(mode, true);
-      detectedWorkspaceType = await batchEnforcer.detectWorkspaceType();
-    }
+    this.toolDispatcher.resetGuardState(mode, true);
+    detectedWorkspaceType = await batchEnforcer.detectWorkspaceType();
     const requestId = `${agentId}-${Date.now()}`;
     const agentLog = new AgentLogger(this.workspaceRoot, agentId);
     agentLog.sessionStart(mode);
@@ -582,6 +584,35 @@ export class AgentRunner {
     const stateManager = new ExecutionStateManager(this.workspaceRoot);
     let execState: ExecutionStateData = await stateManager.load(agentId) ??
       stateManager.createFresh(agentId, userMessage.slice(0, 500), mode);
+
+    // Phase 8.3 — Classify task template once at run start
+    let activeTaskTemplate = execState.taskTemplate;
+    if (!activeTaskTemplate) {
+      activeTaskTemplate = classifyTask(userMessage, mode);
+      execState.taskTemplate = activeTaskTemplate;
+      stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+    }
+    const activeSkills: string[] = activeTaskTemplate
+      ? (TEMPLATE_SKILL_MAP[activeTaskTemplate] ?? [])
+      : [];
+
+    // Phase 0.1 — startup telemetry: confirms which engine path is active every run
+    stateManager.setExecutionPhase(execState, 'INITIALISING');
+    onThought?.({
+      type: 'thinking',
+      label: `[Runtime] engine=V2 | silent=${silentModeEnabled} | mode=${mode} | phase=${execState.runPhase ?? 'NEW'} | execPhase=${stateManager.getExecutionPhase(execState)} | iterations=${execState.iterationsUsed}${activeTaskTemplate ? ` | template=${activeTaskTemplate}` : ''}`,
+      timestamp: new Date(),
+    });
+    if (activeTaskTemplate) {
+      const tmpl = TASK_TEMPLATES[activeTaskTemplate];
+      onThought?.({
+        type: 'thinking',
+        label: `[TaskTemplate] ${activeTaskTemplate} | requiresBatch=${tmpl.requiresBatch} | stopAfterWrite=${tmpl.stopAfterWrite ?? false}`,
+        detail: tmpl.stopRules.join('; '),
+        timestamp: new Date(),
+      });
+    }
+
     const stateNote = stateManager.buildContextNote(execState);
     messages.push({ role: 'system', content: stateNote });
 
@@ -608,7 +639,7 @@ export class AgentRunner {
     const CONTINUE_PATTERN = /^\s*(continu[ei]|proceed|keep going|go on|go ahead|resume)\s*[.!]?\s*$/i;
     const isContinueRequest = CONTINUE_PATTERN.test(userMessage);
     let effectiveUserContent = userMessage;
-    if (useV2 && isContinueRequest) {
+    if (isContinueRequest) {
       // Increment continue counter for recovery trigger tracking
       execState.continueCount = (execState.continueCount ?? 0) + 1;
       execState.continueIterationSnapshot = execState.iterationsUsed;
@@ -651,9 +682,6 @@ export class AgentRunner {
         onText('\n[Cannot resume: next action is missing; rebuilding execution state.]\n\n');
         // Fall through with original message so the agent re-assesses
       }
-    } else if (!useV2 && isContinueRequest && execState.nextActions.length > 0) {
-      // V1 behaviour unchanged
-      effectiveUserContent = `Continue from where you stopped. Next pending action: ${execState.nextActions[0]}`;
     }
 
     const userMsg: ChatMessage = { role: 'user', content: effectiveUserContent };
@@ -797,26 +825,37 @@ export class AgentRunner {
     const maxToolIterations = vsConfig.get<number>('agent.maxToolIterations', 20);
     // #6 — Discovery budget: track consecutive read-only calls with no writes.
     let consecutiveReadCount = 0;
-    // V2 — Silent execution: suppress pure narration turns when model is stalling.
+    // Silent execution: suppress pure narration turns when model is stalling.
     // Triggered by phrases in the user message; per-run only, never persisted.
     const SILENT_TRIGGER_PATTERNS = [
       /do\s+not\s+narrate/i,
       /execute\s+immediately/i,
       /call\s+the\s+next\s+tool\s+now/i,
     ];
-    let silentExecution = useV2 &&
+    let silentExecution =
       SILENT_TRIGGER_PATTERNS.some(p => p.test(userMessage));
     // V2 — Nudge retry cap: prevent infinite nudge loops (max 2 retries per run).
     let nudgeRetryCount = 0;
     const MAX_NUDGE_RETRIES = 2;
+    // Phase 5.2 — Silent reprompt counter: max 2 reprompts before treating as blocked
+    let silentRepromptCount = 0;
+    const MAX_SILENT_REPROMPTS = 2;
     // #15 — Milestone stopping: pause the session every N writes so the agent
     // does not attempt to scaffold an entire project in one run.
     const milestoneWriteSize = vsConfig.get<number>('agent.milestoneWriteSize', 8);
     let nextMilestoneAt = milestoneWriteSize;
 
+    // Phase 4 — MilestoneFinalizer: deterministic per-step continue/wait/validate/complete
+    const _mmSection = (getAppData().executionMessages.milestoneDecisions ?? {}) as Record<string, string>;
+    const milestoneFinalizer = new MilestoneFinalizer({
+      waitAutoDetected: _mmSection.waitAutoDetected ?? 'Deliverable written — pausing for your input.',
+      batchCheckpoint: _mmSection.batchCheckpoint ?? 'Batch checkpoint reached — running validation.',
+      batchComplete: _mmSection.batchComplete ?? 'All batch files written — validating output.',
+    });
+
     while (continueLoop) {
       // Phase 4: terminal state check — exit immediately if runPhase is no longer RUNNING
-      if (useV2 && (execState.runPhase ?? 'RUNNING') !== 'RUNNING') {
+      if ((execState.runPhase ?? 'RUNNING') !== 'RUNNING') {
         const phase = execState.runPhase!;
         const tsMsgs = getAppData().executionMessages.terminalStates ?? {};
         const reason = execState.waitStateReason ?? '';
@@ -902,8 +941,8 @@ export class AgentRunner {
         isFirstModelRequest = false;
       }
 
-      // Phase 5: RecoveryManager — check all 5 triggers before each LLM call (V2 only)
-      if (useV2) {
+      // Phase 5: RecoveryManager — check all 5 triggers before each LLM call
+      {
         const recoveryManager = new RecoveryManager(execState, messages, promptAssembler, fullSystem, detectedWsType);
         const trigger = recoveryManager.shouldRecover();
         if (trigger) {
@@ -921,10 +960,10 @@ export class AgentRunner {
         }
       }
 
-      // Phase 1: PromptAssembler — V2 code mode uses compact, no-history messages per EQ-15.
-      // All other modes still use prepareMessagesForProvider (V2) or raw messages (V1).
+      // Phase 1: PromptAssembler — code mode uses compact, no-history messages per EQ-15.
+      // All other modes use prepareMessagesForProvider.
       let messagesForProvider: ChatMessage[];
-      if (useV2 && mode === 'code') {
+      if (mode === 'code') {
         messagesForProvider = promptAssembler.assembleMessages({
           systemPrompt: fullSystem,
           executionStateSummary: stateManager.buildCompactSummary(execState),
@@ -934,12 +973,14 @@ export class AgentRunner {
           milestoneSummary: execState.lastExecutedTool
             ? `Last tool: ${execState.lastExecutedTool}`
             : undefined,
+          // Phase 8.4 — inject template-specific skill fragments
+          activeSkills: activeSkills.length > 0 ? activeSkills : undefined,
         });
         // Reset after use — tool results from THIS iteration will repopulate it below
         currentStepToolResults.length = 0;
       } else {
-        // V2 non-code modes: sanitise tool_result roles; V1: pass through unchanged
-        messagesForProvider = useV2 ? this.prepareMessagesForProvider(messages) : messages;
+        // Non-code modes: sanitise tool_result roles
+        messagesForProvider = this.prepareMessagesForProvider(messages);
       }
       for await (const event of provider.stream(messagesForProvider, this.filterToolsByMode(tools, mode), actualMaxOutputTokens)) {
         if (event.type === 'provider_headers') {
@@ -980,9 +1021,35 @@ export class AgentRunner {
         } else if (event.type === 'text') {
           // Strip Gemini internal thinking-mode tokens that leak through as plain text.
           const cleanDelta = event.delta.replace(/<｜(?:begin|end)▁of▁thinking｜>/g, '');
-          onText(cleanDelta);
-          fullResponse += cleanDelta;
-          turnAssistantText += cleanDelta;
+
+          // Phase 5.1 — Silent execution: suppress pre-tool narration from visible stream
+          // When silentExecution is active, do NOT pass text to onText().
+          // Still accumulate for protocol-leak detection and degenerate-response guard.
+          if (silentExecution) {
+            fullResponse += cleanDelta; // internal accumulation only, no onText()
+          } else {
+            onText(cleanDelta);
+            fullResponse += cleanDelta;
+          }
+
+          // Phase 1.3: speculative text filter — if the delta looks like a tool-syntax
+          // label (model narrating its own tool calls as text), accumulate it for display
+          // but flag it so it is not included in state-mutation paths.
+          const looksLikeToolSyntax = (s: string) =>
+            /\[(write_file|edit_file|read_file|list_files|run_command):/i.test(s) ||
+            /^TOOL:/m.test(s) ||
+            /<tool_result/i.test(s);
+          if (looksLikeToolSyntax(cleanDelta)) {
+            onThought?.({
+              type: 'thinking',
+              label: 'Speculative tool text detected in assistant stream — not persisting as state',
+              detail: cleanDelta.slice(0, 120),
+              timestamp: new Date(),
+            });
+            // Do not add to turnAssistantText so it won't be pushed to messages history
+          } else {
+            turnAssistantText += cleanDelta;
+          }
         } else if (event.type === 'tool_use') {
           toolsUsed.push(event.name);
           agentLog.logToolCall(event.name, event.input);
@@ -1006,6 +1073,15 @@ export class AgentRunner {
           messages.push({ role: 'assistant', content: turnAssistantText || assistantTurnLabel });
           turnAssistantText = '';
 
+          // Phase 1.2 — ExecutionSubPhase transitions (in-memory observability)
+          if (event.name === 'declare_file_batch') {
+            stateManager.setExecutionPhase(execState, 'PLANNING_BATCH');
+          } else if (MUTATION_TOOLS.has(event.name)) {
+            stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
+          } else if (DISCOVERY_TOOLS.has(event.name)) {
+            stateManager.setExecutionPhase(execState, 'DISCOVERING');
+          }
+
           // ─── Hard-enforce write_file uniqueness ──────────────────────────────
           // Text-based CONSTRAINT hints are ignored by Gemini after repeated exposure.
           // Instead, intercept rewrite attempts in code and return a rejection so the
@@ -1020,8 +1096,8 @@ export class AgentRunner {
             turnMemory.addToolResult(event.name, rejection);
             toolResultContent = `<tool_result name="${event.name}" status="error">\n${rejection}\n</tool_result>`;
             onThought({ type: 'error', label: `Rewrite blocked: ${toolCallPath}`, detail: rejection, timestamp: new Date() });
-          } else if (useV2 && isFileWrite && toolCallPath && (() => {
-            // ─── V2: Batch enforcement (Phase 4) ─────────────────────────────
+          } else if (isFileWrite && toolCallPath && (() => {
+            // ─── Batch enforcement (Phase 4) ─────────────────────────────────
             // Greenfield/scaffolded: must declare a batch before first write_file.
             const normalizedBatchPath = this.normalizeWorkspacePath(toolCallPath);
             const batchMsg = getAppData().executionMessages.toolBlocked.offBatch;
@@ -1074,12 +1150,12 @@ export class AgentRunner {
             if (updates.tech_stack) {
               execState.techStack = { ...execState.techStack, ...updates.tech_stack };
             }
-            // Phase 4: terminal/wait state (V2 only)
-            if (useV2 && updates.session_phase) {
+            // Phase 4: terminal/wait state
+            if (updates.session_phase) {
               stateManager.setRunPhase(execState, updates.session_phase as SessionPhase, updates.wait_state_reason);
             }
-            // Phase 2: structured next tool call for direct dispatch (V2 only)
-            if (useV2 && updates.next_tool_call) {
+            // Phase 2: structured next tool call for direct dispatch
+            if (updates.next_tool_call) {
               const ntc = updates.next_tool_call;
               stateManager.setNextToolCall(execState, ntc.tool, ntc.input, ntc.description);
             }
@@ -1094,6 +1170,8 @@ export class AgentRunner {
             ].filter(Boolean).join(', ');
             agentLog.logToolResult(event.name, summary);
             toolResultContent = `[Task state updated — ${summary}]`;
+            // Phase 1 fix: virtual tools must also increment iterationsUsed
+            stateManager.markToolExecuted(execState, event.name, undefined, toolResultContent.slice(0, 150));
           } else if (event.name === 'declare_file_batch') {
             // ─── In-process write-batch declaration (#7) ──────────────────────
             const inp = event.input as { files: string[]; rationale?: string };
@@ -1102,6 +1180,8 @@ export class AgentRunner {
             agentLog.logToolResult(event.name, `batch declared: ${execState.plannedFileBatch.length} files`);
             toolResultContent = `[Batch declared: ${execState.plannedFileBatch.length} file(s) — ` +
               `${inp.rationale ?? 'no rationale'}. Write all of them before this session ends.]`;
+            // Phase 1 fix: virtual tools must also increment iterationsUsed
+            stateManager.markToolExecuted(execState, event.name, undefined, toolResultContent.slice(0, 150));
           } else {
             const toolResult = await this.toolDispatcher.dispatch(
               event, agentId, onApproval, onDiff, onThought
@@ -1109,22 +1189,14 @@ export class AgentRunner {
             agentLog.logToolResult(event.name, String(toolResult));
             turnMemory.addToolResult(event.name, String(toolResult));
 
-            // ── V2: authoritative state mutations from real tool execution only ──
+            // ── Authoritative state mutations from real tool execution only ──
             // Only successful dispatches reach this branch; speculative assistant
             // text never mutates state (it is sanitised before persistence).
-            if (useV2) {
+            {
               const outputSummary = String(toolResult).slice(0, 150);
               stateManager.markToolExecuted(execState, event.name, toolCallPath, outputSummary);
               if (event.name === 'read_file' && toolCallPath) {
                 stateManager.markFileRead(execState, this.normalizeWorkspacePath(toolCallPath));
-              }
-            } else {
-              // V1: manual read tracking
-              if (event.name === 'read_file' && toolCallPath) {
-                const normalizedInput = this.normalizeWorkspacePath(toolCallPath);
-                if (!execState.resolvedInputs.includes(normalizedInput)) {
-                  execState.resolvedInputs.push(normalizedInput);
-                }
               }
             }
 
@@ -1160,16 +1232,8 @@ export class AgentRunner {
               // Record in cross-session artifact registry so future sessions know what files exist.
               this.recordArtifact(agentId, toolCallPath).catch(() => { /* non-fatal */ });
 
-              if (useV2) {
-                // V2: single authoritative mutation method handles artifactsCreated + completedBatchFiles
-                stateManager.markFileWritten(execState, this.normalizeWorkspacePath(toolCallPath));
-              } else {
-                // V1: manual artifact tracking
-                const normalizedArtifact = this.normalizeWorkspacePath(toolCallPath);
-                if (!execState.artifactsCreated.includes(normalizedArtifact)) {
-                  execState.artifactsCreated.push(normalizedArtifact);
-                }
-              }
+              // Single authoritative mutation method handles artifactsCreated + completedBatchFiles
+              stateManager.markFileWritten(execState, this.normalizeWorkspacePath(toolCallPath));
 
               // Verify all written files are still on disk every 5 writes
               if (writtenPaths.size % 5 === 0) {
@@ -1190,21 +1254,76 @@ export class AgentRunner {
               }
             }
 
-            // V2: save state after each tool dispatch to ensure durability
-            if (useV2) {
-              stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+            // Save state after each tool dispatch to ensure durability
+            stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+
+            // Phase 4 — MilestoneFinalizer: check if we should stop/wait after this write
+            if (event.name === 'write_file' || event.name === 'edit_file') {
+              const milestoneContract = inferStepContract([], '', execState.runPhase ?? 'RUNNING');
+              const milestoneDecision = milestoneFinalizer.decide(execState, milestoneContract, event.name, toolCallPath);
+              if (milestoneDecision.action === 'WAIT') {
+                stateManager.setRunPhase(execState, 'WAITING_FOR_USER_INPUT', milestoneDecision.message);
+                stateManager.setExecutionPhase(execState, 'INITIALISING');
+                stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+                const tsMsgs = getAppData().executionMessages.terminalStates ?? {} as Record<string, string>;
+                onText(`\n${(tsMsgs.waitingForUserInput ?? 'Paused — waiting for your input. {reason}').replace('{reason}', milestoneDecision.message)}`);
+                continueLoop = false;
+              } else if (milestoneDecision.action === 'COMPLETE') {
+                stateManager.setRunPhase(execState, 'COMPLETED');
+                stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+                continueLoop = false;
+              } else if (milestoneDecision.action === 'VALIDATE') {
+                stateManager.setExecutionPhase(execState, 'VALIDATING_STEP');
+                onThought?.({ type: 'thinking', label: `[Milestone] ${milestoneDecision.reason}`, timestamp: new Date() });
+              }
+
+              // Phase 7.1 — ConsistencyValidator in hot path (validatorEnforcement)
+              // Run after each write to catch critical issues immediately.
+              if (vsConfig.get<boolean>('validatorEnforcement', false) && MUTATION_TOOLS.has(event.name)) {
+                stateManager.setExecutionPhase(execState, 'VALIDATING_STEP');
+                const hotValidator = new ConsistencyValidator(this.workspaceRoot);
+                const detectedLockHot = await archLock.detect();
+                const hotIssues = await hotValidator.validate(
+                  Array.from(writtenPaths),
+                  execState,
+                  detectedLockHot ?? undefined
+                );
+                const criticals = hotIssues.filter(i => i.severity === 'critical');
+                const warnings = hotIssues.filter(i => i.severity !== 'critical' && i.severity !== undefined);
+                if (warnings.length > 0) {
+                  onThought?.({
+                    type: 'thinking',
+                    label: `[Validator] ${warnings.length} warning(s)`,
+                    detail: warnings.map(w => `${w.path}: ${w.issue}`).join('\n'),
+                    timestamp: new Date(),
+                  });
+                }
+                if (criticals.length > 0) {
+                  const tsMsgs = getAppData().executionMessages.terminalStates ?? {} as Record<string, string>;
+                  stateManager.setRunPhase(execState, 'BLOCKED_BY_VALIDATION');
+                  stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+                  onText(`\n${tsMsgs.blockedByValidation ?? 'Blocked — validation issues must be resolved before continuing.'}`);
+                  onThought?.({
+                    type: 'error',
+                    label: `[Validator] ${criticals.length} critical issue(s) — blocking run`,
+                    detail: criticals.map(c => `${c.path}: ${c.issue}`).join('\n'),
+                    timestamp: new Date(),
+                  });
+                  continueLoop = false;
+                } else {
+                  stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
+                }
+              }
             }
           }
-          // V2: push as 'tool_result' role so it is distinguishable from genuine user
+          // Push as 'tool_result' role so it is distinguishable from genuine user
           // messages.  prepareMessagesForProvider() converts it back to 'user' (stripping
           // the XML wrapper) just before the next provider.stream() call.
           // Also accumulate in currentStepToolResults for PromptAssembler (Phase 1).
-          if (useV2) {
+          {
             const toolResultMsg: ChatMessage = { role: 'tool_result', content: toolResultContent, toolCallId: event.id };
             messages.push(toolResultMsg);
             currentStepToolResults.push(toolResultMsg);
-          } else {
-            messages.push({ role: 'user', content: toolResultContent });
           }
           calledATool = true;
           continueLoop = true;
@@ -1292,8 +1411,8 @@ export class AgentRunner {
             checkText.endsWith('...') ||
             /\b(let me|i['']ll now|now let me|i will now)\s+(read|check|list|examine|look at|search|write|run|create)\b/i.test(checkText);
 
-          // V2: detect when silent execution should be activated
-          if (useV2 && isNarratingNextCall && !silentExecution) {
+          // Detect when silent execution should be activated
+          if (isNarratingNextCall && !silentExecution) {
             silentExecution = true;
           }
 
@@ -1308,12 +1427,8 @@ export class AgentRunner {
               messages.push({ role: 'assistant', content: turnAssistantText });
               turnAssistantText = '';
             }
-            // V2: use system message instead of user nudge (harder constraint)
-            if (useV2) {
-              messages.push({ role: 'system', content: 'Call the next tool now. Do not narrate — execute immediately.' });
-            } else {
-              messages.push({ role: 'user', content: 'Call the next tool now. Do not narrate — execute immediately.' });
-            }
+            // Use system message for harder constraint
+            messages.push({ role: 'system', content: 'Call the next tool now. Do not narrate — execute immediately.' });
             nudgeRetryCount++;
             continueLoop = true;
           } else if (isNarratingNextCall && nudgeRetryCount >= MAX_NUDGE_RETRIES) {
@@ -1332,8 +1447,8 @@ export class AgentRunner {
         }
       }
 
-      // V2: discard pure narration turns when silent execution is active
-      if (useV2 && silentExecution && !calledATool && turnAssistantText) {
+      // Discard pure narration turns when silent execution is active
+      if (silentExecution && !calledATool && turnAssistantText) {
         const isPureNarration = turnAssistantText.trim().length < 500 &&
           !turnAssistantText.includes('```') &&
           !turnAssistantText.includes('{') &&
@@ -1347,6 +1462,45 @@ export class AgentRunner {
             timestamp: new Date(),
           });
           turnAssistantText = '';
+        }
+      }
+
+      // Phase 2.2 — StepContract inference
+      // Classify the iteration outcome and drive loop continuation.
+      {
+        const contract = inferStepContract(toolsUsed, turnAssistantText || lastAssistantText, execState.runPhase ?? 'RUNNING');
+        onThought?.({
+          type: 'thinking',
+          label: `[StepContract] kind=${contract.kind}${contract.toolName ? ` tool=${contract.toolName}` : ''}`,
+          timestamp: new Date(),
+        });
+
+        // Phase 5.2 — Silent reprompt: if silent mode and no tool call, send one terse reprompt
+        if (silentExecution && !calledATool && contract.kind === 'pause') {
+          if (silentRepromptCount < MAX_SILENT_REPROMPTS) {
+            silentRepromptCount++;
+            onThought?.({ type: 'thinking', label: `Silent reprompt #${silentRepromptCount}`, timestamp: new Date() });
+            messages.push({ role: 'system', content: 'TOOL ONLY — call the next tool immediately, no text.' });
+            continueLoop = true;
+          } else {
+            // Max reprompts exceeded — treat as blocked
+            onThought?.({ type: 'error', label: 'Silent reprompt cap reached — treating as blocked', timestamp: new Date() });
+            stateManager.setRunPhase(execState, 'BLOCKED_BY_VALIDATION');
+            continueLoop = false;
+          }
+        } else {
+          // Normal (non-silent) terminal contracts should stop the loop
+          if (contract.kind !== 'tool' && !calledATool) {
+            if (contract.kind === 'complete') {
+              stateManager.setRunPhase(execState, 'COMPLETED');
+              continueLoop = false;
+            } else if (contract.kind === 'blocked') {
+              stateManager.setRunPhase(execState, contract.recoverable ? 'BLOCKED_BY_VALIDATION' : 'RECOVERY_REQUIRED');
+              continueLoop = false;
+            } else if (contract.kind === 'pause') {
+              continueLoop = false;
+            }
+          }
         }
       }
     }
@@ -1419,19 +1573,15 @@ export class AgentRunner {
     if (fullResponse && !isProviderError && !isIncompleteNarration) {
       agentLog.logModelText(fullResponse);
       // Persist user message first so history always has matching user/assistant pairs.
-      // V2: sanitise the user message too before persisting (defence-in-depth).
-      const userMsgToStore = useV2
-        ? { ...userMsg, content: sanitiseContent(userMsg.content) }
-        : userMsg;
+      // Sanitise the user message too before persisting (defence-in-depth).
+      const userMsgToStore = { ...userMsg, content: sanitiseContent(userMsg.content) };
       this.memoryManager.addMessage(agentId, userMsgToStore);
       // Store only the final text segment (not the full concatenation of all
       // iterations) so history does not contain duplicate summaries.
-      // V2: sanitise before persisting to strip any tool-protocol noise that leaked
+      // Sanitise before persisting to strip any tool-protocol noise that leaked
       // into assistant text (e.g. [write_file: ...], TOOL:... sentinels).
       const rawAssistantContent = lastAssistantText || fullResponse;
-      const assistantContent = useV2
-        ? this.sanitiseAssistantText(rawAssistantContent)
-        : rawAssistantContent;
+      const assistantContent = this.sanitiseAssistantText(rawAssistantContent);
       const assistantMsg: ChatMessage = { role: 'assistant', content: assistantContent };
       this.memoryManager.addMessage(agentId, assistantMsg);
       await this.memoryManager.persistTurn(agentId, userMessage, fullResponse, toolsUsed);
@@ -1503,15 +1653,15 @@ export class AgentRunner {
     // ─── #8 Consistency validator ─────────────────────────────────────────────
     if (writtenPaths.size > 0) {
       const validator = new ConsistencyValidator(this.workspaceRoot);
-      const detectedLock = useV2 ? await archLock.detect() : null;
+      const detectedLock = await archLock.detect();
       const issues = await validator.validate(
         Array.from(writtenPaths),
-        useV2 ? execState : undefined,
+        execState,
         detectedLock ?? undefined
       );
       if (issues.length > 0) {
-        // V2: auto-fix safe issues when validatorEnforcement flag is on
-        if (useV2 && vsConfig.get<boolean>('validatorEnforcement', false)) {
+        // Auto-fix safe issues when validatorEnforcement flag is on
+        if (vsConfig.get<boolean>('validatorEnforcement', false)) {
           const fixed = await validator.autoFix(issues);
           if (fixed.length > 0) {
             onThought({
@@ -1563,12 +1713,8 @@ export class AgentRunner {
 
     // Always save execution state — even for incomplete sessions — so the
     // continue contract can resume from the last known position next invocation.
-    // V2: iterationsUsed is already incremented by markToolExecuted() for each
-    //     individual tool call; do NOT add iterationCount (LLM request count) again.
-    // V1: add iterationCount as before.
-    if (!useV2) {
-      execState.iterationsUsed += iterationCount;
-    }
+    // iterationsUsed is already incremented by markToolExecuted() for each
+    // individual tool call; do NOT add iterationCount (LLM request count) again.
     execState.mode = mode;
     execState.updatedAt = new Date().toISOString();
     stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
@@ -1869,7 +2015,7 @@ export class AgentRunner {
   /**
    * Convert internal 'tool_result' role messages to provider-compatible 'user' messages,
    * and strip any residual control-plane patterns from all messages.
-   * Called on every provider.stream() invocation when executionEngineV2 is enabled.
+   * Called on every provider.stream() invocation for non-code modes.
    */
   private prepareMessagesForProvider(messages: ChatMessage[]): ChatMessage[] {
     return messages.map(msg => {

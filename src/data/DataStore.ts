@@ -92,7 +92,7 @@ export interface AppData {
 
   // data/execution-messages.json
   executionMessages: {
-    toolBlocked: { bormagiPath: string; reread: string; budgetExhausted: string; offBatch: string };
+    toolBlocked: { bormagiPath: string; reread: string; budgetExhausted: string; offBatch: string; modeDisallowsMutation?: string };
     toolSummary: { format: string; formatNoPath: string };
     continueResume: Record<string, string>;
     stateContextNote: Record<string, string>;
@@ -101,6 +101,7 @@ export interface AppData {
     artifactRedirect?: Record<string, string>;
     terminalStates?: Record<string, string>;
     recovery?: Record<string, string>;
+    milestoneDecisions?: Record<string, string>;
   };
 
   // prompts/default-system-prompt.md

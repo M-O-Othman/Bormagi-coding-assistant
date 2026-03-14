@@ -131,10 +131,12 @@ describe('PromptAssembler — assembleMessages', () => {
 });
 
 describe('buildWorkspaceSummary', () => {
-  test('greenfield returns scaffold guidance', () => {
+  test('greenfield returns descriptive summary (no imperative instructions)', () => {
     const summary = buildWorkspaceSummary('greenfield', []);
     expect(summary.toLowerCase()).toContain('greenfield');
-    expect(summary).toContain('package.json');
+    // Must describe facts only — no imperative "Start by..." instructions (Phase 0.4)
+    expect(summary).not.toMatch(/start by|you should|create package\.json/i);
+    expect(summary).toContain('empty');
   });
 
   test('scaffolded includes key files', () => {

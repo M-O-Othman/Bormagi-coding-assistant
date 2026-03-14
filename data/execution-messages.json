@@ -21,7 +21,8 @@
     "bormagiPath": "[BLOCKED] Agent access to .bormagi/ is not permitted. This is internal framework state.",
     "reread": "[BLOCKED] File already read and unchanged this session. Use the content from your earlier read. Write to it first if you need to re-read.",
     "budgetExhausted": "[BUDGET EXHAUSTED] Discovery limit reached for this run. Allowed tools now: write_file, edit_file, declare_file_batch, run_command.",
-    "offBatch": "[BATCH VIOLATION] Path not in declared batch. Amend batch first with declare_file_batch, then write files in the declared order."
+    "offBatch": "[BATCH VIOLATION] Path not in declared batch. Amend batch first with declare_file_batch, then write files in the declared order.",
+    "modeDisallowsMutation": "[BLOCKED] Mode '{mode}' does not permit file mutations. Switch to Code mode to make changes."
   },
   "toolSummary": {
     "format": "[tool: {name} | path: {path} | status: {status} | {size} chars]",
@@ -50,5 +51,10 @@
   "recovery": {
     "rebuilding": "Inconsistent execution state detected — rebuilding from execution history.",
     "rebuildFailed": "Recovery failed — execution state cannot be rebuilt. Use bormagi.resetExecutionState to start fresh."
+  },
+  "milestoneDecisions": {
+    "waitAutoDetected": "Deliverable written — pausing for your input.",
+    "batchCheckpoint": "Batch checkpoint reached — running validation.",
+    "batchComplete": "All batch files written — validating output."
   }
 }

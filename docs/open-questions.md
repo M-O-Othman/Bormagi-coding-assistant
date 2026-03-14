@@ -1353,50 +1353,46 @@ Implementation guidance:
 ---
 
 ---
-
-# Open Questions — Agent Productivity Fixes
-
-> Questions for the implementation of `00-fixing_agent_productivity.md` + `00-fixing-agent_productivity_detailed_desgin.md`
-> **Do not begin implementation until all questions below are answered.**
-
----
-
 ## Section P — Architecture & Scope
 
-### PQ-1: Two competing design documents — which is primary?
+### PQ-1: Relationship between the two source documents
 
-`0high_priority fixes.md` uses Phases A–J (A=ExecutionState, B=AgentRunner, C=ToolDispatcher, D=BatchPlanner/ArchitectureLock, E=ConsistencyValidator, F=PromptComposer, G=Transcript sanitisation, H=Extension commands, I=Dependency audit, J=Regression tests).
+> ⚠️ **Correction note:** The original question incorrectly referenced `0high_priority fixes.md` (Phases A–J) as a source document. That file is a separate log-analysis artifact and was NOT one of the specified inputs. The actual two source documents are:
+> - `00-fixing_agent_productivity.md` — 15-point strategy/decision record (single `executionEngineV2` flag, rollout approach)
+> - `00-fixing-agent_productivity_detailed_desgin.md` — 10-phase developer-ready backlog (Phases 0–10)
+>
+> These two documents are **complementary, not competing**. The strategy doc defines the flag approach and rollout order; the detailed design defines what to implement under that flag. There is no conflict to resolve.
 
-`00-fixing-agent_productivity_detailed_desgin.md` uses Phases 0–10 (0=Stabilize, 1=ExecutionKernel/FSM, 2=Transcript-free, 3=Resume/recovery, 4=DiscoveryBudget redesign, 5=Nav tools, 6=Symbol tools, 7=Validation gate, 8=Task templates, 9=Mode permissions, 10=Default flip).
+**Guidance (from earlier answer, updated to correct context):**
 
-These overlap significantly but are not identical. Options:
+* `00-fixing_agent_productivity.md` is the **rollout strategy**: one flag, all fixes together, test then flip default
+* `00-fixing-agent_productivity_detailed_desgin.md` is the **implementation spec**: phases 0–10
+* Use the strategy doc to constrain scope (no flag proliferation, no permanent dual-mode)
+* Use the detailed design as the target architecture
+* Do **not** implement every architectural idea if the existing code can be fixed more simply
+* Start from confirmed broken behaviors; borrow structure from the detailed design only where needed
 
-- **A** Use `0high_priority fixes.md` as primary (it is closer to what the logs show as broken); treat `detailed_design` as supplementary
-- **B** Use `detailed_design.md` as primary (it is more comprehensive and structured); treat `0high_priority fixes.md` as context
-- **C** Produce a merged unified plan that resolves conflicts
-
-**Answer:**
-
+**ANSWER** this is architectural change , approved by user in exception to the general rules
 ---
 
 ### PQ-2: Already-implemented phases — include in plan or skip?
 
-The following have already been implemented in previous sessions:
-
-- Phases 5 and 6 from `detailed_design.md` (navigation tools + symbol tools) — **Done**
-- Phase 8.2 (skill playbooks: all 4 `.md` files + skillLoader.ts) — **Done**
-- Phase 4 (DiscoveryBudget.ts with 7 categories) — **Done**
-- Phase 7 severity model (ConsistencyValidator with info/warning/critical) — **Done** (but not wired to hard post-write gate)
-- Phase 3.3 (RecoveryManager with 5 triggers) — **Done**
-- Phase 2.1/2.2 (PromptAssembler in V2 code-mode path) — **Done**
-- Phase 3.1 (nextToolCall field in ExecutionStateManager) — **Done**
-
-Options:
-
-- **A** Plan only covers remaining gaps; list completed items as baseline
-- **B** Plan is comprehensive and re-describes everything including what is done
-
 **Answer:**
+**ANSWER**
+Choose **A** — plan covers **remaining gaps only** and lists completed items as baseline.
+
+Pragmatic rule:
+
+* Do not re-plan or re-describe completed work in depth
+* Add a short “baseline already implemented” section
+* Focus implementation effort on:
+
+  * wiring gaps
+  * activation gaps
+  * runtime path gaps
+  * verification gaps
+
+This keeps the plan shorter, safer, and easier to execute.
 
 ---
 
@@ -1404,20 +1400,28 @@ Options:
 
 ### PQ-3: Is splitting AgentRunner a hard requirement?
 
-`AgentRunner.ts` is currently 1,914 lines. The detailed design requires splitting it into:
-
-- `ExecutionKernel.ts` — phase control and step execution
-- `ResumeController.ts` — resume logic
-- `MilestoneFinalizer.ts` — continue/validate/wait/complete decisions
-- `RecoveryController.ts` — recovery logic (RecoveryManager.ts already exists)
-
-This is the highest-risk change in the plan. Options:
-
-- **A** Hard requirement: AgentRunner must be split; the thin-coordinator goal is mandatory
-- **B** Optional but preferred: AgentRunner can remain if wiring is clean; split is a nice-to-have
-- **C** Incremental: extract one module at a time; first priority is wiring not splitting
-
 **Answer:**
+Choose **C** — **incremental extraction**.
+
+Do **not** make a full split a hard prerequisite.
+
+Pragmatic rule:
+
+* First priority is **fixing wiring and runtime behavior**
+* Extract only the parts that directly reduce risk:
+
+  1. resume logic
+  2. milestone finalization / stop-wait-complete logic
+  3. recovery orchestration
+
+Suggested sequence:
+
+* extract `ResumeController`
+* extract `MilestoneFinalizer`
+* keep `AgentRunner` as coordinator for now
+* extract more only after behavior is stable
+
+This is much safer than a big-bang split of a 1,900+ line hot-path file. The repo confirms `AgentRunner.ts` is still very large and central, so a full immediate split would be high-risk. ([GitHub][1])
 
 ---
 
@@ -1425,13 +1429,27 @@ This is the highest-risk change in the plan. Options:
 
 ### PQ-4: How should StepContract work with Claude's tool_use API?
 
-The plan requires the LLM to return a `StepContract` (tool/pause/complete/blocked). Claude's API uses native `tool_use` blocks — the model calls a tool by name. Options:
-
-- **A** Implement StepContract as a virtual tool the LLM calls: `declare_next_step({ kind, tool, input, reason })`. The dispatcher intercepts it, validates it, then executes.
-- **B** Infer StepContract from the existing tool_use stream: when the model returns a tool call, wrap it in the StepContract shape; when model returns text only in silent mode, classify as pause/complete/blocked.
-- **C** Skip StepContract as a separate concept; the existing tool_use + silent execution flag achieves the same goal without a new layer.
-
 **Answer:**
+**ANSWER**
+Choose **B** — infer `StepContract` from the existing `tool_use` flow.
+
+Pragmatic rule:
+
+* Do **not** introduce a new virtual tool unless absolutely necessary
+* Keep Claude’s native `tool_use` flow
+* Wrap runtime behavior internally as:
+
+  * tool call → `StepContract(kind="tool")`
+  * silent text-only terminal output → classify as `pause` / `complete` / `blocked`
+
+Why:
+
+* less plumbing
+* less provider-specific complexity
+* preserves existing provider behavior
+* easier rollout
+
+So `StepContract` should be an **internal framework concept**, not a new tool the model has to learn.
 
 ---
 
@@ -1439,17 +1457,31 @@ The plan requires the LLM to return a `StepContract` (tool/pause/complete/blocke
 
 ### PQ-5: New FSM vs extending existing SessionPhase?
 
-`ExecutionStateManager` already has `runPhase: SessionPhase` with states: `RUNNING | WAITING_FOR_USER_INPUT | BLOCKED_BY_VALIDATION | COMPLETED | PARTIAL_BATCH_COMPLETE | RECOVERY_REQUIRED`.
-
-The detailed design wants a new FSM with more granular states: `INITIALISING | DISCOVERING | PLANNING_BATCH | EXECUTING_STEP | VALIDATING_STEP | WAITING_FOR_USER_INPUT | COMPLETED | BLOCKED | RECOVERING`.
-
-Options:
-
-- **A** Replace `runPhase`/`SessionPhase` entirely with the new granular FSM
-- **B** Keep `runPhase`/`SessionPhase` for terminal states; add a separate `executionPhase` field for granular sub-states during a run
-- **C** Skip the FSM abstraction; use the existing `runPhase` with minor additions
-
 **Answer:**
+**ANSWER**
+Choose **B** — keep `runPhase` for coarse terminal states and add a separate `executionPhase` for granular sub-states.
+
+Pragmatic rule:
+
+* Do not replace working persisted state unless necessary
+* Keep current stable terminal states:
+
+  * `RUNNING`
+  * `WAITING_FOR_USER_INPUT`
+  * `BLOCKED_BY_VALIDATION`
+  * `COMPLETED`
+  * `PARTIAL_BATCH_COMPLETE`
+  * `RECOVERY_REQUIRED`
+* Add transient in-run sub-state:
+
+  * `INITIALISING`
+  * `DISCOVERING`
+  * `PLANNING_BATCH`
+  * `EXECUTING_STEP`
+  * `VALIDATING_STEP`
+  * `RECOVERING`
+
+This gives you the observability and control you want without breaking existing state persistence.
 
 ---
 
@@ -1457,15 +1489,21 @@ Options:
 
 ### PQ-6: Is the TypeScript Compiler API required for Phase 6, or is the regex approach sufficient?
 
-Phase 6 symbol tools are already implemented using regex + brace-counting. The detailed design calls for `TypeScriptSymbolService` using the TypeScript Compiler API. However, the TypeScript package adds ~5MB to the bundle and was deferred in the previous session for this reason.
-
-Options:
-
-- **A** Regex approach is sufficient; Phase 6 is complete as-is
-- **B** TypeScript Compiler API is required; bundle size must be accepted or the server must be run externally
-- **C** TypeScript Compiler API is required; implement as a separately loadable module (not bundled with main extension)
-
 **Answer:**
+**ANSWER**
+Choose **A** — the current regex approach is **sufficient for now**.
+
+Pragmatic rule:
+
+* Since symbol tools are already implemented and bundle size matters, do not reopen this now
+* Treat TS Compiler API as a future enhancement only if regex proves materially unreliable in real sessions
+
+So for this implementation batch:
+
+* Phase 6 is considered **done enough**
+* focus on execution/runtime productivity issues instead of redoing symbol parsing
+
+If later needed, do it as a separately loadable module, not part of this batch.
 
 ---
 
@@ -1473,15 +1511,27 @@ Options:
 
 ### PQ-7: Should TaskClassifier use LLM or rule-based classification?
 
-Phase 8.1 requires classifying tasks into templates: `document_then_wait | greenfield_scaffold | existing_project_patch | multi_file_refactor | investigate_then_report | plan_only`.
-
-Options:
-
-- **A** Rule/keyword-based classification only (no LLM call, zero cost, deterministic — similar to current ModeClassifier)
-- **B** Secondary LLM call (haiku-class model, cheap, better accuracy for complex prompts)
-- **C** User explicitly selects the task template before sending (with rule-based auto-suggest as fallback)
-
 **Answer:**
+**ANSWER**
+Choose **A** — **rule/keyword-based classification only**.
+
+Pragmatic rule:
+
+* deterministic
+* zero extra cost
+* fast
+* easier to debug
+
+Use simple rules first:
+
+* “read document … write questions … wait” → `document_then_wait`
+* “start implementation / scaffold / create project” + no codebase → `greenfield_scaffold`
+* “fix / patch / bug / adjust existing file” → `existing_project_patch`
+* “refactor multiple files” → `multi_file_refactor`
+* “analyse / investigate / tell me what is wrong” → `investigate_then_report`
+* explicit “plan only” / “do not implement” → `plan_only`
+
+Only add LLM classification later if real ambiguity remains.
 
 ---
 
@@ -1489,14 +1539,23 @@ Options:
 
 ### PQ-8: How should narration be handled in strict silent mode?
 
-When `silentExecution=true` and the model emits narrative text before a tool call, options are:
-
-- **A** Strip it silently (do not show to user, do not count it as an iteration)
-- **B** Reprompt internally once: send a terse system message "TOOL ONLY — call the next tool immediately, no text", count as one extra iteration
-- **C** Show a brief "(narration suppressed)" indicator in the UI, then strip and continue
-- **D** Do nothing extra beyond the current implementation (silentExecution already set as flag in state)
-
 **Answer:**
+**ANSWER**
+Choose **A** — strip it silently and do not count it as an iteration.
+
+Pragmatic rule:
+
+* if `silentExecution=true`, any pre-tool narration is ignored
+* do not reprompt the model
+* do not show “narration suppressed”
+* do not burn another iteration unless there is no usable tool call at all
+
+Fallback:
+
+* if the model emits narration **without** a valid tool call or terminal signal, then one terse internal reprompt is acceptable
+* but the default path should be silent stripping
+
+This is the simplest and least disruptive behavior.
 
 ---
 
@@ -1504,13 +1563,24 @@ When `silentExecution=true` and the model emits narrative text before a tool cal
 
 ### PQ-9: Can the default flip happen within this implementation batch?
 
-The plan says flip `executionEngineV2` default to `true` only after regression tests + live session verification pass. Options:
-
-- **A** Yes — flip can happen at end of this batch if all regression tests pass (no live session required)
-- **B** No — live session verification is required before flip; defer flip to next session
-- **C** Flip the default now; add a user-visible migration notice and a one-click rollback option
-
 **Answer:**
+**ANSWER**
+Choose **B** — live session verification is required before the default flip.
+
+Pragmatic rule:
+
+* regression tests are necessary but not sufficient
+* the exact problem you are fixing is a **runtime flow problem**
+* so one or more real end-to-end live sessions must pass before flipping default
+
+The repo still shows `executionEngineV2` defaulting to `false`, so this should stay unchanged until the live path is verified. ([GitHub][1])
+
+Implementation approach:
+
+1. finish fixes
+2. run regression suite
+3. run live session(s) against known bad scenarios
+4. flip default only after those pass
 
 ---
 
@@ -1518,14 +1588,50 @@ The plan says flip `executionEngineV2` default to `true` only after regression t
 
 ### PQ-10: Should ToolDispatcher block write/edit tools in ask/plan modes?
 
-Currently, `ContextEnvelope` places no editable files in ask/plan modes, and the system prompt tells the LLM not to write. But `ToolDispatcher.dispatch()` does not enforce this at the API level — if the LLM calls `write_file` in ask mode, it goes through.
-
-Options:
-
-- **A** Add dispatcher-level block: reject write/edit tools in ask/plan modes with a structured error message
-- **B** Keep current approach (prompt-level only); dispatcher enforcement is over-engineering for rare edge case
-- **C** Log and warn but do not block; the system prompt constraint is sufficient
-
 **Answer:**
+**ANSWER**
+Choose **A** — add dispatcher-level blocking.
+
+Pragmatic rule:
+
+* prompt-level prevention is not enough
+* mode-based filtering is helpful but not sufficient
+* dispatcher must reject write/edit tools in ask/plan modes with a structured error
+
+This is cheap, clear, and worth doing.
+
+Implementation behavior:
+
+* in ask/plan/review modes, dispatcher rejects:
+
+  * `write_file`
+  * `edit_file`
+  * `multi_edit`
+  * symbol edit tools
+  * any other mutation tool
+* return structured blocked result with reason:
+
+  * `mode_disallows_mutation`
+
+This is not over-engineering; it is a simple safety rail.
 
 ---
+
+## Recommended implementation summary
+
+Flat decision summary for the team:
+
+* **PQ-1:** C — merged unified plan
+* **PQ-2:** A — baseline only, plan remaining gaps
+* **PQ-3:** C — incremental extraction, not full split first
+* **PQ-4:** B — infer StepContract internally from native tool_use
+* **PQ-5:** B — keep `runPhase`, add `executionPhase`
+* **PQ-6:** A — regex symbol tools are sufficient for now
+* **PQ-7:** A — rule-based task classifier only
+* **PQ-8:** A — silently strip narration in silent mode
+* **PQ-9:** B — do not flip V2 default until live verification passes
+* **PQ-10:** A — dispatcher must block mutation tools in ask/plan modes
+
+Ready for the next question set.
+
+[1]: https://raw.githubusercontent.com/M-O-Othman/Bormagi-coding-assistant/master/src/agents/AgentRunner.ts "raw.githubusercontent.com"

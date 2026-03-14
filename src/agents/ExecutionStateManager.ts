@@ -1,5 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import type { ExecutionSubPhase } from './execution/ExecutionPhase';
+import type { TaskTemplateName } from './execution/TaskTemplate';
 
 /**
  * Structured pointer to the next tool call to execute on resume.
@@ -102,6 +104,18 @@ export interface ExecutionStateData {
   continueCount?: number;
   /** Value of iterationsUsed at the time of the last continue (for progress check). V2 only. */
   continueIterationSnapshot?: number;
+  /**
+   * Transient in-run sub-state for observability.
+   * Describes what the agent is doing within a single run iteration.
+   * Set in memory only — not persisted across restarts (reset to INITIALISING on load).
+   * V2 only.
+   */
+  executionPhase?: ExecutionSubPhase;
+  /**
+   * Task shape template classified at run start.
+   * Drives stop rules, batch requirements, and skill loading. V2 only.
+   */
+  taskTemplate?: TaskTemplateName;
 }
 
 export class ExecutionStateManager {
@@ -266,6 +280,19 @@ export class ExecutionStateManager {
   ): void {
     state.nextToolCall = { tool, input, description };
     state.updatedAt = new Date().toISOString();
+  }
+
+  /**
+   * Set the transient in-run sub-phase (V2 only).
+   * Not persisted — reset to INITIALISING when state is loaded.
+   */
+  setExecutionPhase(state: ExecutionStateData, phase: ExecutionSubPhase): void {
+    state.executionPhase = phase;
+  }
+
+  /** Get the current in-run sub-phase, defaulting to INITIALISING if not set. */
+  getExecutionPhase(state: ExecutionStateData): ExecutionSubPhase {
+    return state.executionPhase ?? 'INITIALISING';
   }
 
   /** Clear the structured next tool call (called after it is dispatched on resume). */
