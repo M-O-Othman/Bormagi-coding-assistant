@@ -370,7 +370,7 @@ export class AgentRunner {
       this.workspaceRoot,
       getAppData().architecturePatterns
     );
-    let detectedWorkspaceType: 'greenfield' | 'scaffolded' | 'mature' = 'mature';
+    let detectedWorkspaceType: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature' = 'mature';
     this.toolDispatcher.resetGuardState(mode, true);
     detectedWorkspaceType = await batchEnforcer.detectWorkspaceType();
     const requestId = `${agentId}-${Date.now()}`;
@@ -1445,13 +1445,27 @@ export class AgentRunner {
           } else if (event.name === 'declare_file_batch') {
             // ─── In-process write-batch declaration (#7) ──────────────────────
             const inp = event.input as { files: string[]; rationale?: string };
-            execState.plannedFileBatch = (inp.files ?? []).map(f => this.normalizeWorkspacePath(f));
-            stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
-            agentLog.logToolResult(event.name, `batch declared: ${execState.plannedFileBatch.length} files`);
-            toolResultContent = `[Batch declared: ${execState.plannedFileBatch.length} file(s) — ` +
-              `${inp.rationale ?? 'no rationale'}. Write all of them before this session ends.]`;
+            const newFiles = (inp.files ?? []).map(f => this.normalizeWorkspacePath(f));
+
+            // Idempotency: reject empty batch declarations and duplicate batch declarations
+            if (newFiles.length === 0) {
+              toolResultContent = `[BATCH REJECTED] declare_file_batch requires a non-empty "files" array. Provide the list of files you plan to write.`;
+              agentLog.logToolResult(event.name, 'rejected: empty files array');
+            } else if (execState.plannedFileBatch.length > 0) {
+              // A batch is already active — reject the duplicate
+              toolResultContent = `[BATCH_ALREADY_ACTIVE] A batch of ${execState.plannedFileBatch.length} file(s) is already declared. Write the remaining batch files instead of re-declaring. Remaining: ${
+                execState.plannedFileBatch.filter(f => !(execState.completedBatchFiles ?? []).includes(f)).slice(0, 5).join(', ')
+              }`;
+              agentLog.logToolResult(event.name, 'rejected: batch already active');
+            } else {
+              execState.plannedFileBatch = newFiles;
+              stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+              agentLog.logToolResult(event.name, `batch declared: ${newFiles.length} files`);
+              toolResultContent = `[Batch declared: ${newFiles.length} file(s) — ` +
+                `${inp.rationale ?? 'no rationale'}. Write all of them before this session ends.]`;
+            }
             // Phase 1 fix: virtual tools must also increment iterationsUsed
-            stateManager.markToolExecuted(execState, event.name, undefined, toolResultContent.slice(0, 150));
+            stateManager.markToolExecuted(execState, event.name, undefined, (toolResultContent ?? '').slice(0, 150));
           } else {
             // Task 10: Same-tool same-path loop breaker
             const toolPathKey = `${event.name}:${toolCallPath ?? ''}`;
@@ -1543,16 +1557,21 @@ export class AgentRunner {
             toolResultContent = `<tool_result name="${event.name}">\n${truncatedResult}\n</tool_result>`;
 
             // ─── #6 Discovery budget enforcement ─────────────────────────────
-            // Count consecutive reads with no writes. After 3+, inject a hard
-            // nudge so the model stops rediscovering and starts implementing.
-            const isReadOnlyTool = ['read_file', 'list_files', 'search_files'].includes(event.name);
-            const isWriteOrActionTool = ['write_file', 'edit_file', 'run_command'].includes(event.name);
+            // Count consecutive reads with no writes. After the threshold,
+            // replace the tool result with a hard directive and set the
+            // execution phase to EXECUTING_STEP to force a write.
+            const isReadOnlyTool = ['read_file', 'list_files', 'search_files', 'glob_files', 'grep_content'].includes(event.name);
+            const isWriteOrActionTool = ['write_file', 'edit_file', 'run_command', 'replace_range', 'multi_edit'].includes(event.name);
             if (isReadOnlyTool) {
               consecutiveReadCount++;
             } else if (isWriteOrActionTool) {
               consecutiveReadCount = 0;
             }
-            if (consecutiveReadCount >= 3 && writtenPaths.size === 0) {
+            if (consecutiveReadCount >= 5 && writtenPaths.size === 0) {
+              // Hard override: replace the tool result content entirely
+              toolResultContent = `[DISCOVERY BUDGET EXCEEDED] ${consecutiveReadCount} consecutive reads with no writes. Further discovery calls will be blocked. You MUST call write_file or edit_file now. Do not read, list, or search any more files.`;
+              stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
+            } else if (consecutiveReadCount >= 3 && writtenPaths.size === 0) {
               toolResultContent += `\n\n[Discovery Budget] ${consecutiveReadCount} consecutive reads with nothing written yet. Stop reading — write your first file now.`;
             }
 
@@ -2416,14 +2435,17 @@ export class AgentRunner {
   }
 
   /** Return a short system note describing workspace maturity to the model. */
-  private buildWorkspaceTypeNote(wsType: 'greenfield' | 'scaffolded' | 'mature'): string {
-    if (wsType === 'greenfield') {
-      return '[Workspace: Greenfield] No project files. Start by creating a project structure (package.json, src/, README.md) before adding application code.';
+  private buildWorkspaceTypeNote(wsType: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature'): string {
+    switch (wsType) {
+      case 'greenfield':
+        return '[Workspace: empty] No project files or documentation present.';
+      case 'docs_only':
+        return '[Workspace: docs_only] Documentation and plan files present. No project manifest or source code yet.';
+      case 'scaffolded':
+        return '[Workspace: scaffolded] Early-stage project with fewer than 5 source files.';
+      case 'mature':
+        return '[Workspace: mature] Established codebase.';
     }
-    if (wsType === 'scaffolded') {
-      return '[Workspace: Scaffolded] Basic project structure exists but is not yet mature. Build on the existing scaffolding rather than replacing it.';
-    }
-    return '[Workspace: Mature] Existing codebase. Read key files before modifying. Prefer edit_file over write_file for files that may already exist.';
   }
 
   // ─── V2 execution engine helpers ─────────────────────────────────────────

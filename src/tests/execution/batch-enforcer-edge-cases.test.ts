@@ -24,13 +24,13 @@ describe('BatchEnforcer.detectWorkspaceType — edge cases', () => {
     expect(await enforcer.detectWorkspaceType()).toBe('greenfield');
   });
 
-  test('docs-only repo (only .md files) → greenfield', async () => {
+  test('docs-only repo (only .md files) → docs_only', async () => {
     await fs.writeFile(path.join(tmpDir, 'README.md'), '# Project');
     await fs.mkdir(path.join(tmpDir, 'docs'));
     await fs.writeFile(path.join(tmpDir, 'docs', 'plan.md'), '## Plan');
     await fs.writeFile(path.join(tmpDir, 'docs', 'spec.md'), '## Spec');
     const enforcer = new BatchEnforcer(tmpDir);
-    expect(await enforcer.detectWorkspaceType()).toBe('greenfield');
+    expect(await enforcer.detectWorkspaceType()).toBe('docs_only');
   });
 
   test('.bormagi/ plans only → greenfield', async () => {
@@ -153,8 +153,8 @@ describe('BatchEnforcer.checkWritePermission — edge cases', () => {
     expect(enforcer.checkWritePermission('/src/index.ts', state, 'BLOCKED', 'greenfield')).toBeNull();
   });
 
-  test('scaffolded without batch → blocked', () => {
+  test('scaffolded without batch → allowed (batch only required for greenfield)', () => {
     const state = makeState([]);
-    expect(enforcer.checkWritePermission('src/x.ts', state, 'BLOCKED', 'scaffolded')).toBe('BLOCKED');
+    expect(enforcer.checkWritePermission('src/x.ts', state, 'BLOCKED', 'scaffolded')).toBeNull();
   });
 });

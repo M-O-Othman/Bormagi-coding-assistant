@@ -169,14 +169,18 @@ export class PromptAssembler {
  * Used in PromptContext.workspaceSummary.
  */
 export function buildWorkspaceSummary(
-  type: 'greenfield' | 'scaffolded' | 'mature',
+  type: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature',
   keyFiles: string[]
 ): string {
-  if (type === 'greenfield') {
-    return '[Greenfield] No runnable code scaffold yet. Documentation may exist. Start by declaring the file batch and writing the first scaffold file.';
-  }
   const files = keyFiles.slice(0, 5).join(', ');
-  return type === 'scaffolded'
-    ? `[Scaffolded] Early-stage project. Key files: ${files || 'none'}.`
-    : `[Mature] Existing codebase. Read key files before modifying. Key files: ${files || 'none'}.`;
+  switch (type) {
+    case 'greenfield':
+      return `[Workspace: empty] No project files or documentation present.`;
+    case 'docs_only':
+      return `[Workspace: docs_only] Documentation and plan files present. No project manifest or source code yet. Files: ${files || 'none'}.`;
+    case 'scaffolded':
+      return `[Workspace: scaffolded] Early-stage project with fewer than 5 source files. Files: ${files || 'none'}.`;
+    case 'mature':
+      return `[Workspace: mature] Established codebase. Files: ${files || 'none'}.`;
+  }
 }

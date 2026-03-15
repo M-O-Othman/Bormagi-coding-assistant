@@ -55,7 +55,7 @@ export interface ResolvedInputSummary {
 export interface ContextPacket {
   objective: string;
   mode: string;
-  workspaceType: 'greenfield' | 'scaffolded' | 'mature';
+  workspaceType: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature';
   phase: SessionPhase;
   nextAction?: string;
   nextToolCall?: NextToolCall;
@@ -465,7 +465,7 @@ export class ExecutionStateManager {
     lastToolName: string,
     lastToolPath: string | undefined,
     lastToolResult: string,
-    workspaceType: 'greenfield' | 'scaffolded' | 'mature',
+    workspaceType: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature',
   ): { nextAction: string; nextToolCall?: NextToolCall } | null {
     const planned = state.plannedFileBatch ?? [];
     const completed = state.completedBatchFiles ?? [];
@@ -477,7 +477,7 @@ export class ExecutionStateManager {
 
       // After reading a spec/requirements/plan file → write first implementation file
       if (lower.includes('spec') || lower.includes('requirement') || lower.includes('plan')) {
-        if (workspaceType === 'greenfield' || workspaceType === 'scaffolded') {
+        if (workspaceType === 'greenfield') {
           return {
             nextAction: 'Call declare_file_batch with the project file list, then write the first file',
           };
@@ -494,7 +494,7 @@ export class ExecutionStateManager {
     }
 
     // After list_files in greenfield → declare batch
-    if (lastToolName === 'list_files' && (workspaceType === 'greenfield' || workspaceType === 'scaffolded')) {
+    if (lastToolName === 'list_files' && workspaceType === 'greenfield') {
       return {
         nextAction: 'Call declare_file_batch with the project file list, then write the first implementation file',
       };
@@ -545,7 +545,7 @@ export class ExecutionStateManager {
    */
   computeDeterministicNextStep(
     state: ExecutionStateData,
-    workspaceType: 'greenfield' | 'scaffolded' | 'mature',
+    workspaceType: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature',
   ): { nextAction: string; nextToolCall?: NextToolCall } | null {
     const planned = state.plannedFileBatch ?? [];
     const completed = state.completedBatchFiles ?? [];
@@ -628,7 +628,7 @@ export class ExecutionStateManager {
   }
 
   /** Rebuild the compact context packet from current state. */
-  rebuildContextPacket(state: ExecutionStateData, workspaceType: 'greenfield' | 'scaffolded' | 'mature'): ContextPacket {
+  rebuildContextPacket(state: ExecutionStateData, workspaceType: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature'): ContextPacket {
     const packet: ContextPacket = {
       objective: state.objective,
       mode: state.mode,

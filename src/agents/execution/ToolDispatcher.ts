@@ -27,6 +27,8 @@ export interface DispatchResult {
   reasonCode?:
     | 'ALREADY_READ_UNCHANGED'
     | 'DISCOVERY_BUDGET_EXHAUSTED'
+    | 'DISCOVERY_LOCKED'
+    | 'INVALID_TOOL_PAYLOAD'
     | 'BATCH_REQUIRED'
     | 'BORMAGI_PATH_BLOCKED'
     | 'MODE_DISALLOWS_MUTATION'
@@ -43,6 +45,8 @@ interface ToolGuardState {
   filesReadThisRun: Map<string, string>;
   /** Set of paths written this run — re-reading is allowed after a write. */
   filesWrittenThisRun: Set<string>;
+  /** Hard lockout: after discovery budget exhaustion, block ALL discovery tools until a write succeeds. */
+  discoveryLocked: boolean;
 }
 
 /**
@@ -54,6 +58,7 @@ export class ToolDispatcher {
   private _guardState: ToolGuardState = {
     mode: '', useV2: false,
     filesReadThisRun: new Map(), filesWrittenThisRun: new Set(),
+    discoveryLocked: false,
   };
   private _budget: DiscoveryBudget = new DiscoveryBudget();
   private _execState: ExecutionStateData | null = null;
@@ -75,6 +80,7 @@ export class ToolDispatcher {
     this._guardState = {
       mode, useV2,
       filesReadThisRun: new Map(), filesWrittenThisRun: new Set(),
+      discoveryLocked: false,
     };
     this._budget = new DiscoveryBudget();
   }
@@ -268,11 +274,28 @@ export class ToolDispatcher {
         }
       }
 
+      // Discovery lockout: after budget exhaustion, hard-block ALL discovery tools
+      // until a successful write/edit unlocks discovery. This prevents infinite
+      // read→budget_warning→read loops that freeze the agent.
+      const DISCOVERY_TOOLS = new Set(['read_file', 'read_file_range', 'read_head', 'read_tail',
+        'read_match_context', 'read_symbol_block', 'list_files', 'glob_files',
+        'search_files', 'grep_content']);
+      if (g.discoveryLocked && DISCOVERY_TOOLS.has(toolEvent.name)) {
+        return {
+          text: '[DISCOVERY LOCKED] Discovery budget exhausted. You must write or edit a file before any further reads/searches. Call write_file or edit_file now.',
+          status: 'blocked',
+          reasonCode: 'DISCOVERY_LOCKED',
+          toolName: toolEvent.name,
+        };
+      }
+
       // Discovery budget enforcement (code mode only)
       if (g.mode === 'code') {
         const category = toolCategory(toolEvent.name);
         const check = this._budget.record(category);
         if (!check.allowed) {
+          // Activate hard lockout — no more discovery until a write succeeds
+          g.discoveryLocked = true;
           const hint = check.suggestion ? `\n${check.suggestion}` : '';
           return { text: `${check.reason ?? msgs.budgetExhausted}${hint}`, status: 'budget_exhausted', reasonCode: 'DISCOVERY_BUDGET_EXHAUSTED', toolName: toolEvent.name };
         }
@@ -331,6 +354,14 @@ export class ToolDispatcher {
       }
     } else if (toolEvent.name === 'write_file') {
       const inp = toolEvent.input as { path: string; content: string };
+      // Payload validation: reject malformed write_file calls before they reach the filesystem.
+      // DD9 direct dispatch and recovery paths can produce { path } with no content.
+      if (typeof inp.path !== 'string' || !inp.path) {
+        return { text: '[INVALID_PAYLOAD] write_file requires a non-empty "path" string.', status: 'blocked', reasonCode: 'INVALID_TOOL_PAYLOAD', toolName: 'write_file' };
+      }
+      if (typeof inp.content !== 'string') {
+        return { text: `[INVALID_PAYLOAD] write_file requires a "content" string for "${inp.path}". The content field was missing or undefined. Generate the file content and try again.`, status: 'blocked', reasonCode: 'INVALID_TOOL_PAYLOAD', toolName: 'write_file', path: inp.path };
+      }
       inp.path = this.getEffectivePath(inp.path);
 
       // ─── V2: artifact-aware write→edit redirect ───────────────────────────
@@ -341,24 +372,40 @@ export class ToolDispatcher {
       if (vscode.workspace.getConfiguration('bormagi').get<boolean>('executionEngineV2', false)) {
         const alreadyExists = await this._artifactExists(inp.path);
         if (alreadyExists) {
-          // Redirect: call edit_file via MCP instead of write_file
-          const mcpResult = await this.mcpHost.callTool('filesystem', {
-            name: 'edit_file',
-            input: { path: inp.path, content: inp.content },
-          });
-          await this.auditLogger.logFileWrite(path.join(this.workspaceRoot, inp.path), agentId);
-          const msgs = getAppData().executionMessages as any;
-          const redirectMsg = (msgs.artifactRedirect?.redirectedWriteToEdit ?? 'Redirected write_file to edit_file for existing file: {path}')
-            .replace('{path}', inp.path);
-          const innerResult = mcpResult.content.map((c: any) => c.text).join('\n');
-          result = `${innerResult}\n[redirected: write_file → edit_file | ${redirectMsg}]`;
+          // Check if edit_file is available in MCP before attempting redirect.
+          // If edit_file is not registered, fall through to normal write_file handling
+          // instead of failing with "Unknown tool: edit_file".
+          const toolServerMap = getAppData().toolServerMap ?? {};
+          if (toolServerMap['edit_file']) {
+            try {
+              const mcpResult = await this.mcpHost.callTool(toolServerMap['edit_file'], {
+                name: 'edit_file',
+                input: { path: inp.path, content: inp.content },
+              });
+              await this.auditLogger.logFileWrite(path.join(this.workspaceRoot, inp.path), agentId);
+              const msgs = getAppData().executionMessages as any;
+              const redirectMsg = (msgs.artifactRedirect?.redirectedWriteToEdit ?? 'Redirected write_file to edit_file for existing file: {path}')
+                .replace('{path}', inp.path);
+              const innerResult = mcpResult.content.map((c: any) => c.text).join('\n');
+              result = `${innerResult}\n[redirected: write_file → edit_file | ${redirectMsg}]`;
+              onThought({
+                type: 'tool_result',
+                label: `Result: write_file (redirected to edit_file)`,
+                detail: result.slice(0, 500),
+                timestamp: new Date(),
+              });
+              return { text: result, status: 'success', toolName: 'edit_file', path: inp.path };
+            } catch {
+              // edit_file call failed — fall through to normal write_file
+            }
+          }
+          // edit_file not available or failed — fall through to normal write_file.
+          // Log a thought so the user sees the redirect was skipped.
           onThought({
-            type: 'tool_result',
-            label: `Result: write_file (redirected to edit_file)`,
-            detail: result.slice(0, 500),
+            type: 'thinking',
+            label: `[Redirect skipped] edit_file unavailable — writing "${inp.path}" via write_file`,
             timestamp: new Date(),
           });
-          return { text: result, status: 'success', toolName: 'edit_file', path: inp.path };
         }
       }
 
@@ -405,6 +452,13 @@ export class ToolDispatcher {
       } else {
         result = `Tool "${toolEvent.name}" not found in any running MCP server.`;
       }
+    }
+
+    // Unlock discovery after any successful mutation — the agent made progress.
+    const MUTATION_TOOL_NAMES = new Set(['write_file', 'edit_file', 'replace_range', 'multi_edit',
+      'find_and_replace_symbol_block', 'insert_after_symbol_block']);
+    if (this._guardState.discoveryLocked && MUTATION_TOOL_NAMES.has(toolEvent.name)) {
+      this._guardState.discoveryLocked = false;
     }
 
     onThought({

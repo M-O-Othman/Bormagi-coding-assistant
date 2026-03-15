@@ -35,7 +35,7 @@ export class RecoveryManager {
     private readonly messages: ChatMessage[],
     private readonly promptAssembler: PromptAssembler,
     private readonly systemPrompt: string,
-    private readonly workspaceType: 'greenfield' | 'scaffolded' | 'mature',
+    private readonly workspaceType: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature',
     private readonly stateManager?: ExecutionStateManager,
   ) {}
 

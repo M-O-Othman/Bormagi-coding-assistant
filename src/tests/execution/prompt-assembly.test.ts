@@ -132,12 +132,19 @@ describe('PromptAssembler — assembleMessages', () => {
 });
 
 describe('buildWorkspaceSummary', () => {
-  test('greenfield returns descriptive summary with scaffold instruction', () => {
+  test('greenfield returns factual summary without imperative instructions', () => {
     const summary = buildWorkspaceSummary('greenfield', []);
-    expect(summary.toLowerCase()).toContain('greenfield');
-    // DD3: Greenfield message must drive scaffolding — docs may exist but no code yet
-    expect(summary).toContain('No runnable code scaffold');
-    expect(summary).toContain('file batch');
+    expect(summary.toLowerCase()).toContain('empty');
+    // Item 10: workspace summaries must be factual, not directive
+    expect(summary).not.toContain('Start by');
+    expect(summary).not.toContain('file batch');
+  });
+
+  test('docs_only returns factual summary mentioning documentation', () => {
+    const summary = buildWorkspaceSummary('docs_only', ['plan.md']);
+    expect(summary.toLowerCase()).toContain('docs_only');
+    expect(summary).toContain('plan.md');
+    expect(summary).not.toContain('Start by');
   });
 
   test('scaffolded includes key files', () => {
@@ -146,10 +153,11 @@ describe('buildWorkspaceSummary', () => {
     expect(summary).toContain('src/index.ts');
   });
 
-  test('mature includes key files and cautions about reading first', () => {
+  test('mature includes key files without imperative instructions', () => {
     const summary = buildWorkspaceSummary('mature', ['src/app.ts']);
     expect(summary.toLowerCase()).toContain('mature');
     expect(summary).toContain('src/app.ts');
+    expect(summary).not.toContain('Read key files before');
   });
 
   test('mature with empty key files still produces a valid string', () => {

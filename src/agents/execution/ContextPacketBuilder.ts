@@ -22,7 +22,7 @@ export class ContextPacketBuilder {
    */
   build(
     state: ExecutionStateData,
-    workspaceType: 'greenfield' | 'scaffolded' | 'mature',
+    workspaceType: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature',
     lastToolResult?: string,
     currentInstruction?: string,
   ): ContextPacketOutput {
