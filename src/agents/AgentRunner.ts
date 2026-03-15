@@ -59,6 +59,8 @@ import { RecoveryManager } from './execution/RecoveryManager';
 import { FileSummaryStore } from './execution/FileSummaryStore';
 import { ContextPacketBuilder } from './execution/ContextPacketBuilder';
 import { ContextCostTracker } from './execution/ContextCostTracker';
+import { ProgressGuard } from './execution/ProgressGuard';
+import { classifyUserMessage } from './execution/ObjectiveNormalizer';
 
 // ─── Sandbox imports ────────────────────────────────────────────────────────
 import { SandboxHandle } from '../sandbox/types';
@@ -685,12 +687,16 @@ export class AgentRunner {
     // the most recent entries to prevent unbounded growth.
     const AUDIT_TRANSCRIPT_MAX = 20; // keep last N entries for recovery/narration checks
 
-    // ─── Continue contract ────────────────────────────────────────────────────
-    // When the user says "continue" / "proceed", skip generic rediscovery and
-    // resume from the first pending action in the execution state.
-    const CONTINUE_PATTERN = /^\s*(continu[ei]|proceed|keep going|go on|go ahead|resume)\s*[.!]?\s*$/i;
-    const isContinueRequest = CONTINUE_PATTERN.test(userMessage);
+    // ─── Continue / nudge contract ──────────────────────────────────────────
+    // When the user says "continue", "proceed", "why did you stop", etc. — skip
+    // generic rediscovery and resume from the first pending action.
+    // IMPORTANT: nudge messages like "why did you stop" must NOT replace the
+    // primary objective — reconcileWithUserMessage now handles this.
+    // Uses ObjectiveNormalizer (single source of truth) for intent classification.
+    const messageIntent = classifyUserMessage(userMessage);
+    const isContinueRequest = messageIntent === 'continue' || messageIntent === 'nudge';
     let effectiveUserContent = userMessage;
+    let forceSilentOnResume = false;
     if (isContinueRequest) {
       // Increment continue counter for recovery trigger tracking
       execState.continueCount = (execState.continueCount ?? 0) + 1;
@@ -732,8 +738,19 @@ export class AgentRunner {
           ? `Resume implementation. Last completed: ${lastTool}. Next action: ${nextAction}. Do not re-read unchanged files.`
           : `Continue from where you stopped. Next pending action: ${nextAction}. Do not re-read unchanged files.`;
       } else {
-        onText('\n[Cannot resume: next action is missing; rebuilding execution state.]\n\n');
-        // Fall through with original message so the agent re-assesses
+        // Check for active batch with remaining files — use batch state as instruction
+        const batchPlanned = execState.plannedFileBatch ?? [];
+        const batchCompleted = execState.completedBatchFiles ?? [];
+        const batchRemaining = batchPlanned.filter(f => !batchCompleted.includes(f));
+        if (batchRemaining.length > 0) {
+          const nextFile = batchRemaining[0];
+          onText(`\n[Batch active: ${batchCompleted.length}/${batchPlanned.length} done — resuming with ${nextFile}]\n\n`);
+          effectiveUserContent = `Continue with the active batch. Write the next batch file now: ${nextFile}. Generate the full file content. Do not re-read any files.`;
+          forceSilentOnResume = true;
+        } else {
+          onText('\n[Cannot resume: next action is missing; rebuilding execution state.]\n\n');
+          // Fall through with original message so the agent re-assesses
+        }
       }
     }
 
@@ -894,13 +911,15 @@ export class AgentRunner {
       /call\s+the\s+next\s+tool\s+now/i,
     ];
     let silentExecution =
-      SILENT_TRIGGER_PATTERNS.some(p => p.test(userMessage));
+      SILENT_TRIGGER_PATTERNS.some(p => p.test(userMessage)) || forceSilentOnResume;
     // V2 — Nudge retry cap: prevent infinite nudge loops (max 2 retries per run).
     let nudgeRetryCount = 0;
     const MAX_NUDGE_RETRIES = 2;
     // Phase 5.2 — Silent reprompt counter: max 2 reprompts before treating as blocked
     let silentRepromptCount = 0;
     const MAX_SILENT_REPROMPTS = 2;
+    // Bug-fix004 item 15 — ProgressGuard: track productive vs non-productive turns
+    const progressGuard = new ProgressGuard();
     // #15 — Milestone stopping: pause the session every N writes so the agent
     // does not attempt to scaffold an entire project in one run.
     const milestoneWriteSize = vsConfig.get<number>('agent.milestoneWriteSize', 8);
@@ -1567,12 +1586,16 @@ export class AgentRunner {
             } else if (isWriteOrActionTool) {
               consecutiveReadCount = 0;
             }
-            if (consecutiveReadCount >= 5 && writtenPaths.size === 0) {
-              // Hard override: replace the tool result content entirely
-              toolResultContent = `[DISCOVERY BUDGET EXCEEDED] ${consecutiveReadCount} consecutive reads with no writes. Further discovery calls will be blocked. You MUST call write_file or edit_file now. Do not read, list, or search any more files.`;
+            if (consecutiveReadCount >= 3 && writtenPaths.size === 0) {
+              // Hard override at 3 reads: replace the tool result content, activate
+              // discovery lock in ToolDispatcher, and force execution phase.
+              // This prevents the advisory-only behaviour that allowed 6+ reads.
+              toolResultContent = `[DISCOVERY BUDGET EXCEEDED] ${consecutiveReadCount} consecutive reads with no writes. Further discovery calls will be BLOCKED. You MUST call write_file or edit_file now. Do not read, list, or search any more files.`;
               stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
-            } else if (consecutiveReadCount >= 3 && writtenPaths.size === 0) {
-              toolResultContent += `\n\n[Discovery Budget] ${consecutiveReadCount} consecutive reads with nothing written yet. Stop reading — write your first file now.`;
+              // Activate hard lockout in ToolDispatcher so subsequent reads are rejected
+              this.toolDispatcher.lockDiscovery();
+              // Activate silent execution to suppress narration and force tool calls
+              silentExecution = true;
             }
 
             if (isFileWrite && toolCallPath && toolResult.status === 'success' && toolResult.text.startsWith('File written')) {
@@ -1828,6 +1851,25 @@ export class AgentRunner {
         }
       }
 
+      // Bug-fix004 item 15 — ProgressGuard: evaluate whether this turn made progress.
+      // After MAX_NON_PROGRESS consecutive non-productive turns, force recovery.
+      {
+        const lastToolUsed = toolsUsed.length > 0 ? toolsUsed[toolsUsed.length - 1] : undefined;
+        const lastToolStatus = calledATool ? 'success' : undefined; // simplified — blocked tools don't set calledATool
+        const hadTextOnly = !calledATool && !!(turnAssistantText || lastAssistantText);
+        const progressVerdict = progressGuard.evaluate(calledATool, lastToolUsed, lastToolStatus, hadTextOnly);
+        if (progressVerdict === 'RECOVERY_REQUIRED') {
+          onThought?.({
+            type: 'thinking',
+            label: `[ProgressGuard] ${progressGuard.getState().nonProgressCount} non-progress turns — forcing recovery`,
+            timestamp: new Date(),
+          });
+          // Trigger recovery by setting state and letting the next iteration handle it
+          execState.blockedReadCount = Math.max(execState.blockedReadCount ?? 0, 3);
+          progressGuard.reset();
+        }
+      }
+
       // Phase 2.2 — StepContract inference
       // Classify the iteration outcome and drive loop continuation.
       {
@@ -1864,6 +1906,35 @@ export class AgentRunner {
               continueLoop = false;
             }
           }
+        }
+      }
+
+      // ─── BATCH CONTINUATION ENFORCEMENT ────────────────────────────────────
+      // If a batch is active with remaining files and the loop would stop,
+      // override the stop decision. This is the primary fix for the bug where
+      // the agent stops after writing one file when there are 17 remaining.
+      // The framework MUST force continuation — the LLM's narration/pause
+      // should not end a session with an active batch.
+      if (!continueLoop && iterationCount < maxToolIterations) {
+        const batchPlanned = execState.plannedFileBatch ?? [];
+        const batchCompleted = execState.completedBatchFiles ?? [];
+        const batchRemaining = batchPlanned.filter(f => !batchCompleted.includes(f));
+        const isTerminalPhase = execState.runPhase !== undefined && execState.runPhase !== 'RUNNING';
+
+        if (batchRemaining.length > 0 && !isTerminalPhase) {
+          const nextBatchFile = batchRemaining[0];
+          onThought?.({
+            type: 'thinking',
+            label: `[Batch continuation] Active batch has ${batchRemaining.length} remaining file(s) — forcing continuation to: ${nextBatchFile}`,
+            timestamp: new Date(),
+          });
+          // Replace the effective user content with a direct write instruction
+          effectiveUserContent = `Write the next batch file now: ${nextBatchFile}. Generate the full file content. Do not re-read any files — you have all the information you need from the plan and prior context.`;
+          // Clear current-step tool results so the prompt is compact
+          currentStepToolResults.splice(0, currentStepToolResults.length);
+          // Activate silent execution mode to suppress narration
+          silentExecution = true;
+          continueLoop = true;
         }
       }
     }

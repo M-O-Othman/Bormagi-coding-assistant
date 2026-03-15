@@ -73,20 +73,22 @@ describe('computeDeterministicNextStep', () => {
       plannedFileBatch: ['src/index.ts'],
     });
     const result = mgr.computeDeterministicNextStep(state, 'greenfield');
-    // Should return write_file for the remaining batch file, not another declare_file_batch
+    // Should return advisory text for the remaining batch file, not another declare_file_batch.
+    // write_file cannot be direct-dispatched (needs LLM-generated content), so nextToolCall is absent.
     expect(result).not.toBeNull();
-    expect(result!.nextToolCall?.tool).toBe('write_file');
+    expect(result!.nextToolCall).toBeUndefined();
+    expect(result!.nextAction).toContain('index.ts');
   });
 
-  test('batch exists with remaining files → write_file for next file', () => {
+  test('batch exists with remaining files → advisory text for next file (no direct dispatch)', () => {
     const state = makeState({
       plannedFileBatch: ['a.ts', 'b.ts', 'c.ts'],
       completedBatchFiles: ['a.ts'],
     });
     const result = mgr.computeDeterministicNextStep(state, 'scaffolded');
     expect(result).not.toBeNull();
-    expect(result!.nextToolCall?.tool).toBe('write_file');
-    expect(result!.nextToolCall?.input).toEqual({ path: 'b.ts' });
+    // write_file cannot be direct-dispatched — needs LLM-generated content
+    expect(result!.nextToolCall).toBeUndefined();
     expect(result!.nextAction).toContain('b.ts');
   });
 
@@ -186,15 +188,16 @@ describe('computeNextStep (advisory)', () => {
     expect(result!.nextAction).toContain('Read the most relevant file');
   });
 
-  test('after write_file with remaining batch → next batch file', () => {
+  test('after write_file with remaining batch → advisory text for next file (no direct dispatch)', () => {
     const state = makeState({
       plannedFileBatch: ['a.ts', 'b.ts'],
       completedBatchFiles: ['a.ts'],
     });
     const result = mgr.computeNextStep(state, 'write_file', 'a.ts', 'written', 'scaffolded');
     expect(result).not.toBeNull();
-    expect(result!.nextToolCall?.tool).toBe('write_file');
-    expect(result!.nextToolCall?.input).toEqual({ path: 'b.ts' });
+    // write_file cannot be direct-dispatched — needs LLM-generated content
+    expect(result!.nextToolCall).toBeUndefined();
+    expect(result!.nextAction).toContain('b.ts');
   });
 
   test('after edit_file → verify advice', () => {

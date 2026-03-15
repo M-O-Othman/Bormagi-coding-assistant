@@ -9,7 +9,8 @@ export type RecoveryTrigger =
   | 'REPEATED_CONTINUE_NO_PROGRESS'
   | 'ARTIFACT_WRITE_CONFLICT'
   | 'PROTOCOL_TEXT_IN_TRANSCRIPT'
-  | 'MISSING_NEXT_ACTION';
+  | 'MISSING_NEXT_ACTION'
+  | 'FORCED_BATCH_CONTINUATION';
 
 export interface RecoveryResult {
   success: boolean;
@@ -101,12 +102,24 @@ export class RecoveryManager {
 
       // DD6: Use deterministic next-step synthesis first, then fall back.
       // For REPEATED_BLOCKED_READS, never emit read/start-over instructions.
+      // IMPORTANT: Do NOT set nextToolCall for write_file — content must be LLM-generated.
       let nextActionHint: string;
+
+      // Compute deterministic hint for non-batch fallback paths
       const deterministic = this.stateManager?.computeDeterministicNextStep(this.execState, this.workspaceType);
-      if (deterministic?.nextToolCall) {
-        nextActionHint = deterministic.nextAction;
-        // Store the tool call so controller can dispatch directly
-        this.execState.nextToolCall = deterministic.nextToolCall;
+
+      // Batch-aware recovery: if batch is active, route directly to next batch file
+      const batchPlanned = this.execState.plannedFileBatch ?? [];
+      const batchCompleted = this.execState.completedBatchFiles ?? [];
+      const batchRemaining = batchPlanned.filter(f => !batchCompleted.includes(f));
+      if (batchRemaining.length > 0) {
+        const nextFile = batchRemaining[0];
+        nextActionHint = `Write the next batch file now: ${nextFile}. Generate the full file content based on the project plan and existing code. Do not re-read any files.`;
+        // Do NOT set nextToolCall — write_file needs LLM-generated content
+        // Clear any stale nextToolCall that might have write_file without content
+        if (this.execState.nextToolCall?.tool === 'write_file') {
+          this.execState.nextToolCall = undefined;
+        }
       } else if (this.execState.nextToolCall?.description) {
         nextActionHint = this.execState.nextToolCall.description;
       } else if ((this.execState.nextActions ?? []).length > 0) {

@@ -86,6 +86,15 @@ export class ToolDispatcher {
   }
 
   /**
+   * Activate hard discovery lockout. All discovery tool calls (read_file, list_files,
+   * search_files, etc.) will be rejected until a successful write/edit unlocks it.
+   * Called from AgentRunner when discovery budget is exceeded.
+   */
+  public lockDiscovery(): void {
+    this._guardState.discoveryLocked = true;
+  }
+
+  /**
    * Pre-populate the read cache from previous session's resolvedInputs.
    * This ensures reread prevention works across sessions — not just within one.
    * Files are marked as "read" with an empty string (content not available),
@@ -179,12 +188,15 @@ export class ToolDispatcher {
         const n = p.replace(/\\/g, '/').replace(/^\/+/, '');
         return n.startsWith('.bormagi/') || n === '.bormagi';
       };
-      // Allow writes to .bormagi/plans/ for plan documents (.md/.txt).
-      // Plans are agent output, not framework state.
+      // Allow WRITES to .bormagi/plans/ for plan documents (.md/.txt) — plans are agent output.
+      // READS of .bormagi/plans/ are BLOCKED in code mode — plan content should be normalized
+      // into execution state, not re-read repeatedly (prevents loop-detected read cycles).
       const isBormagiPlansAccess = (p: string, tool: string) => {
         const n = p.replace(/\\/g, '/').replace(/^\/+/, '');
         if (!n.startsWith('.bormagi/plans')) { return false; }
-        // Allow read_file, list_files, write_file, edit_file on .bormagi/plans/
+        // In code mode, block reads of .bormagi/plans/ — plan is already in execution state
+        if (this._guardState.mode === 'code' && (tool === 'read_file' || tool === 'list_files')) { return false; }
+        // In plan mode, allow reads for plan authoring
         if (tool === 'list_files' || tool === 'read_file') { return true; }
         if (tool !== 'write_file' && tool !== 'edit_file') { return false; }
         const ext = n.split('.').pop()?.toLowerCase() ?? '';

@@ -69,14 +69,29 @@ export class MilestoneFinalizer {
       return { action: 'BLOCK', reason: stepContract.blockedReason ?? 'Validation failed', recoverable: true };
     }
 
-    // 2. StepContract terminal signals
+    // 2. Batch heartbeat invariant (item 4, bug-fix004):
+    //    Active batch + remaining files + no hard blocker = MUST CONTINUE.
+    //    This overrides StepContract 'pause' signals — the LLM's narration/pause
+    //    must NOT end a session with an active batch.
+    const planned = state.plannedFileBatch ?? [];
+    const completed = state.completedBatchFiles ?? [];
+    const batchRemaining = planned.length > 0
+      ? planned.filter(f => !completed.includes(f))
+      : [];
+    const batchActive = batchRemaining.length > 0;
+
+    // 2a. StepContract terminal signals — but batch override 'pause'
     if (stepContract.kind === 'complete') {
+      // If batch still has remaining files, override 'complete' to CONTINUE
+      if (batchActive) { return { action: 'CONTINUE' }; }
       return { action: 'COMPLETE', message: stepContract.completionMessage ?? 'Task completed.' };
     }
     if (stepContract.kind === 'blocked') {
       return { action: 'BLOCK', reason: stepContract.blockedReason ?? 'Blocked', recoverable: stepContract.recoverable ?? true };
     }
     if (stepContract.kind === 'pause') {
+      // Batch heartbeat: active batch overrides pause — force continuation
+      if (batchActive) { return { action: 'CONTINUE' }; }
       return { action: 'WAIT', message: stepContract.pauseMessage ?? this.messages.waitAutoDetected };
     }
 
@@ -85,13 +100,8 @@ export class MilestoneFinalizer {
 
     if (isWriteTool) {
       // 3. Full batch written → validate then complete
-      const planned = state.plannedFileBatch ?? [];
-      if (planned.length > 0) {
-        const completed = state.completedBatchFiles ?? [];
-        const remaining = planned.filter(f => !completed.includes(f));
-        if (remaining.length === 0) {
-          return { action: 'VALIDATE', reason: this.messages.batchComplete };
-        }
+      if (planned.length > 0 && batchRemaining.length === 0) {
+        return { action: 'VALIDATE', reason: this.messages.batchComplete };
       }
 
       // 4. Wait-keyword file detection

@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { ExecutionSubPhase } from './execution/ExecutionPhase';
 import type { TaskTemplateName } from './execution/TaskTemplate';
+import { classifyUserMessage, normalizeObjective } from './execution/ObjectiveNormalizer';
 
 /**
  * Structured pointer to the next tool call to execute on resume.
@@ -78,6 +79,16 @@ export interface ExecutionStateData {
   agentId: string;
   /** Original user objective (capped at 500 chars). */
   objective: string;
+  /**
+   * Stable primary objective — set once on the first real task message
+   * and never overwritten by nudge/resume messages. V2 only.
+   */
+  primaryObjective?: string;
+  /**
+   * User nudge or resume message (e.g. "why did you stop", "continue").
+   * Preserved separately from the primary objective. V2 only.
+   */
+  resumeNote?: string;
   /** Last active mode (plan / code / review / …). */
   mode: string;
   workspaceRoot: string;
@@ -208,6 +219,8 @@ export class ExecutionStateManager {
       version: 2,
       agentId,
       objective,
+      primaryObjective: objective,
+      resumeNote: undefined,
       mode,
       workspaceRoot: this.workspaceRoot,
       resolvedInputs: [],
@@ -241,16 +254,14 @@ export class ExecutionStateManager {
 
   // ── Reconciliation ──────────────────────────────────────────────────────────
 
-  private static readonly CONTINUE_PATTERN = /^\s*(continu[ei]|proceed|keep going|go on|go ahead|resume)\s*[.!]?\s*$/i;
-
   /**
    * Reconcile persisted execution state with an incoming user message.
    *
-   * - If the message is a "continue" variant: only update objective text.
-   * - Otherwise (new task): reset objective, mode, runtime counters, executed
-   *   tools, blockedReadCount, continueCount, nextActions, nextToolCall, and
-   *   taskTemplate.  resolvedInputs and artifactsCreated are kept so the
-   *   reread / duplicate-write guards still function.
+   * Uses ObjectiveNormalizer (single source of truth) to classify intent:
+   * 1. "continue"/"proceed" variant → resume: keep primary objective.
+   * 2. Nudge ("why did you stop", etc.) → resume: keep primary objective, set resumeNote.
+   * 3. New task → reset objective and task-scoped counters. Preserve iteration count
+   *    if batch is active (to prevent counter drift).
    *
    * The explicit `mode` parameter ALWAYS wins — stored mode is never carried
    * over (Tasks 3 + 4).
@@ -260,21 +271,35 @@ export class ExecutionStateManager {
     userMessage: string,
     mode: string,
   ): void {
-    const isContinue = ExecutionStateManager.CONTINUE_PATTERN.test(userMessage);
+    const intent = classifyUserMessage(userMessage);
 
     // Mode parameter always wins — never let stored mode survive into a
     // different-mode session (Task 4).
     state.mode = mode;
 
-    if (isContinue) {
-      // Continuation: only refresh objective text (trim to 500 chars).
-      state.objective = userMessage.slice(0, 500);
-    } else {
-      // New task: reset everything that is task-scoped.
-      state.objective = userMessage.slice(0, 500);
+    if (intent === 'continue' || intent === 'nudge') {
+      // Resume/nudge: preserve the primary objective, store the nudge separately.
+      state.resumeNote = userMessage.slice(0, 200);
+      // Restore primaryObjective into objective if it was set (prevents objective drift)
+      if (state.primaryObjective) {
+        state.objective = state.primaryObjective;
+      }
+      // Reset runPhase to RUNNING so the loop can continue
       state.runPhase = 'RUNNING';
       state.waitStateReason = undefined;
-      state.iterationsUsed = 0;
+    } else {
+      // New task: reset everything that is task-scoped.
+      const normalized = normalizeObjective(userMessage);
+      state.objective = normalized;
+      state.primaryObjective = normalized;
+      state.resumeNote = undefined;
+      state.runPhase = 'RUNNING';
+      state.waitStateReason = undefined;
+      // Only reset iteration counter if no active batch (prevents counter drift
+      // when user starts a genuinely new task mid-batch).
+      if ((state.plannedFileBatch ?? []).length === 0) {
+        state.iterationsUsed = 0;
+      }
       state.blockedReadCount = 0;
       state.continueCount = 0;
       state.executedTools = [];
@@ -417,8 +442,9 @@ export class ExecutionStateManager {
    * Targets ~300 chars for typical tasks to minimise token overhead.
    */
   buildCompactSummary(state: ExecutionStateData): string {
+    const displayObjective = state.primaryObjective ?? state.objective;
     const lines: string[] = [
-      `Objective: ${state.objective.slice(0, 200)}`,
+      `Primary objective: ${displayObjective.slice(0, 200)}`,
       `Mode: ${state.mode} | Iterations: ${state.iterationsUsed}`,
     ];
 
@@ -508,11 +534,12 @@ export class ExecutionStateManager {
     }
 
     // After write_file with batch remaining → write the next batch file
+    // NOTE: write_file requires LLM-generated content — cannot be direct-dispatched.
+    // Only set advisory nextAction text; do NOT set nextToolCall (it would lack content).
     if (lastToolName === 'write_file' && remaining.length > 0) {
       const nextFile = remaining[0];
       return {
-        nextAction: `Write the next file in the batch: ${nextFile}`,
-        nextToolCall: { tool: 'write_file', input: { path: nextFile }, description: `Write batch file: ${nextFile}` },
+        nextAction: `Write the next batch file now: ${nextFile}. Generate the full file content based on the project plan and existing code.`,
       };
     }
 
@@ -561,12 +588,13 @@ export class ExecutionStateManager {
       }
     }
 
-    // 2. Batch exists + first file not yet written → write it
+    // 2. Batch exists + files remaining → write the next one
+    // NOTE: write_file requires LLM-generated content — cannot be direct-dispatched.
+    // Only set advisory nextAction text; do NOT set nextToolCall (it would lack content).
     if (remaining.length > 0) {
       const nextFile = remaining[0];
       return {
-        nextAction: `Write the next batch file: ${nextFile}`,
-        nextToolCall: { tool: 'write_file', input: { path: nextFile }, description: `Write batch file: ${nextFile}` },
+        nextAction: `Write the next batch file now: ${nextFile}. Generate the full file content based on the project plan and existing code.`,
       };
     }
 
@@ -686,11 +714,16 @@ export class ExecutionStateManager {
    * Kept under ~400 chars for common cases to minimise token overhead.
    */
   buildContextNote(state: ExecutionStateData): string {
+    // Use primaryObjective when available to prevent nudge messages from overwriting the task.
+    const displayObjective = state.primaryObjective ?? state.objective;
     const lines: string[] = [
       '[Execution State — resume context]',
-      `Objective: ${state.objective}`,
-      `Mode: ${state.mode} | Iterations used so far: ${state.iterationsUsed}`,
+      `Primary objective: ${displayObjective}`,
+      `Mode: ${state.mode} | Iterations: ${state.iterationsUsed}`,
     ];
+    if (state.resumeNote) {
+      lines.push(`Resume note: ${state.resumeNote}`);
+    }
 
     if (state.techStack && Object.keys(state.techStack).length > 0) {
       lines.push(
@@ -752,6 +785,8 @@ export class ExecutionStateManager {
     // DD1 enhanced fields
     data.artifactStatus ??= {};
     data.resolvedInputSummaries ??= [];
+    // Objective preservation fields
+    data.primaryObjective ??= data.objective;
     return data;
   }
 }
