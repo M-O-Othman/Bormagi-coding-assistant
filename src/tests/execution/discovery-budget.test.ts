@@ -51,7 +51,7 @@ describe('ToolDispatcher — discovery budget (code mode)', () => {
         { id: `${i}`, name: 'read_file', input: { path: `src/file${i}.ts` } },
         'agent', mockOnApproval, mockOnDiff, mockOnThought
       );
-      expect(result).not.toContain('[BUDGET]');
+      expect(result.text).not.toContain('[BUDGET]');
     }
   });
 
@@ -66,8 +66,8 @@ describe('ToolDispatcher — discovery budget (code mode)', () => {
       { id: '3', name: 'read_file', input: { path: 'src/file3.ts' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(result).toContain('[BUDGET]');
-    expect(result).toContain('Whole-file read limit reached');
+    expect(result.text).toContain('[BUDGET]');
+    expect(result.text).toContain('Whole-file read limit reached');
   });
 
   test('blocks list_files after 3 calls in code mode (glob limit = 3)', async () => {
@@ -81,8 +81,8 @@ describe('ToolDispatcher — discovery budget (code mode)', () => {
       { id: '4', name: 'list_files', input: { directory: 'src/dir4' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(result).toContain('[BUDGET]');
-    expect(result).toContain('Glob/list limit reached');
+    expect(result.text).toContain('[BUDGET]');
+    expect(result.text).toContain('Glob/list limit reached');
   });
 });
 
@@ -100,7 +100,7 @@ describe('ToolDispatcher — discovery budget (ask mode)', () => {
         { id: `${i}`, name: 'read_file', input: { path: `src/file${i}.ts` } },
         'agent', mockOnApproval, mockOnDiff, mockOnThought
       );
-      expect(result).not.toContain('[BUDGET]');
+      expect(result.text).not.toContain('[BUDGET]');
     }
   });
 });

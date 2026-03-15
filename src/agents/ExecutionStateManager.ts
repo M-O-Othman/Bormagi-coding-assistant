@@ -37,6 +37,36 @@ export interface ExecutedToolEntry {
 }
 
 /**
+ * Structured summary of a resolved (read) input file.
+ * Richer than a plain path — tracks content hash and summary for reuse.
+ */
+export interface ResolvedInputSummary {
+  path: string;
+  hash: string;
+  summary: string;
+  kind: 'requirements' | 'plan' | 'source' | 'config' | 'other';
+  lastReadAt: string;
+}
+
+/**
+ * Compact context packet — the minimal information needed to reconstruct
+ * a code-mode prompt without replaying raw transcript history.
+ */
+export interface ContextPacket {
+  objective: string;
+  mode: string;
+  workspaceType: 'greenfield' | 'scaffolded' | 'mature';
+  phase: SessionPhase;
+  nextAction?: string;
+  nextToolCall?: NextToolCall;
+  approvedPlanPath?: string;
+  resolvedInputs: ResolvedInputSummary[];
+  recentArtifacts: string[];
+  blockers: string[];
+  compactMilestone?: string;
+}
+
+/**
  * Compact cross-session task state — persisted to .bormagi/exec-state-<agentId>.json.
  *
  * Version 1: original shape (read-only tracking via buildContextNote prompt injection).
@@ -116,6 +146,21 @@ export interface ExecutionStateData {
    * Drives stop rules, batch requirements, and skill loading. V2 only.
    */
   taskTemplate?: TaskTemplateName;
+
+  // ── V2 enhanced fields (DD1 — context-awareness) ──────────────────────────
+
+  /** Compact context packet rebuilt each turn. V2 only. */
+  contextPacket?: ContextPacket;
+  /** Path to the approved plan file. Once set, code mode defaults to implementation. V2 only. */
+  approvedPlanPath?: string;
+  /** Lifecycle status of known artifacts (plans, specs, source files). V2 only. */
+  artifactStatus?: Record<string, 'drafted' | 'approved' | 'implemented' | 'superseded'>;
+  /** ISO timestamp of last meaningful progress (write/edit). V2 only. */
+  lastProgressAt?: string;
+  /** Tracks same-tool same-path repetition for loop breaking. V2 only. */
+  sameToolLoop?: { tool: string; path?: string; count: number };
+  /** Richer resolved input summaries with hash-based reuse. V2 only. */
+  resolvedInputSummaries?: ResolvedInputSummary[];
 }
 
 export class ExecutionStateManager {
@@ -184,6 +229,13 @@ export class ExecutionStateManager {
       blockedReadCount: 0,
       continueCount: 0,
       continueIterationSnapshot: 0,
+      // v2 enhanced fields (DD1)
+      contextPacket: undefined,
+      approvedPlanPath: undefined,
+      artifactStatus: {},
+      lastProgressAt: undefined,
+      sameToolLoop: undefined,
+      resolvedInputSummaries: [],
     };
   }
 
@@ -229,6 +281,7 @@ export class ExecutionStateManager {
       state.nextActions = [];
       state.nextToolCall = undefined;
       state.taskTemplate = undefined;
+      state.sameToolLoop = undefined;
       // Keep resolvedInputs + artifactsCreated so reread/dupe guards work.
     }
 
@@ -418,27 +471,39 @@ export class ExecutionStateManager {
     const completed = state.completedBatchFiles ?? [];
     const remaining = planned.filter(f => !completed.includes(f));
 
-    // After read_file on a spec / requirements file in greenfield → declare batch + write
-    if (lastToolName === 'read_file' && workspaceType === 'greenfield' && lastToolPath) {
+    // After reading a plan file in any mode → concrete write action
+    if (lastToolName === 'read_file' && lastToolPath) {
       const lower = lastToolPath.toLowerCase();
-      if (lower.includes('spec') || lower.includes('requirement') || lower.includes('readme')) {
+
+      // After reading a spec/requirements/plan file → write first implementation file
+      if (lower.includes('spec') || lower.includes('requirement') || lower.includes('plan')) {
+        if (workspaceType === 'greenfield' || workspaceType === 'scaffolded') {
+          return {
+            nextAction: 'Call declare_file_batch with the project file list, then write the first file',
+          };
+        }
         return {
-          nextAction: 'declare_file_batch with the project structure, then write the first file',
+          nextAction: 'Write the first implementation file now based on the plan you just read',
         };
       }
-    }
 
-    // After read_file on any file → proceed to implementation
-    if (lastToolName === 'read_file') {
+      // After reading any other file → write or edit
       return {
-        nextAction: 'Proceed to implementation — write or edit a file based on what you just read',
+        nextAction: 'Write or edit the next file based on what you just read — do not read more files',
       };
     }
 
-    // After list_files → read the most relevant file or start writing
+    // After list_files in greenfield → declare batch
+    if (lastToolName === 'list_files' && (workspaceType === 'greenfield' || workspaceType === 'scaffolded')) {
+      return {
+        nextAction: 'Call declare_file_batch with the project file list, then write the first implementation file',
+      };
+    }
+
+    // After list_files in mature → read or write
     if (lastToolName === 'list_files') {
       return {
-        nextAction: 'Read the most relevant file, or start writing if you have enough context',
+        nextAction: 'Read the most relevant file or start writing — do not list files again',
       };
     }
 
@@ -467,6 +532,151 @@ export class ExecutionStateManager {
 
     // Fallback: let the LLM decide
     return null;
+  }
+
+  // ── DD5: Deterministic next-step synthesis ─────────────────────────────────
+
+  /**
+   * Compute a deterministic, write-oriented next step based on structured state.
+   * Unlike computeNextStep() which is advisory, this method produces concrete
+   * tool calls that the controller can dispatch directly without an LLM round.
+   *
+   * Returns null when no deterministic recommendation is possible.
+   */
+  computeDeterministicNextStep(
+    state: ExecutionStateData,
+    workspaceType: 'greenfield' | 'scaffolded' | 'mature',
+  ): { nextAction: string; nextToolCall?: NextToolCall } | null {
+    const planned = state.plannedFileBatch ?? [];
+    const completed = state.completedBatchFiles ?? [];
+    const remaining = planned.filter(f => !completed.includes(f));
+
+    // 1. Approved plan exists + greenfield + no batch → advise LLM to declare batch
+    //    declare_file_batch is a virtual tool requiring LLM-supplied file list — cannot be direct-dispatched.
+    if (state.approvedPlanPath && state.artifactStatus?.[state.approvedPlanPath] === 'approved') {
+      if ((workspaceType === 'greenfield' || workspaceType === 'scaffolded') && planned.length === 0) {
+        return {
+          nextAction: 'Call declare_file_batch with the project file list from the approved plan, then write the first scaffold file',
+        };
+      }
+    }
+
+    // 2. Batch exists + first file not yet written → write it
+    if (remaining.length > 0) {
+      const nextFile = remaining[0];
+      return {
+        nextAction: `Write the next batch file: ${nextFile}`,
+        nextToolCall: { tool: 'write_file', input: { path: nextFile }, description: `Write batch file: ${nextFile}` },
+      };
+    }
+
+    // 3. Repeated blocked reads → force a write step
+    if ((state.blockedReadCount ?? 0) >= 2) {
+      if (workspaceType === 'greenfield' && planned.length === 0 && state.artifactsCreated.length === 0) {
+        return {
+          nextAction: 'Stop reading. Call declare_file_batch with the project file list, then write the first file',
+        };
+      }
+      if (state.artifactsCreated.length > 0) {
+        return {
+          nextAction: `Continue implementation — write or edit the next file`,
+        };
+      }
+    }
+
+    // 4. Greenfield with no batch and no artifacts → scaffold
+    if (workspaceType === 'greenfield' && planned.length === 0 && state.artifactsCreated.length === 0) {
+      return {
+        nextAction: 'Call declare_file_batch with the project file list, then write the first implementation file',
+      };
+    }
+
+    return null;
+  }
+
+  // ── DD1: Context packet and resolved input management ────────────────────
+
+  /**
+   * Set the approved plan path and update artifact status.
+   * Once set, code-mode turns default to implementation.
+   */
+  markPlanApproved(state: ExecutionStateData, planPath: string): void {
+    state.approvedPlanPath = planPath;
+    state.artifactStatus ??= {};
+    state.artifactStatus[planPath] = 'approved';
+    state.nextActions = ['Declare implementation batch and write first scaffold file'];
+    state.updatedAt = new Date().toISOString();
+  }
+
+  /** Set artifact lifecycle status for a given path. */
+  setArtifactStatus(state: ExecutionStateData, artifactPath: string, status: 'drafted' | 'approved' | 'implemented' | 'superseded'): void {
+    state.artifactStatus ??= {};
+    state.artifactStatus[artifactPath] = status;
+    state.updatedAt = new Date().toISOString();
+  }
+
+  /** Upsert a resolved input summary (hash-based reuse). */
+  upsertResolvedInputSummary(state: ExecutionStateData, summary: ResolvedInputSummary): void {
+    state.resolvedInputSummaries ??= [];
+    const idx = state.resolvedInputSummaries.findIndex(s => s.path === summary.path);
+    if (idx >= 0) {
+      state.resolvedInputSummaries[idx] = summary;
+    } else {
+      state.resolvedInputSummaries.push(summary);
+    }
+    state.updatedAt = new Date().toISOString();
+  }
+
+  /** Rebuild the compact context packet from current state. */
+  rebuildContextPacket(state: ExecutionStateData, workspaceType: 'greenfield' | 'scaffolded' | 'mature'): ContextPacket {
+    const packet: ContextPacket = {
+      objective: state.objective,
+      mode: state.mode,
+      workspaceType,
+      phase: state.runPhase ?? 'RUNNING',
+      nextAction: state.nextActions[0],
+      nextToolCall: state.nextToolCall,
+      approvedPlanPath: state.approvedPlanPath,
+      resolvedInputs: state.resolvedInputSummaries ?? [],
+      recentArtifacts: state.artifactsCreated.slice(-5),
+      blockers: state.blockers,
+      compactMilestone: state.lastExecutedTool
+        ? `Last tool: ${state.lastExecutedTool}`
+        : undefined,
+    };
+    state.contextPacket = packet;
+    return packet;
+  }
+
+  // ── DD4: Blocked read and tool loop tracking ─────────────────────────────
+
+  /** Increment blocked read counter and record the path. */
+  incrementBlockedRead(state: ExecutionStateData, blockedPath: string): void {
+    state.blockedReadCount = (state.blockedReadCount ?? 0) + 1;
+    state.updatedAt = new Date().toISOString();
+  }
+
+  /** Record a tool+path repetition for same-tool loop detection. */
+  recordToolLoop(state: ExecutionStateData, tool: string, toolPath?: string): void {
+    const current = state.sameToolLoop;
+    if (current && current.tool === tool && current.path === toolPath) {
+      current.count += 1;
+    } else {
+      state.sameToolLoop = { tool, path: toolPath, count: 1 };
+    }
+    state.updatedAt = new Date().toISOString();
+  }
+
+  /** Reset the same-tool loop tracker (after a productive action). */
+  resetToolLoop(state: ExecutionStateData): void {
+    state.sameToolLoop = undefined;
+    state.updatedAt = new Date().toISOString();
+  }
+
+  /** Record a write/edit as meaningful progress. */
+  markProgress(state: ExecutionStateData): void {
+    state.lastProgressAt = new Date().toISOString();
+    state.updatedAt = state.lastProgressAt;
   }
 
   // ── Context note builder ──────────────────────────────────────────────────
@@ -539,6 +749,9 @@ export class ExecutionStateManager {
     data.blockedReadCount ??= 0;
     data.continueCount ??= 0;
     data.continueIterationSnapshot ??= 0;
+    // DD1 enhanced fields
+    data.artifactStatus ??= {};
+    data.resolvedInputSummaries ??= [];
     return data;
   }
 }

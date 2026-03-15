@@ -173,7 +173,7 @@ export function buildWorkspaceSummary(
   keyFiles: string[]
 ): string {
   if (type === 'greenfield') {
-    return '[Greenfield] No project scaffold yet. Workspace is empty.';
+    return '[Greenfield] No runnable code scaffold yet. Documentation may exist. Start by declaring the file batch and writing the first scaffold file.';
   }
   const files = keyFiles.slice(0, 5).join(', ');
   return type === 'scaffolded'

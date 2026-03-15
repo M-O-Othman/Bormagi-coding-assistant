@@ -98,7 +98,7 @@ describe('ToolDispatcher — edit tools reset consecutive discovery counter', ()
       { id: 'pre', name: 'read_file_range', input: { path: 'src/check.ts', start_line: 1, end_line: 5 } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought,
     );
-    expect(preEdit).toContain('[BUDGET]');
+    expect(preEdit.text).toContain('[BUDGET]');
 
     // replace_range resets consecutive counter
     await dispatcher.dispatch(
@@ -111,7 +111,7 @@ describe('ToolDispatcher — edit tools reset consecutive discovery counter', ()
       { id: 'post', name: 'read_file_range', input: { path: 'src/check2.ts', start_line: 1, end_line: 5 } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought,
     );
-    expect(postEdit).not.toContain('[BUDGET]');
+    expect(postEdit.text).not.toContain('[BUDGET]');
   });
 
   test('multi_edit resets consecutive counter', async () => {
@@ -125,7 +125,7 @@ describe('ToolDispatcher — edit tools reset consecutive discovery counter', ()
       { id: 'bk', name: 'grep_content', input: { pattern: 'foo' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought,
     );
-    expect(blocked).toContain('[BUDGET]');
+    expect(blocked.text).toContain('[BUDGET]');
 
     await dispatcher.dispatch(
       { id: 'me1', name: 'multi_edit', input: { edits: [{ path: 'src/a.ts', start_line: 1, end_line: 1, replacement: 'x' }] } },
@@ -136,7 +136,7 @@ describe('ToolDispatcher — edit tools reset consecutive discovery counter', ()
       { id: 'ok', name: 'grep_content', input: { pattern: 'bar' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought,
     );
-    expect(allowed).not.toContain('[BUDGET]');
+    expect(allowed.text).not.toContain('[BUDGET]');
   });
 });
 
@@ -155,7 +155,7 @@ describe('ToolDispatcher — .bormagi blocking for edit tools', () => {
       { id: '1', name: 'replace_range', input: { path: '.bormagi/state.json', start_line: 1, end_line: 1, replacement: 'x' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought,
     );
-    expect(result).toContain('[BLOCKED]');
+    expect(result.text).toContain('[BLOCKED]');
     expect(mockMCPHost.callTool).not.toHaveBeenCalled();
   });
 
@@ -173,7 +173,7 @@ describe('ToolDispatcher — .bormagi blocking for edit tools', () => {
       },
       'agent', mockOnApproval, mockOnDiff, mockOnThought,
     );
-    expect(result).toContain('[BLOCKED]');
+    expect(result.text).toContain('[BLOCKED]');
     expect(mockMCPHost.callTool).not.toHaveBeenCalled();
   });
 });

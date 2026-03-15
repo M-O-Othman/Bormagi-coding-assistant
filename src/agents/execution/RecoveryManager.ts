@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../../types';
-import type { ExecutionStateData } from '../ExecutionStateManager';
+import { ExecutionStateManager, type ExecutionStateData } from '../ExecutionStateManager';
 import { sanitiseContent } from './TranscriptSanitiser';
 import { PromptAssembler, buildWorkspaceSummary } from './PromptAssembler';
 
@@ -36,6 +36,7 @@ export class RecoveryManager {
     private readonly promptAssembler: PromptAssembler,
     private readonly systemPrompt: string,
     private readonly workspaceType: 'greenfield' | 'scaffolded' | 'mature',
+    private readonly stateManager?: ExecutionStateManager,
   ) {}
 
   /** Check all 5 triggers. Returns the first matching trigger, or null. */
@@ -98,27 +99,33 @@ export class RecoveryManager {
         ].filter(Boolean).join('\n')
         : `Objective: ${this.execState.objective.slice(0, 200)}\n(No tools executed yet.)`;
 
-      // Determine what the next action should be — use state-derived hints
-      // before falling back to generic instructions (Task 6).
+      // DD6: Use deterministic next-step synthesis first, then fall back.
+      // For REPEATED_BLOCKED_READS, never emit read/start-over instructions.
       let nextActionHint: string;
-      if (this.execState.nextToolCall?.description) {
+      const deterministic = this.stateManager?.computeDeterministicNextStep(this.execState, this.workspaceType);
+      if (deterministic?.nextToolCall) {
+        nextActionHint = deterministic.nextAction;
+        // Store the tool call so controller can dispatch directly
+        this.execState.nextToolCall = deterministic.nextToolCall;
+      } else if (this.execState.nextToolCall?.description) {
         nextActionHint = this.execState.nextToolCall.description;
       } else if ((this.execState.nextActions ?? []).length > 0) {
         nextActionHint = this.execState.nextActions[0];
+      } else if (deterministic?.nextAction) {
+        nextActionHint = deterministic.nextAction;
       } else if (lastTool !== 'none') {
         // Derive from workspace type + last tool executed
         if (this.workspaceType === 'greenfield' && filesWritten.length === 0) {
-          nextActionHint = 'Start implementation: declare a file batch, then write the first file';
+          nextActionHint = 'Declare a file batch, then write the first file';
         } else if (filesWritten.length > 0) {
           nextActionHint = `Continue from last written file: ${filesWritten[filesWritten.length - 1]}`;
         } else {
-          nextActionHint = 'Proceed to write or edit the next file based on the objective';
+          nextActionHint = 'Write or edit the next file based on the objective';
         }
       } else {
-        // True last resort: no tools executed, no stored next actions
         nextActionHint = filesWritten.length > 0
           ? `Continue from last written file: ${filesWritten[filesWritten.length - 1]}`
-          : `Start implementation from the beginning`;
+          : 'Declare file batch and write the first implementation file';
       }
 
       const lastToolEntry = executedTools[executedTools.length - 1];

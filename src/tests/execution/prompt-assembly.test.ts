@@ -132,12 +132,12 @@ describe('PromptAssembler — assembleMessages', () => {
 });
 
 describe('buildWorkspaceSummary', () => {
-  test('greenfield returns descriptive summary (no imperative instructions)', () => {
+  test('greenfield returns descriptive summary with scaffold instruction', () => {
     const summary = buildWorkspaceSummary('greenfield', []);
     expect(summary.toLowerCase()).toContain('greenfield');
-    // Must describe facts only — no imperative "Start by..." instructions (Phase 0.4)
-    expect(summary).not.toMatch(/start by|you should|create package\.json/i);
-    expect(summary).toContain('empty');
+    // DD3: Greenfield message must drive scaffolding — docs may exist but no code yet
+    expect(summary).toContain('No runnable code scaffold');
+    expect(summary).toContain('file batch');
   });
 
   test('scaffolded includes key files', () => {

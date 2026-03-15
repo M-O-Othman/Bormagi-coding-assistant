@@ -31,16 +31,26 @@ export class BatchEnforcer {
   async detectWorkspaceType(): Promise<WorkspaceType> {
     const hasPkgJson = await this._exists('package.json');
     const hasSrcDir = await this._exists('src');
+    const hasBackend = await this._exists('backend');
+    const hasFrontend = await this._exists('frontend');
+    const hasApp = await this._exists('app');
 
-    if (!hasPkgJson && !hasSrcDir) {
+    // No project structure at all → greenfield
+    if (!hasPkgJson && !hasSrcDir && !hasBackend && !hasFrontend && !hasApp) {
       return 'greenfield';
     }
 
+    // Has project dirs but few source files → scaffolded
     if (hasPkgJson) {
       const sourceCount = await this._countSourceFiles();
       if (sourceCount < 5) {
         return 'scaffolded';
       }
+    }
+
+    // Has project dirs without package.json → scaffolded
+    if (!hasPkgJson && (hasBackend || hasFrontend || hasApp)) {
+      return 'scaffolded';
     }
 
     return 'mature';

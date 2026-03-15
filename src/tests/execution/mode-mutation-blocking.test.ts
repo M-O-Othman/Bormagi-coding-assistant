@@ -59,8 +59,8 @@ describe('ToolDispatcher — mutation tool blocking in ask/plan modes', () => {
         mockOnDiff,
         mockOnThought,
       );
-      expect(result).toMatch(/BLOCKED/i);
-      expect(result).toMatch(/ask/i);
+      expect(result.text).toMatch(/BLOCKED/i);
+      expect(result.text).toMatch(/ask/i);
     });
 
     test(`${toolName} in 'plan' mode returns BLOCKED message`, async () => {
@@ -72,8 +72,8 @@ describe('ToolDispatcher — mutation tool blocking in ask/plan modes', () => {
         mockOnDiff,
         mockOnThought,
       );
-      expect(result).toMatch(/BLOCKED/i);
-      expect(result).toMatch(/plan/i);
+      expect(result.text).toMatch(/BLOCKED/i);
+      expect(result.text).toMatch(/plan/i);
     });
   }
 
@@ -87,7 +87,7 @@ describe('ToolDispatcher — mutation tool blocking in ask/plan modes', () => {
       mockOnThought,
     );
     // Not the mode-block message
-    expect(result).not.toMatch(/Mode .* does not permit/i);
+    expect(result.text).not.toMatch(/Mode .* does not permit/i);
   });
 
   test('write_file in code mode is NOT blocked by mode guard (V2 enabled)', async () => {
@@ -100,6 +100,6 @@ describe('ToolDispatcher — mutation tool blocking in ask/plan modes', () => {
       mockOnDiff,
       mockOnThought,
     );
-    expect(result).not.toMatch(/Mode .* does not permit/i);
+    expect(result.text).not.toMatch(/Mode .* does not permit/i);
   });
 });

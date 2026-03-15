@@ -215,15 +215,15 @@ describe('ToolDispatcher — new search tools in code mode', () => {
         { id: `${i}`, name: 'glob_files', input: { pattern: 'src/**/*.ts' } },
         'agent', mockOnApproval, mockOnDiff, mockOnThought
       );
-      expect(result).not.toContain('[BUDGET]');
+      expect(result.text).not.toContain('[BUDGET]');
     }
     // 4th should be blocked
     const blocked = await dispatcher.dispatch(
       { id: '4', name: 'glob_files', input: { pattern: 'src/**/*.ts' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(blocked).toContain('[BUDGET]');
-    expect(blocked).toContain('Glob/list limit reached');
+    expect(blocked.text).toContain('[BUDGET]');
+    expect(blocked.text).toContain('Glob/list limit reached');
   });
 
   test('grep_content counts against grep budget in code mode', async () => {
@@ -232,14 +232,14 @@ describe('ToolDispatcher — new search tools in code mode', () => {
         { id: `${i}`, name: 'grep_content', input: { pattern: 'foo' } },
         'agent', mockOnApproval, mockOnDiff, mockOnThought
       );
-      expect(result).not.toContain('[BUDGET]');
+      expect(result.text).not.toContain('[BUDGET]');
     }
     const blocked = await dispatcher.dispatch(
       { id: '5', name: 'grep_content', input: { pattern: 'bar' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(blocked).toContain('[BUDGET]');
-    expect(blocked).toContain('Grep limit reached');
+    expect(blocked.text).toContain('[BUDGET]');
+    expect(blocked.text).toContain('Grep limit reached');
   });
 
   test('read_file_range counts as targeted_read, not whole_file', async () => {
@@ -255,14 +255,14 @@ describe('ToolDispatcher — new search tools in code mode', () => {
       { id: 'wf3', name: 'read_file', input: { path: 'src/file3.ts' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(wholeBlocked).toContain('[BUDGET]');
+    expect(wholeBlocked.text).toContain('[BUDGET]');
 
     // targeted reads still allowed
     const rangeResult = await dispatcher.dispatch(
       { id: 'r1', name: 'read_file_range', input: { path: 'src/file0.ts', start_line: 1, end_line: 50 } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(rangeResult).not.toContain('[BUDGET]');
+    expect(rangeResult.text).not.toContain('[BUDGET]');
   });
 
   test('getBudgetTelemetry returns accurate counts', async () => {
@@ -329,7 +329,7 @@ describe('ToolDispatcher — .bormagi blocking for new tools', () => {
       { id: '1', name: 'glob_files', input: { pattern: '.bormagi/**' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(result).toContain('[BLOCKED]');
+    expect(result.text).toContain('[BLOCKED]');
     expect(mockMCPHost.callTool).not.toHaveBeenCalled();
   });
 
@@ -342,6 +342,6 @@ describe('ToolDispatcher — .bormagi blocking for new tools', () => {
     );
     // Not blocked at dispatcher level — goes to server
     expect(mockMCPHost.callTool).toHaveBeenCalled();
-    expect(result).not.toContain('[BLOCKED] bormagi');
+    expect(result.text).not.toContain('[BLOCKED] bormagi');
   });
 });

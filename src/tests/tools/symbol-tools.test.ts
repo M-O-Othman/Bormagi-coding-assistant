@@ -171,7 +171,7 @@ describe('ToolDispatcher — .bormagi blocking for symbol tools', () => {
       { id: '1', name: 'read_symbol_block', input: { path: '.bormagi/state.json', symbol: 'anything' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought,
     );
-    expect(result).toContain('[BLOCKED]');
+    expect(result.text).toContain('[BLOCKED]');
     expect(mockMCPHost.callTool).not.toHaveBeenCalled();
   });
 
@@ -180,7 +180,7 @@ describe('ToolDispatcher — .bormagi blocking for symbol tools', () => {
       { id: '2', name: 'replace_symbol_block', input: { path: '.bormagi/config.json', symbol: 'foo', replacement: 'bad' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought,
     );
-    expect(result).toContain('[BLOCKED]');
+    expect(result.text).toContain('[BLOCKED]');
     expect(mockMCPHost.callTool).not.toHaveBeenCalled();
   });
 });

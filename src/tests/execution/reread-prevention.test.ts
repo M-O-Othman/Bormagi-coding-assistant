@@ -50,7 +50,9 @@ describe('ToolDispatcher — reread prevention', () => {
       { id: '1', name: 'read_file', input: { path: 'src/main.ts' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(result).not.toContain('[BLOCKED]');
+    // DD4: dispatch returns DispatchResult, not string
+    expect(result.text).not.toContain('[BLOCKED]');
+    expect(result.status).toBe('success');
   });
 
   test('returns brief pointer on re-read of unchanged file', async () => {
@@ -60,14 +62,15 @@ describe('ToolDispatcher — reread prevention', () => {
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
     dispatcher.cacheReadResult('src/main.ts', 'file content');
-    // Second read of same file — returns pointer, no MCP call
+    // Second read of same file — returns cached result, no MCP call
     const result = await dispatcher.dispatch(
       { id: '2', name: 'read_file', input: { path: 'src/main.ts' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(result).toContain('[Cached]');
-    expect(result).toContain('src/main.ts');
-    expect(result).toContain('already read');
+    // DD4: structured result with cached status
+    expect(result.status).toBe('cached');
+    expect(result.reasonCode).toBe('ALREADY_READ_UNCHANGED');
+    expect(result.text).toContain('src/main.ts');
     // MCP should only have been called once (for the first read)
     expect(mockMCPHost.callTool).toHaveBeenCalledTimes(1);
   });
@@ -78,15 +81,13 @@ describe('ToolDispatcher — reread prevention', () => {
       { id: '1', name: 'read_file', input: { path: 'src/main.ts' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    // Write to the file (guard state registers the write)
-    // We simulate by directly noting in guard state via resetGuardState + manual write tracking
-    // The write tracking is internal — just re-read the file (different path) to verify logic
     // Here we test a different path (no prior read) to confirm allows first reads always
     const result2 = await dispatcher.dispatch(
       { id: '2', name: 'read_file', input: { path: 'src/other.ts' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(result2).not.toContain('[BLOCKED]');
+    expect(result2.text).not.toContain('[BLOCKED]');
+    expect(result2.status).toBe('success');
   });
 
   test('reread check does not block in V1 mode', async () => {
@@ -104,6 +105,6 @@ describe('ToolDispatcher — reread prevention', () => {
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
     // V2 off → no blocking
-    expect(result).not.toContain('[BLOCKED]');
+    expect(result.text).not.toContain('[BLOCKED]');
   });
 });

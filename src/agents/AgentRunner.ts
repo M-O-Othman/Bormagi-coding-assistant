@@ -17,7 +17,7 @@ import type { AgentExecutionResult } from '../workflow/types';
 import { ExecutionOutcome } from '../workflow/enums';
 import { scanForSecrets, trimToContextLimit } from './execution/ContextWindow';
 import { parseStructuredCompletion, sanitiseExecutionResult } from './execution/CompletionParser';
-import { ToolDispatcher } from './execution/ToolDispatcher';
+import { ToolDispatcher, type DispatchResult } from './execution/ToolDispatcher';
 import {
   buildRepoSummary,
   formatRelevantContext,
@@ -26,6 +26,8 @@ import {
   selectRelevantFileSnippets
 } from './execution/PromptEfficiency';
 import type { ApprovalCallback, DiffCallback, ThoughtCallback } from './execution/ToolDispatcher';
+import { buildExecutionHistory } from './execution/ExecutionHistoryReducer';
+import { sanitiseCodeModeNarration } from './execution/TranscriptSanitiser';
 import { getAppData } from '../data/DataStore';
 import { KnowledgeManager } from '../knowledge/KnowledgeManager';
 import { RetrievalService } from '../knowledge/RetrievalService';
@@ -42,7 +44,7 @@ import { GitService } from '../git/GitService';
 import { CheckpointManager } from '../git/CheckpointManager';
 import { ValidationService } from '../git/ValidationService';
 import { CommitProposalGenerator } from '../git/CommitProposalGenerator';
-import { ExecutionStateManager, type ExecutionStateData, type SessionPhase } from './ExecutionStateManager';
+import { ExecutionStateManager, type ExecutionStateData, type SessionPhase, type ResolvedInputSummary } from './ExecutionStateManager';
 import { DISCOVERY_TOOLS, MUTATION_TOOLS } from './execution/ExecutionPhase';
 import { inferStepContract } from './execution/StepContract';
 import { classifyTask } from './execution/TaskClassifier';
@@ -54,6 +56,9 @@ import { ArchitectureLock } from './execution/ArchitectureLock';
 import { sanitiseContent, sanitiseTranscript } from './execution/TranscriptSanitiser';
 import { PromptAssembler, buildWorkspaceSummary, type PromptContext } from './execution/PromptAssembler';
 import { RecoveryManager } from './execution/RecoveryManager';
+import { FileSummaryStore } from './execution/FileSummaryStore';
+import { ContextPacketBuilder } from './execution/ContextPacketBuilder';
+import { ContextCostTracker } from './execution/ContextCostTracker';
 
 // ─── Sandbox imports ────────────────────────────────────────────────────────
 import { SandboxHandle } from '../sandbox/types';
@@ -262,6 +267,15 @@ export class AgentRunner {
       workspaceHeader: _paSection.workspaceHeader ?? '[Workspace]',
       milestoneSummaryPrefix: _paSection.milestoneSummaryPrefix ?? 'Prior milestone: ',
     });
+
+    // DD7: FileSummaryStore — hash-based file summary cache for reuse instead of re-reading.
+    const fileSummaryStore = new FileSummaryStore();
+
+    // DD7: ContextPacketBuilder — builds compact context packets from execution state.
+    const contextPacketBuilder = new ContextPacketBuilder();
+
+    // DD12: ContextCostTracker — per-turn token cost telemetry.
+    const contextCostTracker = new ContextCostTracker();
 
     // Initialise sandbox
     if (this.sandboxManager && !this.activeSandbox && isSandboxEnabled) {
@@ -559,10 +573,6 @@ export class AgentRunner {
     //    Bootstrap injection and ad-hoc retrieval context are now handled by the
     //    context pipeline above, so those intermediate messages are no longer needed.
     const sessionHistory = await this.memoryManager.getSessionHistoryWithMemory(agentId);
-    const messages: ChatMessage[] = [
-      { role: 'system', content: fullSystem },
-      ...sessionHistory,
-    ];
 
     const bootstrapContext = ''; // kept for measureRequestSize compat — pipeline handles context
     const retrievalContext = ''; // kept for measureRequestSize compat — pipeline handles context
@@ -573,9 +583,6 @@ export class AgentRunner {
       this.loadArtifactRegistryNote(),
       this.loadArtifactPaths(),
     ]);
-    if (artifactNote) {
-      messages.push({ role: 'system', content: artifactNote });
-    }
 
     // ─── Structured execution state ──────────────────────────────────────────
     // Load or create compact task state so the model has a structured summary of
@@ -600,6 +607,35 @@ export class AgentRunner {
     // sessions so the framework actually blocks re-reads (not just a prompt hint).
     if (execState.resolvedInputs && execState.resolvedInputs.length > 0) {
       this.toolDispatcher.seedReadCache(execState.resolvedInputs);
+    }
+
+    // ─── DD2 + DD10: Build messages array — code mode uses execution history, not raw transcript ──
+    const stateNote = stateManager.buildContextNote(execState);
+    const messages: ChatMessage[] = [
+      { role: 'system', content: fullSystem },
+    ];
+    if (mode === 'code') {
+      // DD2: Code mode gets only structured execution state + artifact registry.
+      // Zero raw previous assistant narration to prevent loop-causing patterns.
+      messages.push(...buildExecutionHistory(execState, stateNote, artifactNote || undefined));
+    } else if (mode === 'ask') {
+      // Ask mode gets full conversation history for continuity.
+      messages.push(...sessionHistory);
+      if (artifactNote) { messages.push({ role: 'system', content: artifactNote }); }
+    } else {
+      // Plan/review modes get artifact note + state note but no raw history.
+      if (artifactNote) { messages.push({ role: 'system', content: artifactNote }); }
+      messages.push({ role: 'system', content: stateNote });
+    }
+
+    // ─── DD10: Resolve approved plan path ────────────────────────────────────
+    // If user switched to code mode and we have a plan artifact, mark it approved.
+    if (mode === 'code' && !execState.approvedPlanPath) {
+      const planPath = this.resolveApprovedPlanPath(execState, registeredArtifactPaths, userMessage);
+      if (planPath) {
+        stateManager.markPlanApproved(execState, planPath);
+        stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+      }
     }
 
     // Phase 8.3 — Classify task template once at run start
@@ -630,25 +666,24 @@ export class AgentRunner {
       });
     }
 
-    const stateNote = stateManager.buildContextNote(execState);
-    messages.push({ role: 'system', content: stateNote });
-
     // ─── #16 Greenfield repo detector ────────────────────────────────────────
     // Classify the workspace maturity and inject a short guidance note so the
     // model knows whether to scaffold from scratch or build on existing files.
-    const wsType = await this.detectWorkspaceType();
-    messages.push({ role: 'system', content: this.buildWorkspaceTypeNote(wsType) });
+    // Task 7: Reuse batchEnforcer.detectWorkspaceType() (computed at line 361)
+    // instead of the separate AgentRunner.detectWorkspaceType() heuristic.
+    messages.push({ role: 'system', content: this.buildWorkspaceTypeNote(detectedWorkspaceType) });
 
-    // Capture workspace type as the enum expected by PromptAssembler / RecoveryManager.
-    const wsTypeStr = String(wsType).toLowerCase();
-    const detectedWsType: 'greenfield' | 'scaffolded' | 'mature' =
-      wsTypeStr.includes('green') ? 'greenfield'
-        : wsTypeStr.includes('scaffold') ? 'scaffolded'
-          : 'mature';
+    // detectedWsType is now the same as detectedWorkspaceType (unified source).
+    const detectedWsType = detectedWorkspaceType;
 
     // V2: per-iteration tool results — reset each loop so PromptAssembler only sees
     // the CURRENT step's results, not the full replayed history.
     const currentStepToolResults: ChatMessage[] = [];
+
+    // DD8: In code mode, `messages` serves as the audit transcript only — provider calls
+    // are built fresh each iteration by PromptAssembler. Cap the audit transcript to
+    // the most recent entries to prevent unbounded growth.
+    const AUDIT_TRANSCRIPT_MAX = 20; // keep last N entries for recovery/narration checks
 
     // ─── Continue contract ────────────────────────────────────────────────────
     // When the user says "continue" / "proceed", skip generic rediscovery and
@@ -668,16 +703,17 @@ export class AgentRunner {
         const label = ntc.description ?? ntc.tool;
         onText(`\n[Resuming: ${label}]\n\n`);
         // Dispatch the tool directly — no LLM call needed for resume
+        contextCostTracker.recordSkippedLLMCall();
         try {
           const directResult = await this.toolDispatcher.dispatch(
             { id: `resume-${Date.now()}`, name: ntc.tool, input: ntc.input },
             agentId, onApproval, onDiff, onThought
           );
-          stateManager.markToolExecuted(execState, ntc.tool, undefined, directResult.slice(0, 150));
+          stateManager.markToolExecuted(execState, ntc.tool, undefined, directResult.text.slice(0, 150));
           stateManager.clearNextToolCall(execState);
           stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
           // Continue with the result as the current user content
-          const toolResultMsg: ChatMessage = { role: 'tool_result', content: directResult, toolCallId: `resume-${Date.now()}` };
+          const toolResultMsg: ChatMessage = { role: 'tool_result', content: directResult.text, toolCallId: `resume-${Date.now()}` };
           currentStepToolResults.push(toolResultMsg);
           messages.push(toolResultMsg);
           effectiveUserContent = `Resumed from nextToolCall: ${label}. Continue with the next step.`;
@@ -839,6 +875,8 @@ export class AgentRunner {
     let continueLoop = true;
     let isFirstModelRequest = true;
     let iterationCount = 0;
+    // Task 10: Track tool+path combinations to detect loops
+    const toolPathCounts = new Map<string, number>();
     // Phase 5 — Recovery: limit how many times recovery can fire per run.
     // Without a cap, recovery → same trigger → recovery creates an infinite loop.
     let recoveryAttempts = 0;
@@ -875,6 +913,10 @@ export class AgentRunner {
       batchCheckpoint: _mmSection.batchCheckpoint ?? 'Batch checkpoint reached — running validation.',
       batchComplete: _mmSection.batchComplete ?? 'All batch files written — validating output.',
     });
+
+    // Virtual tools are handled in the streaming event handler, not by ToolDispatcher.
+    // They must never be directly dispatched via bypass/DD9 — they'd fail with "Tool not found".
+    const VIRTUAL_TOOLS = new Set(['declare_file_batch', 'update_task_state']);
 
     while (continueLoop) {
       // Phase 4: terminal state check — exit immediately if runPhase is no longer RUNNING
@@ -968,7 +1010,7 @@ export class AgentRunner {
       // Skip if we've already exhausted recovery attempts for this run — prevents
       // infinite recovery loops where the same trigger fires every iteration.
       if (recoveryAttempts < MAX_RECOVERY_ATTEMPTS) {
-        const recoveryManager = new RecoveryManager(execState, messages, promptAssembler, fullSystem, detectedWsType);
+        const recoveryManager = new RecoveryManager(execState, messages, promptAssembler, fullSystem, detectedWsType, stateManager);
         const trigger = recoveryManager.shouldRecover();
         if (trigger) {
           recoveryAttempts++;
@@ -990,18 +1032,22 @@ export class AgentRunner {
             // After REPEATED_BLOCKED_READS recovery: force a deterministic next
             // step instead of letting the LLM loop back into reads.
             if (trigger === 'REPEATED_BLOCKED_READS') {
-              if (execState.nextToolCall) {
+              // DD9: Try deterministic next step first
+              const deterministicStep = stateManager.computeDeterministicNextStep(execState, detectedWsType);
+              const nextToolCall = deterministicStep?.nextToolCall ?? execState.nextToolCall;
+              if (nextToolCall && !VIRTUAL_TOOLS.has(nextToolCall.tool)) {
                 // Direct dispatch — skip LLM call entirely
-                const ntc = execState.nextToolCall;
-                onThought?.({ type: 'thinking', label: `[Strategy switch] Dispatching stored nextToolCall: ${ntc.tool}`, timestamp: new Date() });
+                contextCostTracker.recordSkippedLLMCall();
+                const ntc = nextToolCall;
+                onThought?.({ type: 'thinking', label: `[Strategy switch] Dispatching deterministic nextToolCall: ${ntc.tool}`, timestamp: new Date() });
                 const directResult = await this.toolDispatcher.dispatch(
                   { id: `strategy-${Date.now()}`, name: ntc.tool, input: ntc.input as Record<string, unknown> },
                   agentId, onApproval, onDiff, onThought
                 );
-                stateManager.markToolExecuted(execState, ntc.tool, (ntc.input as Record<string, unknown>).path as string | undefined, String(directResult).slice(0, 150));
+                stateManager.markToolExecuted(execState, ntc.tool, (ntc.input as Record<string, unknown>).path as string | undefined, directResult.text.slice(0, 150));
                 stateManager.clearNextToolCall(execState);
                 stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
-                const truncDirect = String(directResult).length > 8000 ? String(directResult).slice(0, 8000) + '\n[truncated]' : String(directResult);
+                const truncDirect = directResult.text.length > 8000 ? directResult.text.slice(0, 8000) + '\n[truncated]' : directResult.text;
                 messages.push({ role: 'tool_result', content: `<tool_result name="${ntc.tool}">\n${truncDirect}\n</tool_result>` });
                 currentStepToolResults.push({ role: 'tool_result', content: `<tool_result name="${ntc.tool}">\n${truncDirect}\n</tool_result>` });
               } else if (execState.nextActions.length > 0) {
@@ -1009,11 +1055,11 @@ export class AgentRunner {
                 effectiveUserContent = execState.nextActions[0];
                 onThought?.({ type: 'thinking', label: `[Strategy switch] Using nextAction as instruction: ${effectiveUserContent.slice(0, 100)}`, timestamp: new Date() });
               } else {
-                // Synthesize from workspace type + what's been done
-                const hint = stateManager.computeNextStep(execState, execState.lastExecutedTool ?? 'none', undefined, '', detectedWsType);
+                // Use deterministic step from DD5 or fall back to advisory computeNextStep
+                const hint = deterministicStep ?? stateManager.computeNextStep(execState, execState.lastExecutedTool ?? 'none', undefined, '', detectedWsType);
                 if (hint) {
                   effectiveUserContent = hint.nextAction;
-                  if (hint.nextToolCall) { stateManager.setNextToolCall(execState, hint.nextToolCall.tool, hint.nextToolCall.input, hint.nextToolCall.description); }
+                  if (hint.nextToolCall && !VIRTUAL_TOOLS.has(hint.nextToolCall.tool)) { stateManager.setNextToolCall(execState, hint.nextToolCall.tool, hint.nextToolCall.input, hint.nextToolCall.description); }
                   onThought?.({ type: 'thinking', label: `[Strategy switch] Synthesized: ${hint.nextAction.slice(0, 100)}`, timestamp: new Date() });
                 }
               }
@@ -1027,14 +1073,136 @@ export class AgentRunner {
         }
       }
 
+      // DD9: After N cached rereads, bypass LLM and force next write step.
+      // Use computeDeterministicNextStep first (DD5), then fall back to stored nextToolCall.
+      if ((execState.blockedReadCount ?? 0) >= 3) {
+        const deterministicBypass = stateManager.computeDeterministicNextStep(execState, detectedWsType);
+        const bypassNtc = deterministicBypass?.nextToolCall ?? execState.nextToolCall;
+        if (bypassNtc && !VIRTUAL_TOOLS.has(bypassNtc.tool)) {
+          contextCostTracker.recordSkippedLLMCall();
+          onThought?.({ type: 'thinking', label: `[Blocked-read bypass] Dispatching: ${bypassNtc.tool}`, timestamp: new Date() });
+          const bypassResult = await this.toolDispatcher.dispatch(
+            { id: `bypass-${Date.now()}`, name: bypassNtc.tool, input: bypassNtc.input as Record<string, unknown> },
+            agentId, onApproval, onDiff, onThought
+          );
+          stateManager.markToolExecuted(execState, bypassNtc.tool, (bypassNtc.input as Record<string, unknown>).path as string | undefined, bypassResult.text.slice(0, 150));
+          stateManager.clearNextToolCall(execState);
+          execState.blockedReadCount = 0;
+          stateManager.resetToolLoop(execState);
+          stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+          const truncBypass = bypassResult.text.length > 8000 ? bypassResult.text.slice(0, 8000) + '\n[truncated]' : bypassResult.text;
+          const bypassMsg: ChatMessage = { role: 'tool_result', content: `<tool_result name="${bypassNtc.tool}">\n${truncBypass}\n</tool_result>` };
+          messages.push(bypassMsg);
+          currentStepToolResults.push(bypassMsg);
+          calledATool = true;
+          continueLoop = true;
+          iterationCount++; // Prevent infinite loop — count bypass dispatches
+          continue;
+        } else {
+          const bypassHint = deterministicBypass ?? stateManager.computeNextStep(execState, execState.lastExecutedTool ?? 'none', undefined, '', detectedWsType);
+          if (bypassHint) {
+            effectiveUserContent = bypassHint.nextAction;
+            if (bypassHint.nextToolCall && !VIRTUAL_TOOLS.has(bypassHint.nextToolCall.tool)) {
+              stateManager.setNextToolCall(execState, bypassHint.nextToolCall.tool, bypassHint.nextToolCall.input, bypassHint.nextToolCall.description);
+            }
+            execState.blockedReadCount = 0;
+            onThought?.({ type: 'thinking', label: `[Blocked-read bypass] Synthesized: ${bypassHint.nextAction.slice(0, 100)}`, timestamp: new Date() });
+          }
+        }
+      }
+
+      // Task 9: Detect repetitive narration and force write
+      if (this.isRepetitiveNarration(messages, writtenPaths)) {
+        const narDeterministic = stateManager.computeDeterministicNextStep(execState, detectedWsType);
+        const narNtc = narDeterministic?.nextToolCall ?? execState.nextToolCall;
+        if (narNtc && !VIRTUAL_TOOLS.has(narNtc.tool)) {
+          contextCostTracker.recordSkippedLLMCall();
+          onThought?.({ type: 'thinking', label: `[Narration bypass] Dispatching: ${narNtc.tool}`, timestamp: new Date() });
+          const narBypassResult = await this.toolDispatcher.dispatch(
+            { id: `narbypass-${Date.now()}`, name: narNtc.tool, input: narNtc.input as Record<string, unknown> },
+            agentId, onApproval, onDiff, onThought
+          );
+          stateManager.markToolExecuted(execState, narNtc.tool, (narNtc.input as Record<string, unknown>).path as string | undefined, narBypassResult.text.slice(0, 150));
+          stateManager.clearNextToolCall(execState);
+          stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+          const truncNar = narBypassResult.text.length > 8000 ? narBypassResult.text.slice(0, 8000) + '\n[truncated]' : narBypassResult.text;
+          const narMsg: ChatMessage = { role: 'tool_result', content: `<tool_result name="${narNtc.tool}">\n${truncNar}\n</tool_result>` };
+          messages.push(narMsg);
+          currentStepToolResults.push(narMsg);
+          calledATool = true;
+          continueLoop = true;
+          iterationCount++; // Prevent infinite loop — count narration bypass dispatches
+          continue;
+        } else {
+          // Replace the user message with a forced write instruction
+          effectiveUserContent = 'TOOL ONLY — do not narrate. Write the first implementation file now.';
+          onThought?.({ type: 'thinking', label: '[Narration bypass] Forcing write instruction', timestamp: new Date() });
+        }
+      }
+
+      // DD9: Controller-side direct dispatch for deterministic steps.
+      // Before each provider call in code mode, check if a deterministic next step
+      // can be dispatched directly — avoiding an expensive LLM turn for obvious moves.
+      // IMPORTANT: Only MCP-routable tools can be directly dispatched. Virtual tools
+      // (declare_file_batch, update_task_state) are handled inside the streaming event
+      // handler and must NOT be dispatched here — they would fail with "Tool not found".
+      if (mode === 'code' && iterationCount > 0) {
+        const sameToolLoopCount = execState.sameToolLoop?.count ?? 0;
+        const isGreenfieldBootstrap = detectedWsType === 'greenfield' && execState.artifactsCreated.length === 0;
+        const hasPlanNoBatch = !!execState.approvedPlanPath && (execState.plannedFileBatch ?? []).length === 0;
+        const shouldDirectDispatch = sameToolLoopCount >= 2 || isGreenfieldBootstrap || hasPlanNoBatch;
+
+        if (shouldDirectDispatch) {
+          const dd9Step = stateManager.computeDeterministicNextStep(execState, detectedWsType);
+          // Only dispatch if the tool is a real MCP tool, not a virtual tool
+          if (dd9Step?.nextToolCall && !VIRTUAL_TOOLS.has(dd9Step.nextToolCall.tool)) {
+            contextCostTracker.recordSkippedLLMCall();
+            const dd9Ntc = dd9Step.nextToolCall;
+            onThought?.({ type: 'thinking', label: `[DD9 direct dispatch] ${dd9Ntc.tool}: ${dd9Ntc.description ?? ''}`, timestamp: new Date() });
+            const dd9Result = await this.toolDispatcher.dispatch(
+              { id: `dd9-${Date.now()}`, name: dd9Ntc.tool, input: dd9Ntc.input as Record<string, unknown> },
+              agentId, onApproval, onDiff, onThought
+            );
+            stateManager.markToolExecuted(execState, dd9Ntc.tool, (dd9Ntc.input as Record<string, unknown>).path as string | undefined, dd9Result.text.slice(0, 150));
+            stateManager.clearNextToolCall(execState);
+            stateManager.resetToolLoop(execState);
+            stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+            const truncDd9 = dd9Result.text.length > 8000 ? dd9Result.text.slice(0, 8000) + '\n[truncated]' : dd9Result.text;
+            const dd9Msg: ChatMessage = { role: 'tool_result', content: `<tool_result name="${dd9Ntc.tool}">\n${truncDd9}\n</tool_result>` };
+            messages.push(dd9Msg);
+            currentStepToolResults.push(dd9Msg);
+            if (dd9Ntc.tool === 'write_file' && dd9Result.status === 'success') {
+              const dd9Path = (dd9Ntc.input as Record<string, unknown>).path as string | undefined;
+              if (dd9Path) {
+                writtenPaths.add(dd9Path);
+                stateManager.markFileWritten(execState, this.normalizeWorkspacePath(dd9Path));
+                stateManager.markProgress(execState);
+                this.recordArtifact(agentId, dd9Path).catch(() => { /* non-fatal */ });
+              }
+            }
+            calledATool = true;
+            continueLoop = true;
+            iterationCount++; // Prevent infinite loop — count DD9 dispatches
+            continue;
+          }
+        }
+      }
+
       // Phase 1: PromptAssembler — code mode uses compact, no-history messages per EQ-15.
       // All other modes use prepareMessagesForProvider.
       let messagesForProvider: ChatMessage[];
       if (mode === 'code') {
+        // DD7: Build compact context packet from execution state for prompt assembly.
+        const contextPacket = contextPacketBuilder.build(
+          execState, detectedWsType, undefined, effectiveUserContent
+        );
+        const compactSummary = contextPacket.stateSummary;
+        const compactWorkspace = contextPacket.workspaceSummary;
+
         messagesForProvider = promptAssembler.assembleMessages({
           systemPrompt: fullSystem,
-          executionStateSummary: stateManager.buildCompactSummary(execState),
-          workspaceSummary: buildWorkspaceSummary(detectedWsType, execState.artifactsCreated.slice(-3)),
+          executionStateSummary: compactSummary,
+          workspaceSummary: compactWorkspace,
           currentInstruction: effectiveUserContent,
           currentStepToolResults: [...currentStepToolResults],
           milestoneSummary: execState.lastExecutedTool
@@ -1043,6 +1211,32 @@ export class AgentRunner {
           // Phase 8.4 — inject template-specific skill fragments
           activeSkills: activeSkills.length > 0 ? activeSkills : undefined,
         });
+
+        // DD12: Record per-turn context cost telemetry.
+        const skillFragmentText = activeSkills.length > 0 ? activeSkills.join('\n') : '';
+        const toolResultText = currentStepToolResults.map(m => m.content).join('\n');
+        const costEntry = contextCostTracker.record(
+          iterationCount,
+          fullSystem,
+          compactSummary,
+          compactWorkspace,
+          skillFragmentText,
+          effectiveUserContent,
+          toolResultText,
+        );
+        // DD7: Track summary reuse — check if any resolved input summaries were reused
+        for (const ris of contextPacket.resolvedInputSummaries) {
+          const cached = fileSummaryStore.getByPath(ris.path);
+          if (cached) {
+            contextCostTracker.recordSummaryReuse();
+          }
+        }
+        onThought?.({
+          type: 'thinking',
+          label: `[ContextCost] turn=${costEntry.turn} tokens=${costEntry.totalTokens} summariesReused=${costEntry.resolvedSummariesReused} rawFiles=${costEntry.rawFileContentsInjected}`,
+          timestamp: new Date(),
+        });
+
         // Reset after use — tool results from THIS iteration will repopulate it below
         currentStepToolResults.length = 0;
       } else {
@@ -1259,42 +1453,75 @@ export class AgentRunner {
             // Phase 1 fix: virtual tools must also increment iterationsUsed
             stateManager.markToolExecuted(execState, event.name, undefined, toolResultContent.slice(0, 150));
           } else {
-            const toolResult = await this.toolDispatcher.dispatch(
-              event, agentId, onApproval, onDiff, onThought
-            );
-            agentLog.logToolResult(event.name, String(toolResult));
-            turnMemory.addToolResult(event.name, String(toolResult));
+            // Task 10: Same-tool same-path loop breaker
+            const toolPathKey = `${event.name}:${toolCallPath ?? ''}`;
+            const toolPathCount = (toolPathCounts.get(toolPathKey) ?? 0) + 1;
+            toolPathCounts.set(toolPathKey, toolPathCount);
 
-            // ── Authoritative state mutations from real tool execution only ──
-            // Only successful dispatches reach this branch; speculative assistant
-            // text never mutates state (it is sanitised before persistence).
+            let toolResult: DispatchResult;
+            if (toolPathCount >= 3 && ['read_file', 'list_files', 'search_files'].includes(event.name)) {
+              // Same read-only tool+path 3+ times — force a write
+              toolResult = {
+                text: `[LOOP DETECTED] "${event.name}" on "${toolCallPath}" has been called ${toolPathCount} times with no writes. Stop reading and write a file now.`,
+                status: 'blocked',
+                reasonCode: 'LOOP_DETECTED',
+                toolName: event.name,
+                path: toolCallPath,
+              };
+              onThought?.({ type: 'error', label: `Loop detected: ${event.name}:${toolCallPath} x${toolPathCount}`, timestamp: new Date() });
+            } else {
+              toolResult = await this.toolDispatcher.dispatch(
+                event, agentId, onApproval, onDiff, onThought
+              );
+            }
+            agentLog.logToolResult(event.name, toolResult.text);
+            turnMemory.addToolResult(event.name, toolResult.text);
+
+            // ── DD4: Structured dispatch result handling ──
+            // Use structured status instead of parsing text prefixes.
             {
-              const resultStr0 = String(toolResult);
-              const isBlockedResult = resultStr0.startsWith('[BLOCKED]');
-              const isCachedResult = resultStr0.startsWith('[Cached]');
-              if (isBlockedResult || isCachedResult) {
-                // Track blocked/cached reads so REPEATED_BLOCKED_READS recovery trigger can fire.
-                // Only count unique paths — the same path blocked twice should not double-count.
-                const normBlockedPath = toolCallPath ? this.normalizeWorkspacePath(toolCallPath) : '';
-                if (normBlockedPath && !blockedReadPaths.has(normBlockedPath)) {
-                  blockedReadPaths.add(normBlockedPath);
-                  execState.blockedReadCount = (execState.blockedReadCount ?? 0) + 1;
+              const isBlockedResult = toolResult.status === 'blocked' || toolResult.status === 'cached' || toolResult.status === 'budget_exhausted';
+              if (isBlockedResult) {
+                // DD4: Track blocked/cached reads via structured reasonCode.
+                if (toolResult.reasonCode === 'ALREADY_READ_UNCHANGED' || toolResult.reasonCode === 'LOOP_DETECTED') {
+                  const normBlockedPath = toolCallPath ? this.normalizeWorkspacePath(toolCallPath) : '';
+                  if (normBlockedPath && !blockedReadPaths.has(normBlockedPath)) {
+                    blockedReadPaths.add(normBlockedPath);
+                    stateManager.incrementBlockedRead(execState, normBlockedPath);
+                  }
+                  // DD4: Record tool loop for same-tool detection
+                  stateManager.recordToolLoop(execState, event.name, toolCallPath);
                 }
               }
-              if (!isBlockedResult && !isCachedResult) {
-                // Only record successful (non-blocked/non-cached) executions as ground-truth state.
-                stateManager.markToolExecuted(execState, event.name, toolCallPath, resultStr0.slice(0, 150));
+              if (toolResult.status === 'success') {
+                // Only record successful executions as ground-truth state.
+                stateManager.markToolExecuted(execState, event.name, toolCallPath, toolResult.text.slice(0, 150));
+                // DD4: Reset tool loop on success
+                stateManager.resetToolLoop(execState);
                 if (event.name === 'read_file' && toolCallPath) {
                   stateManager.markFileRead(execState, this.normalizeWorkspacePath(toolCallPath));
                   // Cache the full content so reread attempts return the content
                   // instead of a useless BLOCKED message.
-                  this.toolDispatcher.cacheReadResult(toolCallPath, resultStr0);
+                  this.toolDispatcher.cacheReadResult(toolCallPath, toolResult.text);
+                  // DD7: Store file summary for hash-based reuse on subsequent turns.
+                  const readSummary = fileSummaryStore.put(
+                    this.normalizeWorkspacePath(toolCallPath),
+                    toolResult.text,
+                    toolResult.text.slice(0, 500),
+                  );
+                  stateManager.upsertResolvedInputSummary(execState, readSummary);
+                  contextCostTracker.recordRawFileInjection();
                 }
 
-                // ─── Task 5: Compute deterministic next step after every successful tool call ──
-                const nextStep = stateManager.computeNextStep(
-                  execState, event.name, toolCallPath, resultStr0, detectedWsType
-                );
+                // DD5: Compute deterministic next step first, fall back to advisory
+                let nextStep = stateManager.computeDeterministicNextStep(execState, detectedWsType)
+                  ?? stateManager.computeNextStep(execState, event.name, toolCallPath, toolResult.text, detectedWsType);
+                // Auto-repair — if no step computed after read_file, force a write
+                if (!nextStep && event.name === 'read_file') {
+                  nextStep = {
+                    nextAction: 'Write the next implementation file now — do not read more files',
+                  };
+                }
                 if (nextStep) {
                   stateManager.setNextAction(execState, nextStep.nextAction);
                   if (nextStep.nextToolCall) {
@@ -1307,7 +1534,7 @@ export class AgentRunner {
             // Truncate very large tool results so they don't dominate the context
             // window on subsequent iterations and cause the model to output tiny
             // narrations instead of the next tool call.
-            const resultStr = String(toolResult);
+            const resultStr = toolResult.text;
             const MAX_TOOL_RESULT_CHARS = 8000;
             const truncatedResult = resultStr.length > MAX_TOOL_RESULT_CHARS
               ? resultStr.slice(0, MAX_TOOL_RESULT_CHARS) +
@@ -1329,8 +1556,10 @@ export class AgentRunner {
               toolResultContent += `\n\n[Discovery Budget] ${consecutiveReadCount} consecutive reads with nothing written yet. Stop reading — write your first file now.`;
             }
 
-            if (isFileWrite && toolCallPath && String(toolResult).startsWith('File written')) {
+            if (isFileWrite && toolCallPath && toolResult.status === 'success' && toolResult.text.startsWith('File written')) {
               writtenPaths.add(toolCallPath);
+              // Task 10: Reset tool+path loop counter on successful write
+              toolPathCounts.clear();
               const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
               toolResultContent += `\n\nFiles written this task: ${pathList}. Use edit_file for any corrections to these paths.`;
               // Record in cross-session artifact registry so future sessions know what files exist.
@@ -1338,6 +1567,8 @@ export class AgentRunner {
 
               // Single authoritative mutation method handles artifactsCreated + completedBatchFiles
               stateManager.markFileWritten(execState, this.normalizeWorkspacePath(toolCallPath));
+              // DD1: Record meaningful progress
+              stateManager.markProgress(execState);
 
               // Verify all written files are still on disk every 5 writes
               if (writtenPaths.size % 5 === 0) {
@@ -1479,6 +1710,15 @@ export class AgentRunner {
       // last summary, not a concatenation of every iteration's text output.
       if (turnAssistantText) {
         lastAssistantText = turnAssistantText;
+      }
+
+      // DD8: Cap audit transcript in code mode to prevent unbounded growth.
+      // Provider calls are built fresh by PromptAssembler, so messages only serves
+      // recovery/narration detection. Keep system prompt + last N entries.
+      if (mode === 'code' && messages.length > AUDIT_TRANSCRIPT_MAX + 1) {
+        const systemMsg = messages[0]; // preserve system prompt
+        const recentEntries = messages.slice(-(AUDIT_TRANSCRIPT_MAX));
+        messages.splice(0, messages.length, systemMsg, ...recentEntries);
       }
 
       iterationCount++;
@@ -1685,7 +1925,11 @@ export class AgentRunner {
       // Sanitise before persisting to strip any tool-protocol noise that leaked
       // into assistant text (e.g. [write_file: ...], TOOL:... sentinels).
       const rawAssistantContent = lastAssistantText || fullResponse;
-      const assistantContent = this.sanitiseAssistantText(rawAssistantContent);
+      // DD11: Apply code-mode narration sanitiser on top of protocol sanitiser
+      const sanitised = this.sanitiseAssistantText(rawAssistantContent);
+      const assistantContent = mode === 'code'
+        ? sanitiseCodeModeNarration(this.filterNarrationBeforePersist(sanitised))
+        : this.filterNarrationBeforePersist(sanitised);
       const assistantMsg: ChatMessage = { role: 'assistant', content: assistantContent };
       this.memoryManager.addMessage(agentId, assistantMsg);
       await this.memoryManager.persistTurn(agentId, userMessage, fullResponse, toolsUsed);
@@ -1796,12 +2040,20 @@ export class AgentRunner {
       const totalCalls = toolsUsed.length;
       const readCalls  = toolsUsed.filter(t => ['read_file', 'list_files', 'search_files'].includes(t)).length;
       const writeCalls = toolsUsed.filter(t => ['write_file', 'edit_file'].includes(t)).length;
+      // DD12: Include context cost summary in health telemetry.
+      const costSummary = contextCostTracker.getSummary();
       const health = {
         iterationLoad: Math.round((iterationCount / maxToolIterations) * 100),
         readRatio:     totalCalls > 0 ? Math.round((readCalls / totalCalls) * 100) : 0,
         writeCount:    writeCalls,
         discoveryBudgetTriggered: consecutiveReadCount >= 3,
         verificationPerformed: writtenPaths.size >= 5,
+        contextCost: {
+          totalTurns: costSummary.totalTurns,
+          totalTokens: costSummary.totalTokens,
+          avgTokensPerTurn: costSummary.avgTokensPerTurn,
+          llmCallsSkipped: costSummary.llmCallsSkipped,
+        },
       };
       const overall = Math.max(0, 100
         - (health.iterationLoad > 80 ? 30 : health.iterationLoad > 60 ? 15 : 0)
@@ -2039,30 +2291,94 @@ export class AgentRunner {
     }
   }
 
-  // ─── #16 Greenfield repo detector ─────────────────────────────────────────
+  // ─── DD10: Plan approval resolution ──────────────────────────────────────
 
   /**
-   * Classify workspace maturity based on file count and key project files.
-   * Returns 'greenfield' for empty repos, 'scaffolded' for basic skeletons,
-   * and 'mature' for established codebases.
+   * Resolve the approved plan path from the artifact registry.
+   * Looks for plan files (.md) under .bormagi/plans/ or in the artifact registry.
+   * Returns the path if found, null otherwise.
    */
-  private async detectWorkspaceType(): Promise<'greenfield' | 'scaffolded' | 'mature'> {
-    try {
-      const entries = await fs.readdir(this.workspaceRoot);
-      const hasPackageJson = entries.includes('package.json');
-      const hasSrc = entries.includes('src');
-      // Exclude hidden dirs and node_modules from maturity count
-      const nonHidden = entries.filter(e => !e.startsWith('.') && e !== 'node_modules');
-      if (nonHidden.length <= 2 && !hasPackageJson) {
-        return 'greenfield';
-      }
-      if (hasPackageJson && !hasSrc && nonHidden.length < 8) {
-        return 'scaffolded';
-      }
-      return 'mature';
-    } catch {
-      return 'mature'; // safe default: assume existing work is present
+  private resolveApprovedPlanPath(
+    execState: ExecutionStateData,
+    registeredArtifactPaths: Set<string>,
+    userMessage: string,
+  ): string | null {
+    // Check if user explicitly references a plan path
+    const planPathMatch = userMessage.match(/(?:plan|spec)\s+(?:at\s+)?["']?([^\s"']+\.md)["']?/i);
+    if (planPathMatch) {
+      return this.normalizeWorkspacePath(planPathMatch[1]);
     }
+
+    // Look for plan files in the artifact registry
+    for (const artifactPath of registeredArtifactPaths) {
+      const norm = artifactPath.replace(/\\/g, '/');
+      if (norm.includes('plan') && norm.endsWith('.md')) {
+        return norm;
+      }
+    }
+
+    // Look for plan files in resolvedInputs
+    for (const inputPath of execState.resolvedInputs) {
+      const norm = inputPath.replace(/\\/g, '/').toLowerCase();
+      if ((norm.includes('plan') || norm.includes('.bormagi/plans/')) && norm.endsWith('.md')) {
+        return inputPath;
+      }
+    }
+
+    return null;
+  }
+
+  // ─── Task 9: Repetitive narration detection ─────────────────────────────
+
+  /**
+   * Detect if the last 2-3 assistant messages are repetitive narration with no writes.
+   * Used to bypass the LLM call and force a write step instead.
+   */
+  private isRepetitiveNarration(messages: ChatMessage[], writtenPaths: Set<string>): boolean {
+    if (writtenPaths.size > 0) return false;
+    const recentAssistant = messages
+      .filter(m => m.role === 'assistant')
+      .slice(-3)
+      .map(m => m.content.toLowerCase());
+    if (recentAssistant.length < 2) return false;
+    const NARRATION_PATTERNS = [
+      /i'll start by reading/,
+      /let me (first )?read/,
+      /let me check/,
+      /i need to (first )?read/,
+      /i can see from the log/,
+      /i'll read the/,
+      /let me start by/,
+    ];
+    return recentAssistant.every(text =>
+      NARRATION_PATTERNS.some(p => p.test(text))
+    );
+  }
+
+  // ─── Task 2: Filter narration before persisting assistant text ─────────
+
+  /**
+   * Filter out speculative narration patterns from assistant text before
+   * persisting to session history. Only persist final summary, milestone,
+   * or completion/blocker text.
+   */
+  private filterNarrationBeforePersist(text: string): string {
+    const NARRATION_LINE_PATTERNS = [
+      /^I'll start by\b/i,
+      /^Let me read\b/i,
+      /^Let me first\b/i,
+      /^I can see from the log\b/i,
+      /^I need to first\b/i,
+    ];
+    const lines = text.split('\n');
+    const filtered = lines.filter(line => {
+      const trimmed = line.trim();
+      if (!trimmed) return true; // keep blank lines
+      return !NARRATION_LINE_PATTERNS.some(p => p.test(trimmed));
+    });
+    const result = filtered.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    // If filtering removed everything, return original to avoid empty persist
+    return result || text;
   }
 
   // ─── #13 Mode-based tool filtering ───────────────────────────────────────

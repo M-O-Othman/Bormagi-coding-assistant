@@ -16,6 +16,25 @@ export type ApprovalCallback = (prompt: string) => Promise<boolean>;
 export type DiffCallback = (filePath: string, originalContent: string, newContent: string) => Promise<boolean>;
 export type ThoughtCallback = (event: ThoughtEvent) => void;
 
+/**
+ * Structured result from ToolDispatcher.dispatch() — replaces plain string returns
+ * so the controller can differentiate successful, blocked, and cached results
+ * without parsing text (DD4).
+ */
+export interface DispatchResult {
+  text: string;
+  status: 'success' | 'blocked' | 'cached' | 'budget_exhausted';
+  reasonCode?:
+    | 'ALREADY_READ_UNCHANGED'
+    | 'DISCOVERY_BUDGET_EXHAUSTED'
+    | 'BATCH_REQUIRED'
+    | 'BORMAGI_PATH_BLOCKED'
+    | 'MODE_DISALLOWS_MUTATION'
+    | 'LOOP_DETECTED';
+  toolName: string;
+  path?: string;
+}
+
 /** Per-run guard state tracked by ToolDispatcher for Phase 3 runtime enforcement. */
 interface ToolGuardState {
   mode: string;
@@ -122,7 +141,8 @@ export class ToolDispatcher {
   /**
    * Dispatch a tool-use event to its handler.
    * Emits thought events for the call and result.
-   * Returns the tool result text to append to the conversation.
+   * Returns a structured DispatchResult (DD4) so the controller can
+   * differentiate success, blocked, and cached outcomes without parsing text.
    */
   async dispatch(
     toolEvent: { id: string; name: string; input: Record<string, unknown> },
@@ -130,7 +150,7 @@ export class ToolDispatcher {
     onApproval: ApprovalCallback,
     onDiff: DiffCallback,
     onThought: ThoughtCallback
-  ): Promise<string> {
+  ): Promise<DispatchResult> {
     onThought({
       type: 'tool_call',
       label: `Tool: ${toolEvent.name}`,
@@ -166,13 +186,13 @@ export class ToolDispatcher {
       };
       if (!EXEMPT_TOOLS.has(toolEvent.name)) {
         if (targetPath && isBormagiPath(targetPath) && !isBormagiPlansAccess(targetPath, toolEvent.name)) {
-          return getAppData().executionMessages.toolBlocked.bormagiPath;
+          return { text: getAppData().executionMessages.toolBlocked.bormagiPath, status: 'blocked', reasonCode: 'BORMAGI_PATH_BLOCKED', toolName: toolEvent.name, path: targetPath };
         }
         // For multi_edit: check every edit's path
         if (toolEvent.name === 'multi_edit') {
           const edits = inp.edits as Array<{ path: string }> | undefined;
           if (Array.isArray(edits) && edits.some(e => isBormagiPath(e.path))) {
-            return getAppData().executionMessages.toolBlocked.bormagiPath;
+            return { text: getAppData().executionMessages.toolBlocked.bormagiPath, status: 'blocked', reasonCode: 'BORMAGI_PATH_BLOCKED', toolName: toolEvent.name };
           }
         }
       }
@@ -200,12 +220,12 @@ export class ToolDispatcher {
           } else {
             const modeDisallowsMsg: string = (getAppData().executionMessages.toolBlocked as Record<string, string>).modeDisallowsMutation
               ?? `[BLOCKED] Mode 'plan' does not permit writing source files. Switch to Code mode to make changes.`;
-            return modeDisallowsMsg.replace('{mode}', 'plan');
+            return { text: modeDisallowsMsg.replace('{mode}', 'plan'), status: 'blocked', reasonCode: 'MODE_DISALLOWS_MUTATION', toolName: toolEvent.name };
           }
         } else {
           const modeDisallowsMsg: string = (getAppData().executionMessages.toolBlocked as Record<string, string>).modeDisallowsMutation
             ?? `[BLOCKED] Mode '${this._guardState.mode}' does not permit file mutations. Switch to Code mode to make changes.`;
-          return modeDisallowsMsg.replace('{mode}', this._guardState.mode);
+          return { text: modeDisallowsMsg.replace('{mode}', this._guardState.mode), status: 'blocked', reasonCode: 'MODE_DISALLOWS_MUTATION', toolName: toolEvent.name };
         }
       }
     }
@@ -233,7 +253,17 @@ export class ToolDispatcher {
           // Secondary check: runtime cache (within-session)
           const cachedContent = g.filesReadThisRun.get(normPath);
           if (cachedContent !== undefined || inExecState) {
-            return `[Cached] "${normPath}" was already read this session and the full content is in your conversation context above. Use it directly — do not re-read.`;
+            // Increment blockedReadCount so REPEATED_BLOCKED_READS recovery fires
+            if (this._execState) {
+              this._execState.blockedReadCount = (this._execState.blockedReadCount ?? 0) + 1;
+            }
+            return {
+              text: `[Cached] "${normPath}" was already read this session and the full content is in your conversation context above. Use it directly — do not re-read.`,
+              status: 'cached',
+              reasonCode: 'ALREADY_READ_UNCHANGED',
+              toolName: 'read_file',
+              path: normPath,
+            };
           }
         }
       }
@@ -244,7 +274,7 @@ export class ToolDispatcher {
         const check = this._budget.record(category);
         if (!check.allowed) {
           const hint = check.suggestion ? `\n${check.suggestion}` : '';
-          return `${check.reason ?? msgs.budgetExhausted}${hint}`;
+          return { text: `${check.reason ?? msgs.budgetExhausted}${hint}`, status: 'budget_exhausted', reasonCode: 'DISCOVERY_BUDGET_EXHAUSTED', toolName: toolEvent.name };
         }
       } else {
         // Still track writes/validates for reread prevention in non-code modes
@@ -276,6 +306,7 @@ export class ToolDispatcher {
 
     let result: string;
 
+    const normTargetPath = ((toolEvent.input as Record<string, unknown>).path as string | undefined)?.replace(/\\/g, '/');
     if (!approved) {
       result = 'User denied this action.';
     } else if (toolEvent.name === 'run_command' && this.execWrapper) {
@@ -327,7 +358,7 @@ export class ToolDispatcher {
             detail: result.slice(0, 500),
             timestamp: new Date(),
           });
-          return result;
+          return { text: result, status: 'success', toolName: 'edit_file', path: inp.path };
         }
       }
 
@@ -383,7 +414,7 @@ export class ToolDispatcher {
       timestamp: new Date(),
     });
 
-    return result;
+    return { text: result, status: 'success', toolName: toolEvent.name, path: normTargetPath };
   }
 
   /**

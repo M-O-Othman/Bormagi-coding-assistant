@@ -54,7 +54,7 @@ describe('ToolDispatcher .bormagi path blocking', () => {
       { id: '1', name: 'read_file', input: { path: '.bormagi/exec-state-agent.json' } },
       'agent-1', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(result).toContain('[BLOCKED]');
+    expect(result.text).toContain('[BLOCKED]');
     expect(mockMCPHost.callTool).not.toHaveBeenCalled();
   });
 
@@ -63,7 +63,7 @@ describe('ToolDispatcher .bormagi path blocking', () => {
       { id: '2', name: 'list_files', input: { directory: '.bormagi/' } },
       'agent-1', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(result).toContain('[BLOCKED]');
+    expect(result.text).toContain('[BLOCKED]');
   });
 
   test('blocks write_file targeting .bormagi/', async () => {
@@ -71,7 +71,7 @@ describe('ToolDispatcher .bormagi path blocking', () => {
       { id: '3', name: 'write_file', input: { path: '.bormagi/config.json', content: '{}' } },
       'agent-1', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(result).toContain('[BLOCKED]');
+    expect(result.text).toContain('[BLOCKED]');
     expect(mockMCPHost.callTool).not.toHaveBeenCalled();
   });
 
@@ -83,6 +83,6 @@ describe('ToolDispatcher .bormagi path blocking', () => {
       'agent-1', mockOnApproval, mockOnDiff, mockOnThought
     );
     // Should not return a blocked message (falls through to other handling)
-    expect(result).not.toContain('[BLOCKED]');
+    expect(result.text).not.toContain('[BLOCKED]');
   });
 });
