@@ -1114,8 +1114,7 @@ export class AgentRunner {
           stateManager.clearNextToolCall(execState);
           stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
 
-          const truncated = preResult.text.length > 8000 ? preResult.text.slice(0, 8000) + '
-[truncated]' : preResult.text;
+          const truncated = preResult.text.length > 8000 ? preResult.text.slice(0, 8000) + '\n[truncated]' : preResult.text;
           const preMsg: ChatMessage = { role: 'tool_result', content: `<tool_result name="${preLlmNtc.tool}">
 ${truncated}
 </tool_result>` };
