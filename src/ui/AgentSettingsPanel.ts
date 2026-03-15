@@ -339,6 +339,7 @@ export class AgentSettingsPanel {
     <label for="dp-proxy-url">Proxy URL (optional)</label>
     <input id="dp-proxy-url" type="text" placeholder="https://proxy.example.com"/>
     <label for="dp-auth">Auth Method (Gemini / Anthropic)</label>
+    <p class="hint" style="margin-top:-4px">Anthropic supports <strong>Claude Subscription (Auth Token)</strong>.</p>
     <select id="dp-auth" onchange="syncDefaultAuthControls()">
       <option value="api_key">API Key</option>
       <option value="oauth_proxy">OAuth Identity via Proxy (no API key)</option>
@@ -446,6 +447,7 @@ export class AgentSettingsPanel {
       <p class="hint" id="f-auth-hint">Leave blank to keep existing key. For Gemini OAuth/Vertex modes, API key is not required.</p>
 
       <label for="f-auth-method">Auth Method (Gemini / Anthropic)</label>
+      <p class="hint" style="margin-top:-4px">For Claude subscription, select <strong>Claude Subscription (Auth Token)</strong> then paste token in Credential.</p>
       <select id="f-auth-method">
         <option value="api_key">API Key</option>
         <option value="oauth_proxy">OAuth Identity via Proxy (no API key)</option>
@@ -608,7 +610,7 @@ export class AgentSettingsPanel {
       document.getElementById('cl-base-url').value = cfg.base_url || '';
       document.getElementById('cl-proxy-url').value = cfg.proxy_url || '';
       const status = document.getElementById('classifier-status');
-      status.textContent = hasKey ? '✓ API key stored' : '';
+      status.textContent = hasKey ? '✓ Credential stored' : '';
     }
 
     // ── Per-agent provider fields toggle ──────────────────────────────────
@@ -822,7 +824,7 @@ export class AgentSettingsPanel {
           syncDefaultAuthControls();
         }
         document.getElementById('default-status').textContent =
-          msg.hasDefaultKey ? '✓ Default API key is set' : 'No default API key set';
+          msg.hasDefaultKey ? '✓ Default credential is set' : 'No default credential set';
         document.getElementById('default-status').style.opacity = '0.6';
         // Populate classifier fields
         if (msg.classifierProvider) {
