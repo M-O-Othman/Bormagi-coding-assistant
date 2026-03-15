@@ -213,3 +213,22 @@ describe('computeNextStep (advisory)', () => {
     expect(result).toBeNull();
   });
 });
+
+
+describe('buildLoopTarget', () => {
+  const mgr = new ExecutionStateManager('/tmp/test');
+
+  test('uses directory for list_files instead of undefined', () => {
+    const target = mgr.buildLoopTarget('list_files', { directory: 'src' });
+    expect(target).toBe('src');
+  });
+
+  test('uses query/pattern for search-like tools', () => {
+    expect(mgr.buildLoopTarget('search_files', { query: 'AuthService' })).toBe('query:AuthService');
+    expect(mgr.buildLoopTarget('glob_files', { pattern: '**/*.ts' })).toBe('pattern:**/*.ts');
+  });
+
+  test('returns undefined when no usable selector exists', () => {
+    expect(mgr.buildLoopTarget('list_files', {})).toBeUndefined();
+  });
+});

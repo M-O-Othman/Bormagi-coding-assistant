@@ -1095,6 +1095,47 @@ export class AgentRunner {
         isFirstModelRequest = false;
       }
 
+      // Deterministic pre-LLM dispatch gate.
+      // If we already know the next tool call or are in forced-write recovery,
+      // do not ask the LLM to decide whether to rediscover.
+      if (mode === 'code') {
+        const phase = stateManager.getExecutionPhase(execState);
+        const shouldForceWrite = phase === 'WRITE_ONLY' || (execState.blockedReadCount ?? 0) >= 2;
+        const preLlmNtc = execState.nextToolCall;
+
+        if (preLlmNtc && !VIRTUAL_TOOLS.has(preLlmNtc.tool)) {
+          contextCostTracker.recordSkippedLLMCall();
+          onThought?.({ type: 'thinking', label: `[Pre-LLM dispatch] ${preLlmNtc.tool}`, timestamp: new Date() });
+          const preResult = await this.toolDispatcher.dispatch(
+            { id: `prellm-${Date.now()}`, name: preLlmNtc.tool, input: preLlmNtc.input as Record<string, unknown> },
+            agentId, onApproval, onDiff, onThought,
+          );
+          stateManager.markToolExecuted(execState, preLlmNtc.tool, (preLlmNtc.input as Record<string, unknown>).path as string | undefined, preResult.text.slice(0, 150));
+          stateManager.clearNextToolCall(execState);
+          stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+
+          const truncated = preResult.text.length > 8000 ? preResult.text.slice(0, 8000) + '
+[truncated]' : preResult.text;
+          const preMsg: ChatMessage = { role: 'tool_result', content: `<tool_result name="${preLlmNtc.tool}">
+${truncated}
+</tool_result>` };
+          messages.push(preMsg);
+          currentStepToolResults.push(preMsg);
+          calledATool = true;
+          continueLoop = true;
+          iterationCount++;
+          continue;
+        }
+
+        if (shouldForceWrite) {
+          stateManager.setExecutionPhase(execState, 'WRITE_ONLY');
+          this.toolDispatcher.setExecutionPhase('WRITE_ONLY');
+          silentExecution = true;
+          effectiveUserContent = 'WRITE_ONLY phase: generate and call write_file or edit_file now. Do not call read_file, list_files, search_files, or glob_files.';
+        }
+      }
+
+
       // Phase 5: RecoveryManager — check all 5 triggers before each LLM call.
       // Skip if we've already exhausted recovery attempts for this run — prevents
       // infinite recovery loops where the same trigger fires every iteration.
@@ -1443,7 +1484,9 @@ export class AgentRunner {
           // its own prior tool calls on the next iteration and won't rewrite files.
           // For file-write/edit tools, include the path and content size so the model
           // knows exactly what it wrote and does not produce a second write to the same path.
-          const toolCallPath = (event.input as Record<string, unknown>)?.path as string | undefined;
+          const toolInput = (event.input as Record<string, unknown>) ?? {};
+          const toolCallPath = toolInput.path as string | undefined;
+          const loopTarget = stateManager.buildLoopTarget(event.name, toolInput);
           const toolCallContent = (event.input as Record<string, unknown>)?.content as string | undefined;
           let assistantTurnLabel: string;
           if (toolCallPath && (event.name === 'write_file' || event.name === 'edit_file')) {
@@ -1593,7 +1636,7 @@ export class AgentRunner {
             stateManager.markToolExecuted(execState, event.name, undefined, (toolResultContent ?? '').slice(0, 150));
           } else {
             // Task 10: Same-tool same-path loop breaker
-            const toolPathKey = `${event.name}:${toolCallPath ?? ''}`;
+            const toolPathKey = `${event.name}:${loopTarget ?? ''}`;
             const toolPathCount = (toolPathCounts.get(toolPathKey) ?? 0) + 1;
             toolPathCounts.set(toolPathKey, toolPathCount);
 
@@ -1605,23 +1648,23 @@ export class AgentRunner {
               this.toolDispatcher.setExecutionPhase('WRITE_ONLY');
 
               // Inject the file content the model is trying to read (if stored)
-              const storedContent = execState.resolvedInputContents?.[
-                this.normalizeWorkspacePath(toolCallPath ?? '')
-              ];
+              const storedContent = (event.name === 'read_file' && toolCallPath)
+                ? execState.resolvedInputContents?.[this.normalizeWorkspacePath(toolCallPath)]
+                : undefined;
               const contentInjection = storedContent
                 ? `\n\nHere is the content you are trying to read:\n${storedContent}`
                 : '';
 
               toolResult = {
-                text: `[READ BLOCKED] You already read "${toolCallPath}". Phase is now WRITE_ONLY. All further reads will be rejected. Write the next file now.${contentInjection}`,
+                text: `[READ BLOCKED] Repeated ${event.name} call on "${loopTarget ?? event.name}". Phase is now WRITE_ONLY. All further reads will be rejected. Write the next file now.${contentInjection}`,
                 status: 'blocked',
                 reasonCode: 'WRITE_ONLY_PHASE',
                 toolName: event.name,
-                path: toolCallPath,
+                path: loopTarget,
               };
-              onThought?.({ type: 'error', label: `Loop detected → WRITE_ONLY: ${event.name}:${toolCallPath} x${toolPathCount}`, timestamp: new Date() });
-              agentLog.logGuardActivation('WRITE_ONLY', event.name, toolCallPath, iterationCount);
-              agentLog.logPhaseTransition(execState.executionPhase ?? 'DISCOVERING', 'WRITE_ONLY', `loop on ${event.name}:${toolCallPath}`);
+              onThought?.({ type: 'error', label: `Loop detected → WRITE_ONLY: ${event.name}:${loopTarget ?? ''} x${toolPathCount}`, timestamp: new Date() });
+              agentLog.logGuardActivation('WRITE_ONLY', event.name, loopTarget, iterationCount);
+              agentLog.logPhaseTransition(execState.executionPhase ?? 'DISCOVERING', 'WRITE_ONLY', `loop on ${event.name}:${loopTarget ?? ''}`);
             } else {
               toolResult = await this.toolDispatcher.dispatch(
                 event, agentId, onApproval, onDiff, onThought
@@ -1643,7 +1686,7 @@ export class AgentRunner {
                     stateManager.incrementBlockedRead(execState, normBlockedPath);
                   }
                   // DD4: Record tool loop for same-tool detection
-                  stateManager.recordToolLoop(execState, event.name, toolCallPath);
+                  stateManager.recordToolLoop(execState, event.name, loopTarget);
                 }
               }
               if (toolResult.status === 'success') {

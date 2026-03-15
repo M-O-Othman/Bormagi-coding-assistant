@@ -2,7 +2,7 @@
 module.exports = {
   testEnvironment: 'node',
   // Phase 9.1: Force executionEngineV2=true for all tests
-  setupFilesAfterFramework: ['<rootDir>/src/tests/setup/v2-global-setup.ts'],
+  setupFilesAfterEnv: ['<rootDir>/src/tests/setup/v2-global-setup.ts'],
   testMatch: [
     '**/src/workflow/tests/**/*.test.ts',
     '**/src/tests/integration/**/*.test.ts',
