@@ -61,6 +61,7 @@ import { ContextPacketBuilder } from './execution/ContextPacketBuilder';
 import { ContextCostTracker } from './execution/ContextCostTracker';
 import { ProgressGuard } from './execution/ProgressGuard';
 import { classifyUserMessage } from './execution/ObjectiveNormalizer';
+import { authMethodRequiresCredential } from '../providers/AuthSupport';
 
 // ─── Sandbox imports ────────────────────────────────────────────────────────
 import { SandboxHandle } from '../sandbox/types';
@@ -230,13 +231,13 @@ export class AgentRunner {
       effectiveProvider = def;
       apiKeyId = '__default__';
     } else {
-      const needsOwnKey = (agentConfig.provider?.auth_method ?? 'api_key') === 'api_key';
+      const needsOwnKey = authMethodRequiresCredential(agentConfig.provider?.auth_method ?? 'api_key');
       if (needsOwnKey) {
         const ownKey = await this.agentManager.getApiKey(agentId);
         if (!ownKey) {
           const def = await this.configManager.readDefaultProvider();
           if (def?.type) {
-            const defNeedsKey = (def.auth_method ?? 'api_key') === 'api_key';
+            const defNeedsKey = authMethodRequiresCredential(def.auth_method ?? 'api_key');
             const defKey = defNeedsKey ? await this.agentManager.getApiKey('__default__') : 'ok';
             if (defKey) {
               effectiveProvider = def;
@@ -248,8 +249,8 @@ export class AgentRunner {
     }
 
     const apiKey = await this.agentManager.getApiKey(apiKeyId);
-    if (!apiKey && effectiveProvider.auth_method === 'api_key') {
-      onText('API key not configured. Add a per-agent key in Agent Settings, or set a workspace default provider.');
+    if (!apiKey && authMethodRequiresCredential(effectiveProvider.auth_method)) {
+      onText('Credential not configured. Add a per-agent API key/access token in Agent Settings, or set a workspace default provider.');
       return;
     }
 
@@ -350,7 +351,7 @@ export class AgentRunner {
       const classifierProviderCfg = await this.configManager.readClassifierProvider();
       if (classifierProviderCfg) {
         const classifierKey = await this.agentManager.getApiKey('__classifier__');
-        if (classifierKey || classifierProviderCfg.auth_method !== 'api_key') {
+        if (classifierKey || !authMethodRequiresCredential(classifierProviderCfg.auth_method)) {
           const classifierLLM = ProviderFactory.create(
             { ...agentConfig, provider: classifierProviderCfg },
             classifierKey,

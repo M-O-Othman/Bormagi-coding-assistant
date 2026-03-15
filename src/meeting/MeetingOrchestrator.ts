@@ -8,6 +8,7 @@ import { AgentManager } from '../agents/AgentManager';
 import { ConfigManager } from '../config/ConfigManager';
 import { ProviderFactory } from '../providers/ProviderFactory';
 import { ChatMessage, AgentConfig } from '../types';
+import { authMethodRequiresCredential } from '../providers/AuthSupport';
 
 // ── Callback types ────────────────────────────────────────────────────────────
 
@@ -630,13 +631,13 @@ export class MeetingOrchestrator {
       effectiveProvider = def;
       apiKeyId = '__default__';
     } else {
-      const needsOwnKey = (agentConfig.provider?.auth_method ?? 'api_key') === 'api_key';
+      const needsOwnKey = authMethodRequiresCredential(agentConfig.provider?.auth_method ?? 'api_key');
       if (needsOwnKey) {
         const ownKey = await this.agentManager.getApiKey(agentId);
         if (!ownKey) {
           const def = await this.configManager.readDefaultProvider();
           if (def?.type) {
-            const defNeedsKey = (def.auth_method ?? 'api_key') === 'api_key';
+            const defNeedsKey = authMethodRequiresCredential(def.auth_method ?? 'api_key');
             const defKey = defNeedsKey ? await this.agentManager.getApiKey('__default__') : 'ok';
             if (defKey) { effectiveProvider = def; apiKeyId = '__default__'; }
           }
@@ -645,7 +646,7 @@ export class MeetingOrchestrator {
     }
 
     const apiKey = await this.agentManager.getApiKey(apiKeyId);
-    if (!apiKey && (effectiveProvider?.auth_method ?? 'api_key') === 'api_key') { return null; }
+    if (!apiKey && authMethodRequiresCredential(effectiveProvider?.auth_method ?? 'api_key')) { return null; }
 
     const providerConfig = { ...agentConfig, provider: effectiveProvider };
     const provider = ProviderFactory.create(providerConfig, apiKey ?? '');

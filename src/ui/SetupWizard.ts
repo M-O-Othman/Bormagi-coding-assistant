@@ -117,17 +117,21 @@ export class SetupWizard {
 
     let apiKey: string | null = null;
 
-    if (preset.authMethod === 'api_key') {
+    if (preset.authMethod === 'api_key' || preset.authMethod === 'subscription') {
       const keyOptional = preset.type === 'openai_compatible';
       const keyInput = await vscode.window.showInputBox({
-        title: `Bormagi Setup (3/4) — ${preset.label} API key`,
-        prompt: keyOptional
-          ? 'Paste your API key, or leave blank if the endpoint does not require one (e.g. Ollama).'
-          : `Paste your ${preset.label} API key. It will be stored in VS Code SecretStorage (never on disk in plain text).`,
+        title: preset.authMethod === 'subscription'
+          ? `Bormagi Setup (3/4) — ${preset.label} subscription token`
+          : `Bormagi Setup (3/4) — ${preset.label} API key`,
+        prompt: preset.authMethod === 'subscription'
+          ? `Paste your ${preset.label} auth token from your subscription session. Stored in VS Code SecretStorage.`
+          : (keyOptional
+            ? 'Paste your API key, or leave blank if the endpoint does not require one (e.g. Ollama).'
+            : `Paste your ${preset.label} API key. It will be stored in VS Code SecretStorage (never on disk in plain text).`),
         placeHolder: preset.keyPlaceholder,
         password: true,
         ignoreFocusOut: true,
-        validateInput: v => (!keyOptional && v.trim().length === 0 ? 'API key cannot be empty' : null),
+        validateInput: v => (!keyOptional && v.trim().length === 0 ? (preset.authMethod === 'subscription' ? 'Subscription token cannot be empty' : 'API key cannot be empty') : null),
       });
 
       if (keyInput === undefined) { return null; }

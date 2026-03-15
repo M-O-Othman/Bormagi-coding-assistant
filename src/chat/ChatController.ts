@@ -11,6 +11,7 @@ import type { WorkflowEngine } from '../workflow/WorkflowEngine';
 import type { WorkflowStorage } from '../workflow/WorkflowStorage';
 import { getAppData } from '../data/DataStore';
 import type { PlanMilestone } from '../context/types';
+import { authMethodRequiresCredential } from '../providers/AuthSupport';
 
 export type MessageToWebview =
   | { type: 'text_delta'; agentId: string; delta: string }
@@ -361,13 +362,13 @@ export class ChatController {
       if (def) { effectiveType = def.type; effectiveModel = def.model; }
       usingDefault = true;
     } else {
-      const needsOwnKey = (agent.provider?.auth_method ?? 'api_key') === 'api_key';
+      const needsOwnKey = authMethodRequiresCredential(agent.provider?.auth_method ?? 'api_key');
       if (needsOwnKey) {
         const ownKey = await this.agentManager.getApiKey(agent.id);
         if (!ownKey) {
           const def = await this.configManager.readDefaultProvider();
           if (def?.type) {
-            const defNeedsKey = (def.auth_method ?? 'api_key') === 'api_key';
+            const defNeedsKey = authMethodRequiresCredential(def.auth_method ?? 'api_key');
             const defKey = defNeedsKey ? await this.agentManager.getApiKey('__default__') : 'ok';
             if (defKey) { effectiveType = def.type; effectiveModel = def.model; usingDefault = true; }
           }
@@ -402,14 +403,14 @@ export class ChatController {
       if (explicitDefault) {
         effectiveType = defaultProvider?.type ?? a.provider.type;
         effectiveModel = defaultProvider?.model ?? a.provider.model;
-        const needsKey = (defaultProvider?.auth_method ?? 'api_key') === 'api_key';
+        const needsKey = authMethodRequiresCredential(defaultProvider?.auth_method ?? 'api_key');
         configured = !needsKey || (!!defaultProvider && defaultKeySet);
         usesDefault = true;
       } else {
-        const needsOwnKey = (a.provider?.auth_method ?? 'api_key') === 'api_key';
+        const needsOwnKey = authMethodRequiresCredential(a.provider?.auth_method ?? 'api_key');
         const ownKey = needsOwnKey ? await this.agentManager.getApiKey(a.id) : 'ok';
 
-        const defaultNeedsKey = (defaultProvider?.auth_method ?? 'api_key') === 'api_key';
+        const defaultNeedsKey = authMethodRequiresCredential(defaultProvider?.auth_method ?? 'api_key');
         const hasUsableDefault = !!defaultProvider?.type && (!defaultNeedsKey || defaultKeySet);
 
         if (!ownKey && needsOwnKey && hasUsableDefault && defaultProvider) {

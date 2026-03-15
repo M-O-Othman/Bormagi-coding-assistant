@@ -3,6 +3,7 @@ import { OpenAIProvider } from './OpenAIProvider';
 import { AnthropicProvider } from './AnthropicProvider';
 import { GeminiProvider } from './GeminiProvider';
 import { AgentConfig } from '../types';
+import { normaliseAuthMethodForProvider } from './AuthSupport';
 
 export class ProviderFactory {
   /**
@@ -25,7 +26,8 @@ export class ProviderFactory {
 
       case 'anthropic':
         return new AnthropicProvider({
-          apiKey,
+          credential: apiKey || undefined,
+          authMethod: normaliseAuthMethodForProvider('anthropic', provider.auth_method) === 'subscription' ? 'subscription' : 'api_key',
           model: provider.model,
           baseUrl: provider.base_url ?? undefined,
           proxyUrl: provider.proxy_url ?? undefined
@@ -35,7 +37,7 @@ export class ProviderFactory {
         return new GeminiProvider({
           apiKey: apiKey || undefined,
           model: provider.model,
-          authMethod: provider.auth_method,
+          authMethod: normaliseAuthMethodForProvider('gemini', provider.auth_method) as 'api_key' | 'oauth_proxy' | 'vertex_ai' | 'gcp_adc',
           baseUrl: provider.base_url ?? undefined,
           proxyUrl: provider.proxy_url ?? undefined,
           vertexLocation: provider.vertex_location ?? undefined
