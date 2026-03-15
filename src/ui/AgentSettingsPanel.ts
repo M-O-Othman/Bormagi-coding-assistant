@@ -314,12 +314,16 @@ export class AgentSettingsPanel {
 </head>
 <body>
   <h1>Bormagi — Agent Settings</h1>
+  <p style="font-size:12px;opacity:0.8;margin-top:-4px;margin-bottom:14px">
+    <strong>Auth update:</strong> Anthropic now supports <strong>Claude Subscription (Auth Token)</strong> in both
+    <em>Workspace Default Provider</em> and <em>Individual Agent Provider</em> sections.
+  </p>
 
   <!-- Default Provider Card -->
   <div class="default-card">
     <h3>Workspace Default Provider</h3>
     <p style="font-size:11px;opacity:0.6;margin-bottom:10px">
-      Set one provider + API key here, then click <strong>Apply to all agents</strong> to switch every agent to this provider instantly.
+      Set one provider + credential here, then click <strong>Apply to all agents</strong> to switch every agent to this provider instantly.
       Individual agents can still override this in their own settings.
     </p>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -444,7 +448,7 @@ export class AgentSettingsPanel {
 
       <label for="f-apikey">Credential (API Key / Access Token)</label>
       <input id="f-apikey" type="password" placeholder="sk-… (stored in encrypted VS Code secret storage)"/>
-      <p class="hint" id="f-auth-hint">Leave blank to keep existing key. For Gemini OAuth/Vertex modes, API key is not required.</p>
+      <p class="hint" id="f-auth-hint">Leave blank to keep existing credential. For Gemini OAuth/Vertex modes, API key is not required.</p>
 
       <label for="f-auth-method">Auth Method (Gemini / Anthropic)</label>
       <p class="hint" style="margin-top:-4px">For Claude subscription, select <strong>Claude Subscription (Auth Token)</strong> then paste token in Credential.</p>
