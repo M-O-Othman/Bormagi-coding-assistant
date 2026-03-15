@@ -642,7 +642,7 @@ export class AgentSettingsPanel {
         <div class="agent-item">
           <div class="agent-info">
             <div class="agent-name">@\${a.id} — \${a.name}</div>
-            <div class="agent-meta">\${a.category} · \${providerLabel} · API key: \${a.hasApiKey ? 'set' : 'NOT SET'}</div>
+            <div class="agent-meta">\${a.category} · \${providerLabel} · Credential: \${a.hasApiKey ? 'set' : 'NOT SET'}</div>
           </div>
           <div class="agent-actions">
             <button class="btn btn-secondary" onclick="showForm('\${a.id}')">Edit</button>
