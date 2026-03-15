@@ -7,7 +7,7 @@
 - **Date run:** 2026-03-14
 - **Test count:** 647 tests across 54 suites
 - **Result:** ✅ All 647 pass with `executionEngineV2: true` forced globally via `src/tests/setup/v2-global-setup.ts`
-- **Config:** `jest.config.js` loads `v2-global-setup.ts` via `setupFilesAfterFramework`
+- **Config:** `jest.config.js` loads `v2-global-setup.ts` via `setupFilesAfterEnv`
 
 ---
 
