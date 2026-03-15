@@ -19,8 +19,8 @@ export type ThoughtCallback = (event: ThoughtEvent) => void;
 interface ToolGuardState {
   mode: string;
   useV2: boolean;
-  /** Map from normalised path → timestamp of last read. Cleared when file is written. */
-  filesReadThisRun: Map<string, number>;
+  /** Map from normalised path → cached content of last read. Cleared when file is written. */
+  filesReadThisRun: Map<string, string>;
   /** Set of paths written this run — re-reading is allowed after a write. */
   filesWrittenThisRun: Set<string>;
 }
@@ -56,6 +56,16 @@ export class ToolDispatcher {
       filesReadThisRun: new Map(), filesWrittenThisRun: new Set(),
     };
     this._budget = new DiscoveryBudget();
+  }
+
+  /**
+   * Cache the content of a successful read_file result so that subsequent
+   * reread attempts return the cached content instead of a BLOCKED message.
+   * Called from AgentRunner after a successful read_file dispatch.
+   */
+  public cacheReadResult(filePath: string, content: string): void {
+    const normPath = filePath.replace(/\\/g, '/');
+    this._guardState.filesReadThisRun.set(normPath, content);
   }
 
   /** Returns the current discovery budget telemetry for audit/logging. */
@@ -183,12 +193,18 @@ export class ToolDispatcher {
         (inp.file_path as string | undefined);
       const normPath = targetPath ? targetPath.replace(/\\/g, '/') : '';
 
-      // Reread prevention: reject if file was already read and not written since
+      // Reread prevention: if file was already read and not written since,
+      // skip the MCP call. The content is already in the LLM's context from
+      // the previous iteration's tool result (via currentStepToolResults in
+      // code mode, or accumulated messages in plan mode). Return a brief
+      // pointer instead of the full content to avoid doubling token cost.
+      // After recovery, resetGuardState() clears this cache so the next
+      // read goes through MCP normally.
       if (toolEvent.name === 'read_file' && normPath) {
-        const wasRead = g.filesReadThisRun.has(normPath);
+        const cachedContent = g.filesReadThisRun.get(normPath);
         const wasWritten = g.filesWrittenThisRun.has(normPath);
-        if (wasRead && !wasWritten) {
-          return msgs.reread;
+        if (cachedContent !== undefined && !wasWritten) {
+          return `[Cached] "${normPath}" was already read this session and the full content is in your conversation context above. Use it directly — do not re-read.`;
         }
       }
 
@@ -208,10 +224,9 @@ export class ToolDispatcher {
         }
       }
 
-      // Track file-level reread state
-      if (toolEvent.name === 'read_file' && normPath) {
-        g.filesReadThisRun.set(normPath, Date.now());
-      }
+      // File-level read tracking is done via cacheReadResult() called from
+      // AgentRunner AFTER successful dispatch — not here. This ensures we only
+      // cache content from successful reads, not failed ones.
       if (['write_file', 'edit_file'].includes(toolEvent.name) && normPath) {
         g.filesWrittenThisRun.add(normPath);
       }

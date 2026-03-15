@@ -53,19 +53,23 @@ describe('ToolDispatcher — reread prevention', () => {
     expect(result).not.toContain('[BLOCKED]');
   });
 
-  test('blocks re-reading unchanged file', async () => {
-    // First read — allowed
+  test('returns brief pointer on re-read of unchanged file', async () => {
+    // First read — allowed, then cache the result
     await dispatcher.dispatch(
       { id: '1', name: 'read_file', input: { path: 'src/main.ts' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    // Second read of same file — blocked
+    dispatcher.cacheReadResult('src/main.ts', 'file content');
+    // Second read of same file — returns pointer, no MCP call
     const result = await dispatcher.dispatch(
       { id: '2', name: 'read_file', input: { path: 'src/main.ts' } },
       'agent', mockOnApproval, mockOnDiff, mockOnThought
     );
-    expect(result).toContain('[BLOCKED]');
+    expect(result).toContain('[Cached]');
+    expect(result).toContain('src/main.ts');
     expect(result).toContain('already read');
+    // MCP should only have been called once (for the first read)
+    expect(mockMCPHost.callTool).toHaveBeenCalledTimes(1);
   });
 
   test('allows re-reading after file has been written', async () => {

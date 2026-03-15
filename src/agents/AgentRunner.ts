@@ -585,6 +585,27 @@ export class AgentRunner {
     let execState: ExecutionStateData = await stateManager.load(agentId) ??
       stateManager.createFresh(agentId, userMessage.slice(0, 500), mode);
 
+    // ─── Reset terminal states for new requests ────────────────────────────────
+    // When the user sends a NEW message (not "continue"), any terminal runPhase
+    // from a prior session (COMPLETED, WAITING_FOR_USER_INPUT, etc.) must be reset
+    // to RUNNING — otherwise the run loop exits immediately without doing anything.
+    const CONTINUE_PATTERN_EARLY = /^\s*(continu[ei]|proceed|keep going|go on|go ahead|resume)\s*[.!]?\s*$/i;
+    if (!CONTINUE_PATTERN_EARLY.test(userMessage) && execState.runPhase && execState.runPhase !== 'RUNNING') {
+      execState.runPhase = 'RUNNING';
+      execState.waitStateReason = undefined;
+      // Also reset iteration counters for fresh tasks — the prior session's progress
+      // should not constrain the new request.
+      execState.iterationsUsed = 0;
+      execState.blockedReadCount = 0;
+      execState.continueCount = 0;
+      execState.executedTools = [];
+      execState.artifactsCreated = [];
+      execState.nextActions = [];
+      execState.nextToolCall = undefined;
+      execState.objective = userMessage.slice(0, 500);
+      stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+    }
+
     // Phase 8.3 — Classify task template once at run start
     let activeTaskTemplate = execState.taskTemplate;
     if (!activeTaskTemplate) {
@@ -1227,6 +1248,9 @@ export class AgentRunner {
                 stateManager.markToolExecuted(execState, event.name, toolCallPath, resultStr0.slice(0, 150));
                 if (event.name === 'read_file' && toolCallPath) {
                   stateManager.markFileRead(execState, this.normalizeWorkspacePath(toolCallPath));
+                  // Cache the full content so reread attempts return the content
+                  // instead of a useless BLOCKED message.
+                  this.toolDispatcher.cacheReadResult(toolCallPath, resultStr0);
                 }
               }
             }
