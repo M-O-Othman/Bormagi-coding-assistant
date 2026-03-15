@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ChatMessage } from '../types';
+import type { ExecutionStateData } from './ExecutionStateManager';
 
 const LOGS_DIR = 'logs';
 const MAX_CONTENT_CHARS = 4000; // truncate large payloads in the log
@@ -123,6 +124,104 @@ export class AgentLogger {
     );
   }
 
+  // ─── FIX 8: Comprehensive structured logging ────────────────────────────────
+
+  /** Log the exact messages array sent to the provider on each iteration. */
+  logProviderRequest(iterationNumber: number, messages: ChatMessage[], mode: string): void {
+    if (!this.enabled) { return; }
+    const summary = messages.map((m, i) => {
+      const contentLen = m.content.length;
+      const preview = m.content.slice(0, 200).replace(/\n/g, ' ');
+      return `  [${i}] role=${m.role} len=${contentLen} "${preview}…"`;
+    }).join('\n');
+    this.section(`PROVIDER REQUEST (iteration #${iterationNumber}, mode=${mode})`,
+      `Messages: ${messages.length}\n${summary}`);
+  }
+
+  /** Log execution state snapshot at each iteration. */
+  logExecutionState(iterationNumber: number, state: ExecutionStateData): void {
+    if (!this.enabled) { return; }
+    const lines = [
+      `  phase: ${state.executionPhase ?? 'INITIALISING'}`,
+      `  runPhase: ${state.runPhase ?? 'RUNNING'}`,
+      `  iterations: ${state.iterationsUsed}`,
+      `  resolvedInputs: [${state.resolvedInputs.join(', ')}]`,
+      `  artifactsCreated: [${state.artifactsCreated.join(', ')}]`,
+      `  nextActions: [${state.nextActions.join(', ')}]`,
+      `  nextToolCall: ${state.nextToolCall ? `${state.nextToolCall.tool}(${JSON.stringify(state.nextToolCall.input).slice(0, 100)})` : 'none'}`,
+      `  blockedReadCount: ${state.blockedReadCount ?? 0}`,
+      `  sameToolLoop: ${state.sameToolLoop ? `${state.sameToolLoop.tool}:${state.sameToolLoop.path ?? ''}x${state.sameToolLoop.count}` : 'none'}`,
+      `  resolvedInputContents: [${Object.keys(state.resolvedInputContents ?? {}).join(', ')}]`,
+    ];
+    this.section(`EXECUTION STATE (iteration #${iterationNumber})`, lines.join('\n'));
+  }
+
+  /** Log phase transitions with reason. */
+  logPhaseTransition(from: string, to: string, reason: string): void {
+    if (!this.enabled) { return; }
+    this.writeLine(`\n── PHASE: ${from} → ${to} (${reason})`);
+  }
+
+  /** Log context cost breakdown per iteration. */
+  logContextCost(iterationNumber: number, breakdown: {
+    systemPromptTokens: number; stateTokens: number; fileContentTokens: number;
+    toolResultTokens: number; userMessageTokens: number; totalTokens: number;
+  }): void {
+    if (!this.enabled) { return; }
+    const lines = [
+      `  system: ${breakdown.systemPromptTokens}`,
+      `  state: ${breakdown.stateTokens}`,
+      `  files: ${breakdown.fileContentTokens}`,
+      `  toolResults: ${breakdown.toolResultTokens}`,
+      `  user: ${breakdown.userMessageTokens}`,
+      `  TOTAL: ${breakdown.totalTokens}`,
+    ];
+    this.section(`CONTEXT COST (iteration #${iterationNumber})`, lines.join('\n'));
+  }
+
+  /** Log loop guard activation. */
+  logGuardActivation(
+    guardType: 'LOOP_DETECTED' | 'DISCOVERY_BUDGET' | 'WRITE_ONLY' | 'BATCH_ALREADY_ACTIVE',
+    tool: string, toolPath: string | undefined, iterationNumber: number,
+  ): void {
+    if (!this.enabled) { return; }
+    this.writeLine(`\n── GUARD: ${guardType} on ${tool}${toolPath ? `:${toolPath}` : ''} at iteration #${iterationNumber}`);
+  }
+
+  /** Log recovery trigger and outcome. */
+  logRecovery(trigger: string, success: boolean, action: string): void {
+    if (!this.enabled) { return; }
+    this.writeLine(`\n── RECOVERY: trigger=${trigger} success=${success} action=${action}`);
+  }
+
+  /** Log deterministic dispatch (bypass of LLM call). */
+  logDeterministicDispatch(tool: string, toolPath: string | undefined, reason: string): void {
+    if (!this.enabled) { return; }
+    this.writeLine(`\n── DETERMINISTIC DISPATCH: ${tool}${toolPath ? ` → ${toolPath}` : ''} (${reason})`);
+  }
+
+  // ─── Structured turn/session summaries (ACTION 15) ──────────────────────
+
+  /**
+   * Log a structured per-turn summary as a single JSON line.
+   * Called at the end of each iteration in the while(continueLoop) loop.
+   */
+  logTurnSummary(entry: TurnSummary): void {
+    if (!this.enabled) { return; }
+    const line = `┌─ TURN_SUMMARY\n${JSON.stringify(entry, null, 2)}\n└─\n`;
+    this.writeLine(line);
+  }
+
+  /**
+   * Log a structured session summary as a single JSON line.
+   * Called at session end.
+   */
+  logSessionSummary(summary: SessionSummary): void {
+    if (!this.enabled) { return; }
+    const line = `┌─ SESSION_SUMMARY\n${JSON.stringify(summary, null, 2)}\n└─\n`;
+    this.writeLine(line);
+  }
+
   // ─── Private helpers ──────────────────────────────────────────────────────
 
   private section(title: string, body: string): void {
@@ -141,4 +240,41 @@ export class AgentLogger {
       // Silently swallow — log failures must never crash the agent
     }
   }
+}
+
+export interface TurnSummary {
+  turn: number;
+  phase: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheHit: boolean;
+  toolCalled?: string;
+  toolPath?: string;
+  toolStatus?: string;
+  toolReasonCode?: string;
+  writtenThisTurn: string[];
+  cumulativeWrites: number;
+  cumulativeReads: number;
+  blockedReads: number;
+  systemPromptTokens: number;
+  contextPacketTokens: number;
+  toolResultTokens: number;
+  llmCallSkipped: boolean;
+  deterministicDispatch: boolean;
+}
+
+export interface SessionSummary {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalTurns: number;
+  uniqueFilesWritten: string[];
+  uniqueFilesRead: string[];
+  loopDetections: number;
+  discoveryBudgetExceeded: number;
+  recoveryAttempts: number;
+  llmCallsSkipped: number;
+  deterministicDispatches: number;
+  durationMs: number;
+  tokenEfficiency: number;
+  fsmPhases: string[];
 }

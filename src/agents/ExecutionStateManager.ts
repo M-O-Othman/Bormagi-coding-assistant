@@ -172,6 +172,14 @@ export interface ExecutionStateData {
   sameToolLoop?: { tool: string; path?: string; count: number };
   /** Richer resolved input summaries with hash-based reuse. V2 only. */
   resolvedInputSummaries?: ResolvedInputSummary[];
+
+  /**
+   * Full content of critical input files, keyed by normalized path.
+   * Budget-capped: only the first N chars per file, total capped at ~24000 chars (~6000 tokens).
+   * These are injected as authoritative context on every iteration so the model
+   * never needs to re-read them. V2 only.
+   */
+  resolvedInputContents?: Record<string, string>;
 }
 
 export class ExecutionStateManager {
@@ -340,13 +348,30 @@ export class ExecutionStateManager {
   }
 
   /**
-   * Record a file that was read. Idempotent — won't add duplicates.
+   * Record a file that was read. Optionally extract structured facts from the
+   * content and store in resolvedInputSummaries for budget-immune reuse.
+   *
+   * @param filePath  Normalized workspace-relative path.
+   * @param content   Full file content (optional). When provided, structured
+   *                  facts are extracted and stored for reuse across turns.
    */
-  markFileRead(state: ExecutionStateData, filePath: string): void {
+  markFileRead(state: ExecutionStateData, filePath: string, content?: string): void {
     if (!state.resolvedInputs.includes(filePath)) {
       state.resolvedInputs.push(filePath);
-      state.updatedAt = new Date().toISOString();
     }
+
+    if (content) {
+      const summary = this.extractStructuredSummary(content, filePath);
+      this.upsertResolvedInputSummary(state, {
+        path: filePath,
+        hash: this.hashContent(content),
+        summary,
+        kind: this.classifyFileKind(filePath),
+        lastReadAt: new Date().toISOString(),
+      });
+    }
+
+    state.updatedAt = new Date().toISOString();
   }
 
   /**
@@ -392,6 +417,39 @@ export class ExecutionStateManager {
     if (!state.resolvedInputs.includes(filePath)) { return true; }
     // Allow re-read only if the file was written after being read
     return state.artifactsCreated.includes(filePath);
+  }
+
+  /**
+   * Verify that the agent has sufficient context to begin writing.
+   * Called by AgentRunner before the first write attempt in code mode.
+   *
+   * Returns { ready: true } when all preconditions are met.
+   * Returns { ready: false, missing: [...] } listing what needs to be loaded.
+   */
+  checkReadiness(state: ExecutionStateData): { ready: boolean; missing: string[] } {
+    const missing: string[] = [];
+
+    // Must have at least one resolved input with substantive content
+    const hasContent = (state.resolvedInputSummaries ?? []).some(
+      s => s.summary.length > 100
+    );
+    if (!hasContent && state.resolvedInputs.length === 0) {
+      missing.push('No input files read with content');
+    }
+
+    // In code mode with an approved plan, the plan must be loaded
+    if (state.mode === 'code' && state.approvedPlanPath) {
+      if (!state.resolvedInputs.includes(state.approvedPlanPath)) {
+        missing.push(`Plan not loaded: ${state.approvedPlanPath}`);
+      }
+    }
+
+    // Objective must be substantive (not just a filename derivative)
+    if ((state.primaryObjective ?? state.objective).length < 20) {
+      missing.push('Objective too vague — may be derived from filename only');
+    }
+
+    return { ready: missing.length === 0, missing };
   }
 
   /**
@@ -710,61 +768,171 @@ export class ExecutionStateManager {
   // ── Context note builder ──────────────────────────────────────────────────
 
   /**
-   * Build a compact system-context note injected at the start of each session.
-   * Kept under ~400 chars for common cases to minimise token overhead.
+   * Build an authoritative execution state note for injection into the prompt.
+   *
+   * This note uses imperative language and includes actual content digests
+   * (not just filenames) so the model has the information it needs without
+   * re-reading files. The note explicitly prohibits re-reads when content
+   * has already been resolved.
    */
   buildContextNote(state: ExecutionStateData): string {
-    // Use primaryObjective when available to prevent nudge messages from overwriting the task.
     const displayObjective = state.primaryObjective ?? state.objective;
     const lines: string[] = [
-      '[Execution State — resume context]',
-      `Primary objective: ${displayObjective}`,
+      '[AUTHORITATIVE EXECUTION STATE — DO NOT OVERRIDE]',
+      `Objective: ${displayObjective.slice(0, 300)}`,
       `Mode: ${state.mode} | Iterations: ${state.iterationsUsed}`,
     ];
+
     if (state.resumeNote) {
       lines.push(`Resume note: ${state.resumeNote}`);
     }
 
     if (state.techStack && Object.keys(state.techStack).length > 0) {
       lines.push(
-        `Architecture lock — committed tech stack: ${JSON.stringify(state.techStack)}. Do NOT use other frameworks.`
+        `Committed tech stack: ${JSON.stringify(state.techStack)}. Do NOT use other frameworks.`
+      );
+    }
+
+    // Resolved inputs with content digests — not just filenames
+    const summaries = state.resolvedInputSummaries ?? [];
+    if (summaries.length > 0) {
+      lines.push('RESOLVED INPUTS (content already available — DO NOT call read_file on these):');
+      for (const ris of summaries) {
+        // Include the actual summary so the model has the facts
+        const digestLines = ris.summary.split('\n').map(l => `    ${l}`).join('\n');
+        lines.push(`  ${ris.path} [${ris.kind}]:\n${digestLines}`);
+      }
+    } else if (state.resolvedInputs.length > 0) {
+      // Fallback: just paths (no content captured)
+      lines.push(
+        `Files already read (DO NOT re-read): ${state.resolvedInputs.join(', ')}`
       );
     }
 
     if (state.artifactsCreated.length > 0) {
       lines.push(
-        `Files already created (do not recreate, use edit_file):\n${state.artifactsCreated.map(f => `  - ${f}`).join('\n')}`
+        `Files already written (use edit_file to modify):\n${state.artifactsCreated.map(f => `  - ${f}`).join('\n')}`
       );
     }
 
     if (state.completedSteps.length > 0) {
       const recent = state.completedSteps.slice(-5);
-      lines.push(`Completed steps:\n${recent.map(s => `  ✓ ${s}`).join('\n')}`);
+      lines.push(`Completed: ${recent.join('; ')}`);
     }
 
-    if (state.nextActions.length > 0) {
-      lines.push(`Next pending actions:\n${state.nextActions.map(a => `  → ${a}`).join('\n')}`);
-    }
-
-    if (state.blockers.length > 0) {
-      lines.push(`Blockers from last session:\n${state.blockers.map(b => `  ! ${b}`).join('\n')}`);
-    }
-
-    if (state.resolvedInputs.length > 0) {
-      lines.push(`Files already read this task (skip re-reading unless you wrote to them): ${state.resolvedInputs.join(', ')}`);
-    }
-
+    // Batch progress
     const planned = state.plannedFileBatch ?? [];
     if (planned.length > 0) {
       const completed = state.completedBatchFiles ?? [];
       const remaining = planned.filter(f => !completed.includes(f));
-      const batchSummary = remaining.length === 0
-        ? `Declared batch: all ${planned.length} files written.`
-        : `Declared batch: ${completed.length}/${planned.length} done. Remaining: ${remaining.slice(0, 4).join(', ')}${remaining.length > 4 ? ` +${remaining.length - 4} more` : ''}`;
-      lines.push(batchSummary);
+      if (remaining.length > 0) {
+        lines.push(
+          `Batch: ${completed.length}/${planned.length} done. Remaining: ${remaining.slice(0, 4).join(', ')}${remaining.length > 4 ? ` +${remaining.length - 4} more` : ''}`
+        );
+      } else {
+        lines.push(`Batch: all ${planned.length} files written.`);
+      }
+    }
+
+    // Next action — imperative
+    if (state.nextActions.length > 0) {
+      lines.push(`NEXT REQUIRED ACTION: ${state.nextActions[0]}`);
+      if (state.nextToolCall) {
+        lines.push(
+          `NEXT TOOL: ${state.nextToolCall.tool}(${JSON.stringify(state.nextToolCall.input).slice(0, 120)})`
+        );
+      }
+      lines.push('Call write_file or edit_file NOW. Do NOT call read_file or list_files.');
     }
 
     return lines.join('\n');
+  }
+
+  // ── Structured summary extraction ────────────────────────────────────────
+
+  /**
+   * Extract structured facts from file content for compact, budget-immune
+   * storage. Produces a ~300-500 char summary that captures the essential
+   * information the model needs to write correct code.
+   */
+  private extractStructuredSummary(content: string, filePath: string): string {
+    const lines = content.split('\n');
+    const facts: string[] = [];
+
+    // 1. Title / purpose — first markdown heading or first 200 chars
+    const titleLine = lines.find(l => l.startsWith('#'));
+    if (titleLine) {
+      facts.push(`Title: ${titleLine.replace(/^#+\s*/, '').trim()}`);
+    } else {
+      facts.push(`Content: ${content.slice(0, 200).replace(/\n/g, ' ').trim()}`);
+    }
+
+    // 2. Technology stack mentions
+    const techPattern = /\b(React|Python|FastAPI|Express|Django|Flask|Node\.?js|Vue|Angular|TypeScript|JavaScript|PostgreSQL|MongoDB|MySQL|SQLite|Docker|Kubernetes|Redis|GraphQL|REST|gRPC|Jinja2?|pdfplumber|pypdf|Uvicorn|Axios|Tailwind|Next\.?js)\b/gi;
+    const techs = [...new Set((content.match(techPattern) ?? []).map(t => t.toLowerCase()))];
+    if (techs.length > 0) {
+      facts.push(`Tech stack: ${techs.join(', ')}`);
+    }
+
+    // 3. Directory structure if present (code blocks with path-like content)
+    const dirBlock = content.match(/```(?:text)?\s*\n((?:[\s/].*\n){2,})\s*```/);
+    if (dirBlock) {
+      facts.push(`Directory structure:\n${dirBlock[1].trim().slice(0, 400)}`);
+    }
+
+    // 4. Numbered requirements or objectives (first 6)
+    const numbered = lines
+      .filter(l => /^\s*\d+\.\s/.test(l))
+      .slice(0, 6)
+      .map(l => l.trim());
+    if (numbered.length > 0) {
+      facts.push(`Key requirements:\n${numbered.join('\n')}`);
+    }
+
+    // 5. API endpoints if present
+    const endpoints = lines
+      .filter(l => /\b(GET|POST|PUT|DELETE|PATCH)\s+\//.test(l))
+      .slice(0, 5)
+      .map(l => l.trim());
+    if (endpoints.length > 0) {
+      facts.push(`Endpoints:\n${endpoints.join('\n')}`);
+    }
+
+    return facts.join('\n');
+  }
+
+  /**
+   * Classify a file as requirements, plan, source, config, or other
+   * based on its path.
+   */
+  private classifyFileKind(
+    filePath: string
+  ): 'requirements' | 'plan' | 'source' | 'config' | 'other' {
+    const lower = filePath.toLowerCase();
+    if (lower.includes('requirement') || lower.includes('spec')) return 'requirements';
+    if (lower.includes('plan') || lower.includes('design') || lower.includes('architecture'))
+      return 'plan';
+    if (lower.match(/\.(ts|js|py|java|go|rs|rb|cs|cpp|c|h)$/)) return 'source';
+    if (
+      lower.match(
+        /\.(json|ya?ml|toml|ini|env|cfg|conf|dockerfile|docker-compose)$/
+      ) ||
+      lower.includes('config')
+    )
+      return 'config';
+    return 'other';
+  }
+
+  /**
+   * Simple content hash for change detection.
+   */
+  private hashContent(content: string): string {
+    let hash = 0;
+    for (let i = 0; i < Math.min(content.length, 2000); i++) {
+      const char = content.charCodeAt(i);
+      hash = ((hash << 5) - hash + char) | 0;
+    }
+    return hash.toString(16);
   }
 
   // ── Internal ──────────────────────────────────────────────────────────────

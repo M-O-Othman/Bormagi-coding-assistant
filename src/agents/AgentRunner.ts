@@ -635,8 +635,42 @@ export class AgentRunner {
     if (mode === 'code' && !execState.approvedPlanPath) {
       const planPath = this.resolveApprovedPlanPath(execState, registeredArtifactPaths, userMessage);
       if (planPath) {
-        stateManager.markPlanApproved(execState, planPath);
-        stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+        // ACTION 14: Validate plan against requirements before approval
+        const isValid = await this.validatePlanAgainstRequirements(planPath, execState);
+        if (isValid) {
+          stateManager.markPlanApproved(execState, planPath);
+          stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+        } else {
+          onThought?.({
+            type: 'error',
+            label: `[Plan validation] Plan at ${planPath} does not match requirements — not approved`,
+            timestamp: new Date(),
+          });
+        }
+      }
+    }
+
+    // FIX 4: Pre-load approved plan content into resolvedInputContents at code-mode start.
+    // This prevents the model from trying to re-read the plan file at the start of
+    // every code-mode session.
+    if (mode === 'code' && execState.approvedPlanPath) {
+      const planPath = execState.approvedPlanPath;
+      execState.resolvedInputContents ??= {};
+      const alreadyLoaded = execState.resolvedInputContents[planPath];
+      if (!alreadyLoaded) {
+        try {
+          const absPath = path.isAbsolute(planPath)
+            ? planPath
+            : path.join(this.workspaceRoot, planPath);
+          const planContent = await fs.readFile(absPath, 'utf8');
+          execState.resolvedInputContents[planPath] = planContent.slice(0, 6000);
+          // Seed the read cache so ToolDispatcher knows this file was read
+          this.toolDispatcher.cacheReadResult(planPath, planContent);
+          stateManager.markFileRead(execState, planPath, planContent);
+        } catch {
+          // Plan file missing from disk — clear the approval
+          execState.approvedPlanPath = undefined;
+        }
       }
     }
 
@@ -898,6 +932,7 @@ export class AgentRunner {
     // Without a cap, recovery → same trigger → recovery creates an infinite loop.
     let recoveryAttempts = 0;
     const MAX_RECOVERY_ATTEMPTS = 2;
+    const sessionStartTime = Date.now();
     const maxToolIterations = vsConfig.get<number>('agent.maxToolIterations', 20);
     // #6 — Discovery budget: track consecutive read-only calls with no writes.
     let consecutiveReadCount = 0;
@@ -936,6 +971,41 @@ export class AgentRunner {
     // Virtual tools are handled in the streaming event handler, not by ToolDispatcher.
     // They must never be directly dispatched via bypass/DD9 — they'd fail with "Tool not found".
     const VIRTUAL_TOOLS = new Set(['declare_file_batch', 'update_task_state']);
+
+    // FIX 1: Split system prompt — send full on first iteration, compact thereafter.
+    const { volatile: volatileSystemPrompt } = promptAssembler.splitSystemPrompt(fullSystem);
+    const identityReminder = `You are ${agentConfig.name} in ${mode} mode. Follow all prior engineering principles.`;
+    const compactSystem = volatileSystemPrompt
+      ? `${identityReminder}\n\n${volatileSystemPrompt}`
+      : fullSystem; // fallback if no split marker found
+    let isFirstIteration = true;
+
+    // FIX 7: Ready-to-execute gate — confirm the model has input files before entering
+    // the loop so it doesn't reflexively try to read files it already has.
+    if (mode === 'code') {
+      const hasFileContents = Object.keys(execState.resolvedInputContents ?? {}).length > 0;
+      const hasPlan = !!execState.approvedPlanPath;
+      const hasRequirements = (execState.resolvedInputSummaries ?? [])
+        .some(s => s.kind === 'requirements' || s.kind === 'plan');
+
+      if (hasFileContents || hasPlan || hasRequirements) {
+        // Ready: inject explicit confirmation so the model does not re-read
+        const loadedFiles = Object.keys(execState.resolvedInputContents ?? {}).join(', ');
+        if (loadedFiles) {
+          messages.push({
+            role: 'system',
+            content: `[READY] You have all required input files loaded: ${loadedFiles}. Begin writing immediately. Do not read any files.`,
+          });
+        }
+        stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
+      } else {
+        // Not ready — allow limited discovery then force write
+        messages.push({
+          role: 'system',
+          content: `[Discovery budget: 2 reads maximum. Read the most important file, then write.]`,
+        });
+      }
+    }
 
     while (continueLoop) {
       // Phase 4: terminal state check — exit immediately if runPhase is no longer RUNNING
@@ -1047,6 +1117,23 @@ export class AgentRunner {
             consecutiveReadCount = 0;
             blockedReadPaths.clear();
 
+            // FIX 8: Log recovery
+            agentLog.logRecovery(trigger, true, result.summary);
+
+            // FIX 10: In plan mode, inject all stored file contents so forced writes
+            // are based on actual content, not filename guessing.
+            if (trigger === 'REPEATED_BLOCKED_READS' && mode === 'plan') {
+              const allContents = Object.entries(execState.resolvedInputContents ?? {})
+                .map(([p, c]) => `[${p}]:\n${c}`)
+                .join('\n\n---\n\n');
+              if (allContents) {
+                messages.push({
+                  role: 'system',
+                  content: `[FORCED WRITE MODE] You must write the plan now. Here are the input files you previously read:\n\n${allContents}\n\nBase your plan on THIS content, not on filenames.`,
+                });
+              }
+            }
+
             // ─── Task 2: Hard strategy switch on blocked rereads ───────────────
             // After REPEATED_BLOCKED_READS recovery: force a deterministic next
             // step instead of letting the LLM loop back into reads.
@@ -1058,6 +1145,7 @@ export class AgentRunner {
                 // Direct dispatch — skip LLM call entirely
                 contextCostTracker.recordSkippedLLMCall();
                 const ntc = nextToolCall;
+                agentLog.logDeterministicDispatch(ntc.tool, (ntc.input as Record<string, unknown>).path as string | undefined, 'strategy-switch after recovery');
                 onThought?.({ type: 'thinking', label: `[Strategy switch] Dispatching deterministic nextToolCall: ${ntc.tool}`, timestamp: new Date() });
                 const directResult = await this.toolDispatcher.dispatch(
                   { id: `strategy-${Date.now()}`, name: ntc.tool, input: ntc.input as Record<string, unknown> },
@@ -1099,6 +1187,7 @@ export class AgentRunner {
         const bypassNtc = deterministicBypass?.nextToolCall ?? execState.nextToolCall;
         if (bypassNtc && !VIRTUAL_TOOLS.has(bypassNtc.tool)) {
           contextCostTracker.recordSkippedLLMCall();
+          agentLog.logDeterministicDispatch(bypassNtc.tool, (bypassNtc.input as Record<string, unknown>).path as string | undefined, 'blocked-read bypass');
           onThought?.({ type: 'thinking', label: `[Blocked-read bypass] Dispatching: ${bypassNtc.tool}`, timestamp: new Date() });
           const bypassResult = await this.toolDispatcher.dispatch(
             { id: `bypass-${Date.now()}`, name: bypassNtc.tool, input: bypassNtc.input as Record<string, unknown> },
@@ -1177,6 +1266,7 @@ export class AgentRunner {
           if (dd9Step?.nextToolCall && !VIRTUAL_TOOLS.has(dd9Step.nextToolCall.tool)) {
             contextCostTracker.recordSkippedLLMCall();
             const dd9Ntc = dd9Step.nextToolCall;
+            agentLog.logDeterministicDispatch(dd9Ntc.tool, (dd9Ntc.input as Record<string, unknown>).path as string | undefined, 'DD9 direct dispatch');
             onThought?.({ type: 'thinking', label: `[DD9 direct dispatch] ${dd9Ntc.tool}: ${dd9Ntc.description ?? ''}`, timestamp: new Date() });
             const dd9Result = await this.toolDispatcher.dispatch(
               { id: `dd9-${Date.now()}`, name: dd9Ntc.tool, input: dd9Ntc.input as Record<string, unknown> },
@@ -1219,7 +1309,7 @@ export class AgentRunner {
         const compactWorkspace = contextPacket.workspaceSummary;
 
         messagesForProvider = promptAssembler.assembleMessages({
-          systemPrompt: fullSystem,
+          systemPrompt: isFirstIteration ? fullSystem : compactSystem,
           executionStateSummary: compactSummary,
           workspaceSummary: compactWorkspace,
           currentInstruction: effectiveUserContent,
@@ -1229,7 +1319,10 @@ export class AgentRunner {
             : undefined,
           // Phase 8.4 — inject template-specific skill fragments
           activeSkills: activeSkills.length > 0 ? activeSkills : undefined,
+          // FIX 2c / FIX 9: inject resolved file contents so model never re-reads
+          resolvedFileContents: contextPacket.resolvedFileContents || undefined,
         });
+        isFirstIteration = false;
 
         // DD12: Record per-turn context cost telemetry.
         const skillFragmentText = activeSkills.length > 0 ? activeSkills.join('\n') : '';
@@ -1242,6 +1335,7 @@ export class AgentRunner {
           skillFragmentText,
           effectiveUserContent,
           toolResultText,
+          stateManager.getExecutionPhase(execState),
         );
         // DD7: Track summary reuse — check if any resolved input summaries were reused
         for (const ris of contextPacket.resolvedInputSummaries) {
@@ -1255,6 +1349,14 @@ export class AgentRunner {
           label: `[ContextCost] turn=${costEntry.turn} tokens=${costEntry.totalTokens} summariesReused=${costEntry.resolvedSummariesReused} rawFiles=${costEntry.rawFileContentsInjected}`,
           timestamp: new Date(),
         });
+        agentLog.logContextCost(iterationCount, {
+          systemPromptTokens: costEntry.systemPromptTokens,
+          stateTokens: costEntry.executionStateTokens,
+          fileContentTokens: costEntry.skillFragmentTokens,
+          toolResultTokens: costEntry.toolResultTokens,
+          userMessageTokens: costEntry.currentInstructionTokens,
+          totalTokens: costEntry.totalTokens,
+        });
 
         // Reset after use — tool results from THIS iteration will repopulate it below
         currentStepToolResults.length = 0;
@@ -1262,6 +1364,10 @@ export class AgentRunner {
         // Non-code modes: sanitise tool_result roles
         messagesForProvider = this.prepareMessagesForProvider(messages);
       }
+      // FIX 8: Log provider request and execution state at each iteration
+      agentLog.logProviderRequest(iterationCount, messagesForProvider, mode);
+      agentLog.logExecutionState(iterationCount, execState);
+
       for await (const event of provider.stream(messagesForProvider, this.filterToolsByMode(tools, mode), actualMaxOutputTokens)) {
         if (event.type === 'provider_headers') {
           const importantHeaders = this.selectImportantHeaders(event.headers);
@@ -1493,15 +1599,29 @@ export class AgentRunner {
 
             let toolResult: DispatchResult;
             if (toolPathCount >= 3 && ['read_file', 'list_files', 'search_files'].includes(event.name)) {
-              // Same read-only tool+path 3+ times — force a write
+              // FIX 3b: Hard state transition to WRITE_ONLY — no more reads allowed.
+              stateManager.setExecutionPhase(execState, 'WRITE_ONLY');
+              this.toolDispatcher.lockDiscovery();
+              this.toolDispatcher.setExecutionPhase('WRITE_ONLY');
+
+              // Inject the file content the model is trying to read (if stored)
+              const storedContent = execState.resolvedInputContents?.[
+                this.normalizeWorkspacePath(toolCallPath ?? '')
+              ];
+              const contentInjection = storedContent
+                ? `\n\nHere is the content you are trying to read:\n${storedContent}`
+                : '';
+
               toolResult = {
-                text: `[LOOP DETECTED] "${event.name}" on "${toolCallPath}" has been called ${toolPathCount} times with no writes. Stop reading and write a file now.`,
+                text: `[READ BLOCKED] You already read "${toolCallPath}". Phase is now WRITE_ONLY. All further reads will be rejected. Write the next file now.${contentInjection}`,
                 status: 'blocked',
-                reasonCode: 'LOOP_DETECTED',
+                reasonCode: 'WRITE_ONLY_PHASE',
                 toolName: event.name,
                 path: toolCallPath,
               };
-              onThought?.({ type: 'error', label: `Loop detected: ${event.name}:${toolCallPath} x${toolPathCount}`, timestamp: new Date() });
+              onThought?.({ type: 'error', label: `Loop detected → WRITE_ONLY: ${event.name}:${toolCallPath} x${toolPathCount}`, timestamp: new Date() });
+              agentLog.logGuardActivation('WRITE_ONLY', event.name, toolCallPath, iterationCount);
+              agentLog.logPhaseTransition(execState.executionPhase ?? 'DISCOVERING', 'WRITE_ONLY', `loop on ${event.name}:${toolCallPath}`);
             } else {
               toolResult = await this.toolDispatcher.dispatch(
                 event, agentId, onApproval, onDiff, onThought
@@ -1532,7 +1652,12 @@ export class AgentRunner {
                 // DD4: Reset tool loop on success
                 stateManager.resetToolLoop(execState);
                 if (event.name === 'read_file' && toolCallPath) {
-                  stateManager.markFileRead(execState, this.normalizeWorkspacePath(toolCallPath));
+                  // ACTION 13: Pass content so structured facts can be extracted
+                  stateManager.markFileRead(
+                    execState,
+                    this.normalizeWorkspacePath(toolCallPath),
+                    toolResult.text  // pass content for structured summary extraction
+                  );
                   // Cache the full content so reread attempts return the content
                   // instead of a useless BLOCKED message.
                   this.toolDispatcher.cacheReadResult(toolCallPath, toolResult.text);
@@ -1544,6 +1669,19 @@ export class AgentRunner {
                   );
                   stateManager.upsertResolvedInputSummary(execState, readSummary);
                   contextCostTracker.recordRawFileInjection();
+
+                  // FIX 2: Store full file content (budget-capped) so it survives
+                  // across iterations and the model never needs to re-read.
+                  const MAX_STORED_CONTENT_CHARS = 6000;
+                  const MAX_TOTAL_STORED_CHARS = 24000;
+                  execState.resolvedInputContents ??= {};
+                  const currentTotal = Object.values(execState.resolvedInputContents)
+                    .reduce((sum, c) => sum + c.length, 0);
+                  if (currentTotal + Math.min(toolResult.text.length, MAX_STORED_CONTENT_CHARS) <= MAX_TOTAL_STORED_CHARS) {
+                    const normalizedPath = this.normalizeWorkspacePath(toolCallPath);
+                    execState.resolvedInputContents[normalizedPath] =
+                      toolResult.text.slice(0, MAX_STORED_CONTENT_CHARS);
+                  }
                 }
 
                 // DD5: Compute deterministic next step first, fall back to advisory
@@ -1564,15 +1702,14 @@ export class AgentRunner {
               }
             }
 
-            // Truncate very large tool results so they don't dominate the context
-            // window on subsequent iterations and cause the model to output tiny
-            // narrations instead of the next tool call.
+            // ACTION 8: Tiered truncation — full on first read, digest on subsequent
             const resultStr = toolResult.text;
-            const MAX_TOOL_RESULT_CHARS = 8000;
-            const truncatedResult = resultStr.length > MAX_TOOL_RESULT_CHARS
-              ? resultStr.slice(0, MAX_TOOL_RESULT_CHARS) +
-                `\n\n[... result truncated: ${resultStr.length - MAX_TOOL_RESULT_CHARS} more chars omitted from history ...]`
-              : resultStr;
+            const truncatedResult = this.truncateToolResult(
+              resultStr,
+              event.name,
+              iterationCount,
+              toolCallPath
+            );
             toolResultContent = `<tool_result name="${event.name}">\n${truncatedResult}\n</tool_result>`;
 
             // ─── #6 Discovery budget enforcement ─────────────────────────────
@@ -1628,6 +1765,21 @@ export class AgentRunner {
                   ? `[Batch complete: all ${plannedBatch.length} planned files written.]`
                   : `[Batch: ${completedBatch.length}/${plannedBatch.length} done. Remaining: ${remaining.slice(0, 4).join(', ')}${remaining.length > 4 ? ` +${remaining.length - 4} more` : ''}]`;
                 toolResultContent += `\n${batchNote}`;
+              }
+            }
+
+            // FIX 5: After plan-mode write, validate that the plan references the objective.
+            if (mode === 'plan' && event.name === 'write_file' && toolResult.status === 'success') {
+              const writtenContent = ((event.input as Record<string, unknown>)?.content as string) ?? '';
+              const objective = execState.primaryObjective ?? execState.objective;
+              const objectiveWords = objective.toLowerCase().split(/\s+/).filter(w => w.length > 4);
+              const planLower = writtenContent.toLowerCase();
+              const matches = objectiveWords.filter(w => planLower.includes(w));
+              const overlapRatio = matches.length / Math.max(objectiveWords.length, 1);
+              if (overlapRatio < 0.2 && objectiveWords.length > 2) {
+                toolResultContent += `\n\n[WARNING] The plan you wrote has low overlap with the primary objective: "${objective.slice(0, 200)}". Review and revise the plan to match the actual requirements.`;
+                stateManager.setArtifactStatus(execState,
+                  this.normalizeWorkspacePath(toolCallPath!), 'drafted');
               }
             }
 
@@ -1761,6 +1913,53 @@ export class AgentRunner {
         const systemMsg = messages[0]; // preserve system prompt
         const recentEntries = messages.slice(-(AUDIT_TRANSCRIPT_MAX));
         messages.splice(0, messages.length, systemMsg, ...recentEntries);
+      }
+
+      // ACTION 15: Structured turn logging
+      agentLog.logTurnSummary({
+        turn: iterationCount,
+        phase: stateManager.getExecutionPhase(execState),
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheHit: false,
+        toolCalled: toolsUsed.length > 0 ? toolsUsed[toolsUsed.length - 1] : undefined,
+        toolPath: undefined,
+        toolStatus: calledATool ? 'dispatched' : 'none',
+        toolReasonCode: undefined,
+        writtenThisTurn: [],
+        cumulativeWrites: writtenPaths.size,
+        cumulativeReads: execState.resolvedInputs.length,
+        blockedReads: execState.blockedReadCount ?? 0,
+        systemPromptTokens: estimateTokens(fullSystem),
+        contextPacketTokens: 0,
+        toolResultTokens: estimateTokens(currentStepToolResults.map(m => m.content).join('')),
+        llmCallSkipped: false,
+        deterministicDispatch: false,
+      });
+
+      // ACTION 22: Auto-halt on sustained inefficiency.
+      if (iterationCount >= 3) {
+        const recentEntries = contextCostTracker.getRecentEntries(3);
+        if (recentEntries.length >= 3) {
+          const totalIn = recentEntries.reduce((sum, e) => sum + e.totalTokens, 0);
+          const totalOut = recentEntries.reduce((sum, e) => sum + (e.outputTokens ?? 0), 0);
+          const efficiency = totalIn > 0 ? totalOut / totalIn : 0;
+
+          if (efficiency < 0.02 && writtenPaths.size === 0) {
+            onThought?.({
+              type: 'error',
+              label: `[Efficiency guard] ${(efficiency * 100).toFixed(1)}% over last 3 turns — halting`,
+              timestamp: new Date(),
+            });
+            stateManager.setRunPhase(execState, 'BLOCKED_BY_VALIDATION');
+            stateManager.save(agentId, execState).catch(() => {});
+            onText(
+              '\n\nSession halted: token efficiency below 2% for 3 consecutive turns with no files written. ' +
+                'This indicates the agent is stuck. Review the execution state or provide more specific instructions.'
+            );
+            continueLoop = false;
+          }
+        }
       }
 
       iterationCount++;
@@ -1938,6 +2137,23 @@ export class AgentRunner {
         }
       }
     }
+
+    // ACTION 15: Session summary
+    agentLog.logSessionSummary({
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalTurns: iterationCount,
+      uniqueFilesWritten: Array.from(writtenPaths),
+      uniqueFilesRead: execState.resolvedInputs,
+      loopDetections: execState.blockedReadCount ?? 0,
+      discoveryBudgetExceeded: 0,
+      recoveryAttempts,
+      llmCallsSkipped: contextCostTracker.getSkippedCount(),
+      deterministicDispatches: 0,
+      durationMs: Date.now() - sessionStartTime,
+      tokenEfficiency: 0,
+      fsmPhases: [],
+    });
 
     // ─── Degenerate response guard ────────────────────────────────────────────
     // Gemini sometimes outputs a tool-call label as plain text instead of a proper
@@ -2316,6 +2532,45 @@ export class AgentRunner {
   }
 
   /**
+   * Tiered tool result truncation.
+   * - First 2 iterations: allow full content (up to 8K) for orientation.
+   * - Later iterations: read_file results get a head+tail digest because
+   *   the full content should be in resolvedInputs (ACTION 2).
+   * - Non-read tools: always cap at 4K.
+   */
+  private truncateToolResult(
+    content: string,
+    toolName: string,
+    iterationCount: number,
+    toolPath?: string,
+  ): string {
+    // Non-read tools: 4K cap
+    if (!['read_file', 'search_files', 'grep_content'].includes(toolName)) {
+      return content.length > 4000
+        ? content.slice(0, 4000) + '\n[truncated]'
+        : content;
+    }
+
+    // First 2 iterations: allow full content (up to 8K) for initial orientation
+    if (iterationCount <= 2) {
+      return content.length > 8000
+        ? content.slice(0, 8000) + '\n[truncated — full content stored in resolved inputs]'
+        : content;
+    }
+
+    // Later iterations: digest only (full content is in resolvedInputs)
+    if (content.length > 2000) {
+      return (
+        content.slice(0, 1000) +
+        `\n\n[... ${content.length - 1500} chars omitted — full content in resolved inputs for ${toolPath ?? 'this file'} ...]\n\n` +
+        content.slice(-500)
+      );
+    }
+
+    return content;
+  }
+
+  /**
    * Check which of the given paths are missing from disk.
    * Used by the write-then-verify gate to catch silent write failures early.
    */
@@ -2416,6 +2671,52 @@ export class AgentRunner {
     }
 
     return null;
+  }
+
+  /**
+   * Validate that a plan file's content aligns with the requirements.
+   * Prevents hallucinated plans (e.g., a plan for "requirements management"
+   * when the actual requirement is "PDF extraction tool") from being approved.
+   *
+   * Uses term overlap: if fewer than 30% of key terms from the requirements
+   * appear in the plan, the plan is rejected.
+   */
+  private async validatePlanAgainstRequirements(
+    planPath: string,
+    execState: ExecutionStateData
+  ): Promise<boolean> {
+    const reqSummary = (execState.resolvedInputSummaries ?? []).find(
+      s => s.kind === 'requirements'
+    );
+    if (!reqSummary || reqSummary.summary.length < 50) {
+      return true; // no requirements to compare against
+    }
+
+    try {
+      const planContent = await fs.readFile(
+        path.join(this.workspaceRoot, planPath),
+        'utf8'
+      );
+
+      // Extract significant terms (4+ chars) from requirements summary
+      const reqTerms = new Set(
+        reqSummary.summary.toLowerCase().match(/\b[a-z]{4,}\b/g) ?? []
+      );
+
+      if (reqTerms.size < 3) return true; // too few terms to compare
+
+      const planLower = planContent.toLowerCase();
+      const matches = [...reqTerms].filter(t => planLower.includes(t));
+      const overlapRatio = matches.length / reqTerms.size;
+
+      if (overlapRatio < 0.3) {
+        return false; // plan does not match requirements
+      }
+
+      return true;
+    } catch {
+      return true; // file not readable — approve by default
+    }
   }
 
   // ─── Task 9: Repetitive narration detection ─────────────────────────────

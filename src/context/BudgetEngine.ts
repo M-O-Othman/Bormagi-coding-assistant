@@ -75,7 +75,8 @@ export function estimateEnvelopeTokens(
     sumCandidates(envelope.editable) +
     sumCandidates(envelope.reference) +
     sumCandidates(envelope.memory) +
-    sumCandidates(envelope.toolOutputs);
+    sumCandidates(envelope.toolOutputs) +
+    sumCandidates(envelope.resolvedInputs ?? []);
 
   return (
     budget.stablePrefix +
@@ -198,20 +199,25 @@ function summarizeToolOutputs(envelope: ContextEnvelope): ContextEnvelope {
 /**
  * Keep only the most recent conversation-tail candidates up to the budget
  * slot limit.  Assumes candidates are ordered oldest-first.
+ *
+ * FIX 6: Trim tool outputs (oldest first) rather than editable files.
+ * The previous implementation incorrectly trimmed `envelope.editable`
+ * (files the model can modify), destroying editable file context while
+ * leaving conversation history intact.
  */
 function reduceConversationTail(envelope: ContextEnvelope, budget: ModeBudget): ContextEnvelope {
   const TARGET = budget.conversationTail;
   let remaining = TARGET;
   const kept: ContextCandidate[] = [];
 
-  // Iterate newest-first, accumulate until we hit the target.
-  for (const c of [...envelope.editable].reverse()) {
+  // Iterate newest-first over tool outputs, accumulate until we hit the target.
+  for (const c of [...envelope.toolOutputs].reverse()) {
     if (remaining <= 0) { break; }
     kept.unshift(c);
     remaining -= c.tokenEstimate;
   }
 
-  return { ...envelope, editable: kept };
+  return { ...envelope, toolOutputs: kept };
 }
 
 /**
@@ -224,6 +230,14 @@ function degradeToPlanOnly(envelope: ContextEnvelope): ContextEnvelope {
     reference: [],
     memory: envelope.memory,       // keep memory — cheapest preservation
     toolOutputs: [],
+    resolvedInputs: (envelope.resolvedInputs ?? []).map(c => {
+      // Compress to 500-char digest if over budget
+      if (c.tokenEstimate > 200) {
+        const digest = c.content.slice(0, 500) + '\n[compressed for budget]';
+        return { ...c, content: digest, tokenEstimate: estimateTokens(digest) };
+      }
+      return c;
+    }),
   };
 }
 
@@ -235,6 +249,7 @@ function cloneEnvelope(envelope: ContextEnvelope): ContextEnvelope {
     reference: [...envelope.reference],
     memory: [...envelope.memory],
     toolOutputs: [...envelope.toolOutputs],
+    resolvedInputs: [...(envelope.resolvedInputs ?? [])],
   };
 }
 

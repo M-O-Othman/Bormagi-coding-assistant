@@ -1,62 +1,76 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { execSync } from 'child_process';
 import { GitService } from '../../../src/git/GitService';
-
-const execAsync = promisify(exec);
 
 describe('GitService', () => {
     let testCwd: string;
     let gitService: GitService;
 
-    beforeAll(async () => {
-        // Create an isolated test directory
-        testCwd = path.join(__dirname, 'test-git-repo-' + Date.now());
-        fs.mkdirSync(testCwd, { recursive: true });
+    beforeAll(() => {
+        // Use os.tmpdir() to avoid creating temp repos inside the project workspace
+        // which causes slow git operations and EPERM cleanup failures on Windows.
+        testCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'bormagi-git-test-'));
 
-        // Initialize an empty Git repository
-        await execAsync(`git init`, { cwd: testCwd });
-        await execAsync(`git commit --allow-empty -m "Initial commit"`, { cwd: testCwd });
+        // Setup mock files in workspace
+        fs.writeFileSync(path.join(testCwd, 'test.txt'), 'Hello World');
+
+        // Initialize an empty Git repository synchronously
+        execSync('git init', { cwd: testCwd, stdio: 'pipe' });
+        execSync('git add .', { cwd: testCwd, stdio: 'pipe' });
+        execSync('git commit --allow-empty -m "Initial commit"', { cwd: testCwd, stdio: 'pipe' });
 
         gitService = new GitService(testCwd);
     });
 
     afterAll(() => {
-        // Cleanup test directory
         if (fs.existsSync(testCwd)) {
-            fs.rmSync(testCwd, { recursive: true, force: true });
+            try {
+                fs.rmSync(testCwd, { recursive: true, force: true });
+            } catch {
+                // Windows EPERM: git lock files may still be held — best effort cleanup
+            }
         }
     });
 
     it('discovers repository capabilities correctly for an existing repo', async () => {
         const capabilities = await gitService.discoverRepo(testCwd);
         expect(capabilities.isGitRepo).toBe(true);
-        expect(capabilities.rootPath).toBe(testCwd);
-        expect(capabilities.headRef).toBe('master'); // or main depending on git config, usually master by default in tests
-    });
+        // Normalize both paths for cross-platform comparison
+        expect(path.normalize(capabilities.rootPath)).toBe(path.normalize(testCwd));
+        // Git default branch may be master or main depending on config
+        expect(['master', 'main']).toContain(capabilities.headRef);
+    }, 15000);
 
     it('correctly reports no capabilities for a non-git directory', async () => {
-        // To prevent git from finding the overarching bormagi-extension repo, 
-        // we must create a temp dir outside of the current workspace root.
-        const nonGitDir = fs.mkdtempSync(path.join(process.cwd(), '..', 'non-git-dir-'));
-
+        const nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bormagi-non-git-'));
         try {
             const capabilities = await gitService.discoverRepo(nonGitDir);
             expect(capabilities.isGitRepo).toBe(false);
         } finally {
-            fs.rmSync(nonGitDir, { recursive: true, force: true });
+            try {
+                fs.rmSync(nonGitDir, { recursive: true, force: true });
+            } catch {
+                // best effort cleanup
+            }
         }
-    });
+    }, 15000);
 
     it('can retrieve empty diffs', async () => {
         const diff = await gitService.getDiff(testCwd);
         expect(diff).toBe('');
-    });
+    }, 30000);
 
     it('correctly ingests working tree status as clean', async () => {
+        // Ensure all files are committed so status is clean
+        try {
+            execSync('git add -A && git commit -m "commit all" --allow-empty', { cwd: testCwd, stdio: 'pipe' });
+        } catch {
+            // already clean
+        }
         const status = await gitService.getStatus(testCwd);
         expect(status.state).toBe('clean');
         expect(status.changedPaths).toHaveLength(0);
-    });
+    }, 30000);
 });

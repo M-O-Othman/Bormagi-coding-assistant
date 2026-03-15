@@ -44,7 +44,7 @@ describe('ExecutionStateManager — continue/resume contract', () => {
     const state = mgr.createFresh(agentId, 'build API', 'code');
     state.nextActions = ['write GET /users handler'];
     const note = mgr.buildContextNote(state);
-    expect(note).toContain('Next pending actions');
+    expect(note).toContain('NEXT REQUIRED ACTION');
     expect(note).toContain('write GET /users handler');
   });
 
@@ -52,7 +52,7 @@ describe('ExecutionStateManager — continue/resume contract', () => {
     const state = mgr.createFresh(agentId, 'build API', 'code');
     state.completedSteps = ['wrote models.ts', 'wrote routes.ts'];
     const note = mgr.buildContextNote(state);
-    expect(note).toContain('Completed steps');
+    expect(note).toContain('Completed:');
     expect(note).toContain('wrote models.ts');
   });
 

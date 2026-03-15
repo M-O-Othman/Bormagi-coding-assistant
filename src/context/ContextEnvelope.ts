@@ -79,7 +79,7 @@ export function buildContextEnvelope(
     }
   }
 
-  return { editable, reference, memory, toolOutputs };
+  return { editable, reference, memory, toolOutputs, resolvedInputs: [] };
 }
 
 /**
@@ -98,6 +98,7 @@ export function mergeEnvelopes(
     reference:   [...overlay.reference,   ...base.reference],
     memory:      [...overlay.memory,      ...base.memory],
     toolOutputs: [...overlay.toolOutputs, ...base.toolOutputs],
+    resolvedInputs: [...(overlay.resolvedInputs ?? []), ...(base.resolvedInputs ?? [])],
   };
 }
 
@@ -108,5 +109,6 @@ export function envelopeTokenCount(envelope: ContextEnvelope): number {
   const sum = (arr: ContextCandidate[]) =>
     arr.reduce((acc, c) => acc + c.tokenEstimate, 0);
   return sum(envelope.editable) + sum(envelope.reference) +
-         sum(envelope.memory)   + sum(envelope.toolOutputs);
+         sum(envelope.memory)   + sum(envelope.toolOutputs) +
+         sum(envelope.resolvedInputs ?? []);
 }

@@ -14,6 +14,7 @@ function makeEnvelope(overrides: Partial<ContextEnvelope> = {}): ContextEnvelope
     reference:   [],
     memory:      [],
     toolOutputs: [],
+    resolvedInputs: [],
     ...overrides,
   };
 }

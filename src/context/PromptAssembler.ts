@@ -94,6 +94,16 @@ function formatToolOutputs(candidates: ContextCandidate[]): string {
   return `${sectionHeader('Tool Outputs')}${blocks.join('\n\n')}`;
 }
 
+function formatResolvedInputs(candidates: ContextCandidate[]): string {
+  if (candidates.length === 0) { return ''; }
+  const blocks = candidates.map((c) => {
+    const pathStr = c.path ? ` — \`${c.path}\`` : '';
+    // Use a shorter format than editable files — just the digest
+    return `### Resolved Input${pathStr}\n${c.content.trim()}`;
+  });
+  return `${sectionHeader('Resolved Inputs (DO NOT re-read these files)')}${blocks.join('\n\n')}`;
+}
+
 function formatRepoMapSection(repoMap: RepoMap, maxTokens: number): string {
   if (maxTokens <= 0) { return ''; }
   const slice = serializeRepoMapSlice(repoMap, { maxTokens });
@@ -206,6 +216,9 @@ export function assemblePrompt(args: PromptAssemblyArgs): string {
 
   // 7. Reference context
   parts.push(formatReferenceContext(envelope.reference));
+
+  // 7.5. Resolved inputs (budget-immune file contents)
+  parts.push(formatResolvedInputs(envelope.resolvedInputs ?? []));
 
   // 8. Tool outputs
   parts.push(formatToolOutputs(envelope.toolOutputs));

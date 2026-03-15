@@ -202,9 +202,22 @@ function callServer(workspaceRoot: string, toolName: string, toolArgs: object): 
     });
 
     let output = '';
+    let settled = false;
     proc.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
 
+    // Kill the process after 20s to prevent hanging
+    const killTimer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        proc.kill();
+        reject(new Error(`Server timed out after 20s. Output so far: ${output.slice(0, 500)}`));
+      }
+    }, 20000);
+
     proc.on('close', () => {
+      clearTimeout(killTimer);
+      if (settled) return;
+      settled = true;
       try {
         // Server sends initialize response first, then tools/list, then result
         const lines = output.trim().split('\n').filter(Boolean);
@@ -212,6 +225,14 @@ function callServer(workspaceRoot: string, toolName: string, toolArgs: object): 
         resolve(last);
       } catch (e) {
         reject(new Error(`Server output parse error: ${e}\nOutput: ${output}`));
+      }
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(killTimer);
+      if (!settled) {
+        settled = true;
+        reject(err);
       }
     });
 

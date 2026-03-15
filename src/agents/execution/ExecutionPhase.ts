@@ -19,7 +19,8 @@ export type ExecutionSubPhase =
   | 'PLANNING_BATCH'
   | 'EXECUTING_STEP'
   | 'VALIDATING_STEP'
-  | 'RECOVERING';
+  | 'RECOVERING'
+  | 'WRITE_ONLY';
 
 /** Discovery tool names that trigger the DISCOVERING phase. */
 export const DISCOVERY_TOOLS = new Set([

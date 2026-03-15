@@ -159,6 +159,13 @@ export interface ContextEnvelope {
   reference: ContextCandidate[];
   memory: ContextCandidate[];
   toolOutputs: ContextCandidate[];
+  /**
+   * Files read by the agent whose content must survive budget trimming.
+   * The budget engine counts these tokens toward the total but never prunes them.
+   * If the budget still overflows after all other remediations, these are
+   * compressed to 500-char digests rather than dropped.
+   */
+  resolvedInputs: ContextCandidate[];
 }
 
 // ─── Compaction ───────────────────────────────────────────────────────────────

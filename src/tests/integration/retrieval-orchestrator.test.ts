@@ -222,6 +222,7 @@ describe('envelopeTokenCount', () => {
       reference:   [makeCandidate({ tokenEstimate: 200 })],
       memory:      [makeCandidate({ tokenEstimate: 50 })],
       toolOutputs: [makeCandidate({ tokenEstimate: 75 })],
+      resolvedInputs: [],
     };
     expect(envelopeTokenCount(env)).toBe(425);
   });
@@ -229,8 +230,8 @@ describe('envelopeTokenCount', () => {
 
 describe('mergeEnvelopes', () => {
   test('overlay candidates come before base', () => {
-    const base    = { editable: [makeCandidate({ id: 'base' })], reference: [], memory: [], toolOutputs: [] };
-    const overlay = { editable: [makeCandidate({ id: 'over' })], reference: [], memory: [], toolOutputs: [] };
+    const base    = { editable: [makeCandidate({ id: 'base' })], reference: [], memory: [], toolOutputs: [], resolvedInputs: [] };
+    const overlay = { editable: [makeCandidate({ id: 'over' })], reference: [], memory: [], toolOutputs: [], resolvedInputs: [] };
     const merged  = mergeEnvelopes(base, overlay);
     expect(merged.editable[0].id).toBe('over');
     expect(merged.editable[1].id).toBe('base');

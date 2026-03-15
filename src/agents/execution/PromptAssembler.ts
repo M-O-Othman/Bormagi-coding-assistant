@@ -59,6 +59,12 @@ export interface PromptContext {
    * Skills appear as system messages between the workspace summary and user instruction.
    */
   activeSkills?: string[];
+  /**
+   * Resolved file contents block from ContextPacketBuilder.
+   * Injected as a system message so the model has authoritative file content
+   * on every iteration and never needs to re-read.
+   */
+  resolvedFileContents?: string;
 }
 
 /**
@@ -83,6 +89,23 @@ export class PromptAssembler {
     this.executionStateHeader = messages.executionStateHeader;
     this.workspaceHeader = messages.workspaceHeader;
     this.milestoneSummaryPrefix = messages.milestoneSummaryPrefix;
+  }
+
+  /**
+   * FIX 1a: Split the system prompt into stable (identity/principles) and
+   * volatile (workspace notes, capabilities) sections.
+   * After the first iteration, only the volatile section is sent to save tokens.
+   */
+  splitSystemPrompt(fullSystem: string): { stable: string; volatile: string } {
+    const splitMarker = '## Output Contract';
+    const splitIdx = fullSystem.indexOf(splitMarker);
+    if (splitIdx === -1) {
+      return { stable: fullSystem, volatile: '' };
+    }
+    return {
+      stable: fullSystem.slice(0, splitIdx).trim(),
+      volatile: fullSystem.slice(splitIdx).trim(),
+    };
   }
 
   /**
@@ -118,7 +141,15 @@ export class PromptAssembler {
       });
     }
 
-    // 4. Skill fragments (loaded at runtime from src/skills/)
+    // 4. Resolved file contents (authoritative — model must not re-read these)
+    if (ctx.resolvedFileContents) {
+      msgs.push({
+        role: 'system',
+        content: `[Resolved Input Files — authoritative content, do not re-read]\n${ctx.resolvedFileContents}`,
+      });
+    }
+
+    // 5. Skill fragments (loaded at runtime from src/skills/)
     if (ctx.activeSkills && ctx.activeSkills.length > 0) {
       for (const skillName of ctx.activeSkills) {
         const fragment = loadSkillFragment(skillName);
@@ -128,7 +159,7 @@ export class PromptAssembler {
       }
     }
 
-    // 5. Optional prior milestone (one line max)
+    // 6. Optional prior milestone (one line max)
     if (ctx.milestoneSummary) {
       msgs.push({
         role: 'assistant',

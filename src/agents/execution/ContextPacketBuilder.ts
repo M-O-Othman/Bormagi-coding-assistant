@@ -67,13 +67,30 @@ export class ContextPacketBuilder {
     const stateSummary = lines.join('\n');
     const workspaceSummary = buildWorkspaceSummary(workspaceType, state.artifactsCreated.slice(-3));
 
+    // FIX 9: Build resolved file contents block from stored content.
+    // These are injected as authoritative context so the model never re-reads.
+    const fileBlocks: string[] = [];
+    const contents = state.resolvedInputContents ?? {};
+    for (const [filePath, content] of Object.entries(contents)) {
+      const summary = (state.resolvedInputSummaries ?? [])
+        .find(s => s.path === filePath);
+      const kindLabel = summary?.kind ?? 'file';
+      fileBlocks.push(`### ${filePath} (${kindLabel})\n${content}`);
+    }
+    const resolvedFileContents = fileBlocks.length > 0
+      ? `## Resolved Input Files (authoritative, do not re-read)\n\n${fileBlocks.join('\n\n')}`
+      : '';
+
+    const fileContentsTokens = Math.ceil(resolvedFileContents.length / 4);
+
     return {
       stateSummary,
       workspaceSummary,
       resolvedInputSummaries: summaries,
+      resolvedFileContents,
       nextAction: state.nextActions[0],
       nextToolCallDescription: state.nextToolCall?.description,
-      estimatedTokens: Math.ceil(stateSummary.length / 4) + Math.ceil(workspaceSummary.length / 4),
+      estimatedTokens: Math.ceil(stateSummary.length / 4) + Math.ceil(workspaceSummary.length / 4) + fileContentsTokens,
     };
   }
 }
@@ -82,6 +99,8 @@ export interface ContextPacketOutput {
   stateSummary: string;
   workspaceSummary: string;
   resolvedInputSummaries: ResolvedInputSummary[];
+  /** Formatted block of resolved file contents for prompt injection. */
+  resolvedFileContents: string;
   nextAction?: string;
   nextToolCallDescription?: string;
   estimatedTokens: number;

@@ -32,7 +32,8 @@ export interface DispatchResult {
     | 'BATCH_REQUIRED'
     | 'BORMAGI_PATH_BLOCKED'
     | 'MODE_DISALLOWS_MUTATION'
-    | 'LOOP_DETECTED';
+    | 'LOOP_DETECTED'
+    | 'WRITE_ONLY_PHASE';
   toolName: string;
   path?: string;
 }
@@ -47,6 +48,8 @@ interface ToolGuardState {
   filesWrittenThisRun: Set<string>;
   /** Hard lockout: after discovery budget exhaustion, block ALL discovery tools until a write succeeds. */
   discoveryLocked: boolean;
+  /** FIX 3: Current execution sub-phase (WRITE_ONLY blocks all reads at dispatch level). */
+  executionPhase?: string;
 }
 
 /**
@@ -92,6 +95,11 @@ export class ToolDispatcher {
    */
   public lockDiscovery(): void {
     this._guardState.discoveryLocked = true;
+  }
+
+  /** FIX 3: Set execution phase on guard state for dispatch-level enforcement. */
+  public setExecutionPhase(phase: string): void {
+    this._guardState.executionPhase = phase;
   }
 
   /**
@@ -275,8 +283,22 @@ export class ToolDispatcher {
             if (this._execState) {
               this._execState.blockedReadCount = (this._execState.blockedReadCount ?? 0) + 1;
             }
+
+            // Return cached content if available — highest-impact fix: converts
+            // blocked reads from "zero information" to "full information"
+            if (cachedContent) {
+              return {
+                text: `[FROM CACHE — "${normPath}" already read, content below. Do not call read_file again.]\n${cachedContent}`,
+                status: 'cached',
+                reasonCode: 'ALREADY_READ_UNCHANGED',
+                toolName: 'read_file',
+                path: normPath,
+              };
+            }
+
+            // No cached content available — use the original rejection
             return {
-              text: `[Cached] "${normPath}" was already read this session and the full content is in your conversation context above. Use it directly — do not re-read.`,
+              text: `[ALREADY READ] "${normPath}" was read earlier this session. Content is not cached. Write a file now — do not re-read.`,
               status: 'cached',
               reasonCode: 'ALREADY_READ_UNCHANGED',
               toolName: 'read_file',
@@ -286,12 +308,24 @@ export class ToolDispatcher {
         }
       }
 
-      // Discovery lockout: after budget exhaustion, hard-block ALL discovery tools
-      // until a successful write/edit unlocks discovery. This prevents infinite
-      // read→budget_warning→read loops that freeze the agent.
+      // FIX 3c: WRITE_ONLY phase enforcement — reject ALL reads when in WRITE_ONLY phase.
+      // This is a hard state-machine gate, not an advisory text warning.
       const DISCOVERY_TOOLS = new Set(['read_file', 'read_file_range', 'read_head', 'read_tail',
         'read_match_context', 'read_symbol_block', 'list_files', 'glob_files',
         'search_files', 'grep_content']);
+      if (g.executionPhase === 'WRITE_ONLY' && DISCOVERY_TOOLS.has(toolEvent.name)) {
+        return {
+          text: '[REJECTED] Phase is WRITE_ONLY. Only write_file, edit_file, and run_command are allowed. Write the next file now.',
+          status: 'blocked',
+          reasonCode: 'WRITE_ONLY_PHASE',
+          toolName: toolEvent.name,
+          path: normPath || undefined,
+        };
+      }
+
+      // Discovery lockout: after budget exhaustion, hard-block ALL discovery tools
+      // until a successful write/edit unlocks discovery. This prevents infinite
+      // read→budget_warning→read loops that freeze the agent.
       if (g.discoveryLocked && DISCOVERY_TOOLS.has(toolEvent.name)) {
         return {
           text: '[DISCOVERY LOCKED] Discovery budget exhausted. You must write or edit a file before any further reads/searches. Call write_file or edit_file now.',
