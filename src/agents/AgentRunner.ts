@@ -603,6 +603,8 @@ export class AgentRunner {
       execState.nextActions = [];
       execState.nextToolCall = undefined;
       execState.objective = userMessage.slice(0, 500);
+      execState.mode = mode;
+      execState.taskTemplate = undefined;
       stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
     }
 

@@ -140,8 +140,20 @@ export class PromptAssembler {
     msgs.push({ role: 'user', content: ctx.currentInstruction });
 
     // 7. Current-step tool results only
+    // Convert tool_result role → user role (API only accepts system/user/assistant/tool).
+    // Strip XML <tool_result> wrappers — matches prepareMessagesForProvider() behaviour.
     for (const tr of ctx.currentStepToolResults) {
-      msgs.push(tr);
+      if (tr.role === 'tool_result') {
+        const inner = tr.content
+          .replace(/<tool_result[^>]*>\n?/g, '')
+          .replace(/\n?<\/tool_result>/g, '')
+          .trim();
+        if (inner) {
+          msgs.push({ role: 'user', content: inner });
+        }
+      } else {
+        msgs.push(tr);
+      }
     }
 
     // Sanitise before returning — defence in depth

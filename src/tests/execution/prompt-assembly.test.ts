@@ -69,7 +69,8 @@ describe('PromptAssembler — assembleMessages', () => {
     const msgs = assembler.assembleMessages(ctx);
     const userIdx = msgs.findIndex(m => m.role === 'user');
     expect(userIdx).toBeGreaterThan(-1);
-    expect(msgs[userIdx + 1]).toEqual(toolResult);
+    // tool_result role is converted to user role (API only accepts system/user/assistant/tool)
+    expect(msgs[userIdx + 1]).toEqual({ role: 'user', content: 'File created: package.json' });
   });
 
   test('optional milestone summary inserted as assistant message before user', () => {
