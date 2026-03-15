@@ -10,6 +10,7 @@ import { DiscoveryBudget, toolCategory } from './DiscoveryBudget';
 
 import { ExecWrapper } from '../../sandbox/ExecWrapper';
 import { SandboxHandle } from '../../sandbox/types';
+import type { ExecutionStateData } from '../ExecutionStateManager';
 
 export type ApprovalCallback = (prompt: string) => Promise<boolean>;
 export type DiffCallback = (filePath: string, originalContent: string, newContent: string) => Promise<boolean>;
@@ -36,6 +37,7 @@ export class ToolDispatcher {
     filesReadThisRun: new Map(), filesWrittenThisRun: new Set(),
   };
   private _budget: DiscoveryBudget = new DiscoveryBudget();
+  private _execState: ExecutionStateData | null = null;
 
   constructor(
     private readonly mcpHost: MCPHost,
@@ -59,6 +61,20 @@ export class ToolDispatcher {
   }
 
   /**
+   * Pre-populate the read cache from previous session's resolvedInputs.
+   * This ensures reread prevention works across sessions — not just within one.
+   * Files are marked as "read" with an empty string (content not available),
+   * which is enough to trigger the [Cached] pointer on re-read attempts.
+   * Called from AgentRunner after resetGuardState() when resuming.
+   */
+  public seedReadCache(filePaths: string[]): void {
+    for (const fp of filePaths) {
+      const normPath = fp.replace(/\\/g, '/');
+      this._guardState.filesReadThisRun.set(normPath, '');
+    }
+  }
+
+  /**
    * Cache the content of a successful read_file result so that subsequent
    * reread attempts return the cached content instead of a BLOCKED message.
    * Called from AgentRunner after a successful read_file dispatch.
@@ -66,6 +82,15 @@ export class ToolDispatcher {
   public cacheReadResult(filePath: string, content: string): void {
     const normPath = filePath.replace(/\\/g, '/');
     this._guardState.filesReadThisRun.set(normPath, content);
+  }
+
+  /**
+   * Wire the dispatcher to the authoritative cross-session execution state.
+   * The primary reread check consults execState.resolvedInputs (persisted across
+   * sessions); the runtime cache is a secondary in-session fast path.
+   */
+  public setExecutionState(state: ExecutionStateData): void {
+    this._execState = state;
   }
 
   /** Returns the current discovery budget telemetry for audit/logging. */
@@ -130,15 +155,17 @@ export class ToolDispatcher {
       };
       // Allow writes to .bormagi/plans/ for plan documents (.md/.txt).
       // Plans are agent output, not framework state.
-      const isBormagiPlansWrite = (p: string, tool: string) => {
-        if (tool !== 'write_file' && tool !== 'edit_file') { return false; }
+      const isBormagiPlansAccess = (p: string, tool: string) => {
         const n = p.replace(/\\/g, '/').replace(/^\/+/, '');
-        if (!n.startsWith('.bormagi/plans/')) { return false; }
+        if (!n.startsWith('.bormagi/plans')) { return false; }
+        // Allow read_file, list_files, write_file, edit_file on .bormagi/plans/
+        if (tool === 'list_files' || tool === 'read_file') { return true; }
+        if (tool !== 'write_file' && tool !== 'edit_file') { return false; }
         const ext = n.split('.').pop()?.toLowerCase() ?? '';
         return ['md', 'txt', 'rst'].includes(ext);
       };
       if (!EXEMPT_TOOLS.has(toolEvent.name)) {
-        if (targetPath && isBormagiPath(targetPath) && !isBormagiPlansWrite(targetPath, toolEvent.name)) {
+        if (targetPath && isBormagiPath(targetPath) && !isBormagiPlansAccess(targetPath, toolEvent.name)) {
           return getAppData().executionMessages.toolBlocked.bormagiPath;
         }
         // For multi_edit: check every edit's path
@@ -193,18 +220,21 @@ export class ToolDispatcher {
         (inp.file_path as string | undefined);
       const normPath = targetPath ? targetPath.replace(/\\/g, '/') : '';
 
-      // Reread prevention: if file was already read and not written since,
-      // skip the MCP call. The content is already in the LLM's context from
-      // the previous iteration's tool result (via currentStepToolResults in
-      // code mode, or accumulated messages in plan mode). Return a brief
-      // pointer instead of the full content to avoid doubling token cost.
-      // After recovery, resetGuardState() clears this cache so the next
+      // Reread prevention: consult BOTH the persisted execution state (cross-session)
+      // and the runtime cache (within-session). The execState is authoritative;
+      // the runtime cache is a fast path for content retrieval.
+      // After recovery, resetGuardState() clears the runtime cache so the next
       // read goes through MCP normally.
       if (toolEvent.name === 'read_file' && normPath) {
-        const cachedContent = g.filesReadThisRun.get(normPath);
         const wasWritten = g.filesWrittenThisRun.has(normPath);
-        if (cachedContent !== undefined && !wasWritten) {
-          return `[Cached] "${normPath}" was already read this session and the full content is in your conversation context above. Use it directly — do not re-read.`;
+        if (!wasWritten) {
+          // Primary check: cross-session resolvedInputs via execState
+          const inExecState = this._execState?.resolvedInputs.includes(normPath) ?? false;
+          // Secondary check: runtime cache (within-session)
+          const cachedContent = g.filesReadThisRun.get(normPath);
+          if (cachedContent !== undefined || inExecState) {
+            return `[Cached] "${normPath}" was already read this session and the full content is in your conversation context above. Use it directly — do not re-read.`;
+          }
         }
       }
 

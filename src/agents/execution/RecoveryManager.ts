@@ -98,10 +98,28 @@ export class RecoveryManager {
         ].filter(Boolean).join('\n')
         : `Objective: ${this.execState.objective.slice(0, 200)}\n(No tools executed yet.)`;
 
-      // Determine what the next action should be
-      const nextActionHint = filesWritten.length > 0
-        ? `Continue from last written file: ${filesWritten[filesWritten.length - 1]}`
-        : `Start implementation from the beginning`;
+      // Determine what the next action should be — use state-derived hints
+      // before falling back to generic instructions (Task 6).
+      let nextActionHint: string;
+      if (this.execState.nextToolCall?.description) {
+        nextActionHint = this.execState.nextToolCall.description;
+      } else if ((this.execState.nextActions ?? []).length > 0) {
+        nextActionHint = this.execState.nextActions[0];
+      } else if (lastTool !== 'none') {
+        // Derive from workspace type + last tool executed
+        if (this.workspaceType === 'greenfield' && filesWritten.length === 0) {
+          nextActionHint = 'Start implementation: declare a file batch, then write the first file';
+        } else if (filesWritten.length > 0) {
+          nextActionHint = `Continue from last written file: ${filesWritten[filesWritten.length - 1]}`;
+        } else {
+          nextActionHint = 'Proceed to write or edit the next file based on the objective';
+        }
+      } else {
+        // True last resort: no tools executed, no stored next actions
+        nextActionHint = filesWritten.length > 0
+          ? `Continue from last written file: ${filesWritten[filesWritten.length - 1]}`
+          : `Start implementation from the beginning`;
+      }
 
       const lastToolEntry = executedTools[executedTools.length - 1];
       const milestoneSummary = lastToolEntry

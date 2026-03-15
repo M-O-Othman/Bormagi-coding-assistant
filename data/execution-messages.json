@@ -18,7 +18,7 @@
     "declaredBatch": "Declared file batch ({count} files): {files}"
   },
   "toolBlocked": {
-    "bormagiPath": "[BLOCKED] Agent access to .bormagi/ is not permitted. This is internal framework state.",
+    "bormagiPath": "[BLOCKED] .bormagi/ is internal framework state — do not access it. Focus on the workspace files described in the objective and execution state instead.",
     "reread": "[BLOCKED] File already read and unchanged this session. Use the content from your earlier read. Write to it first if you need to re-read.",
     "budgetExhausted": "[BUDGET EXHAUSTED] Discovery limit reached for this run. Allowed tools now: write_file, edit_file, declare_file_batch, run_command.",
     "offBatch": "[BATCH VIOLATION] Path not in declared batch. Amend batch first with declare_file_batch, then write files in the declared order.",

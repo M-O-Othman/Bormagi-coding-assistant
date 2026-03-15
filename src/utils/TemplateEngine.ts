@@ -23,7 +23,11 @@ export class TemplateEngine {
 
   static buildContext(agentName: string, projectName: string): TemplateContext {
     const editor = vscode.window.activeTextEditor;
-    const filename = editor?.document.fileName ?? '';
+    let filename = editor?.document.fileName ?? '';
+    // Never expose .bormagi/ internal paths to agents — they'll try to read them
+    if (filename.replace(/\\/g, '/').includes('.bormagi/')) {
+      filename = '';
+    }
     const selection = editor?.document.getText(editor.selection) ?? '';
     const workspaceFolders = vscode.workspace.workspaceFolders;
     const workspace = workspaceFolders?.[0]?.name ?? '';

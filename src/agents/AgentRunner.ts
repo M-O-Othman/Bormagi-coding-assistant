@@ -585,27 +585,21 @@ export class AgentRunner {
     let execState: ExecutionStateData = await stateManager.load(agentId) ??
       stateManager.createFresh(agentId, userMessage.slice(0, 500), mode);
 
-    // ─── Reset terminal states for new requests ────────────────────────────────
-    // When the user sends a NEW message (not "continue"), any terminal runPhase
-    // from a prior session (COMPLETED, WAITING_FOR_USER_INPUT, etc.) must be reset
-    // to RUNNING — otherwise the run loop exits immediately without doing anything.
-    const CONTINUE_PATTERN_EARLY = /^\s*(continu[ei]|proceed|keep going|go on|go ahead|resume)\s*[.!]?\s*$/i;
-    if (!CONTINUE_PATTERN_EARLY.test(userMessage) && execState.runPhase && execState.runPhase !== 'RUNNING') {
-      execState.runPhase = 'RUNNING';
-      execState.waitStateReason = undefined;
-      // Also reset iteration counters for fresh tasks — the prior session's progress
-      // should not constrain the new request.
-      execState.iterationsUsed = 0;
-      execState.blockedReadCount = 0;
-      execState.continueCount = 0;
-      execState.executedTools = [];
-      execState.artifactsCreated = [];
-      execState.nextActions = [];
-      execState.nextToolCall = undefined;
-      execState.objective = userMessage.slice(0, 500);
-      execState.mode = mode;
-      execState.taskTemplate = undefined;
-      stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+    // ─── Reconcile execution state with user message (Tasks 3 + 4) ────────────
+    // For ALL new (non-continue) messages: reset task-scoped counters, objective,
+    // and mode.  For continues: only refresh objective text.
+    // Mode parameter ALWAYS wins — stored mode is never carried over.
+    stateManager.reconcileWithUserMessage(execState, userMessage, mode);
+    stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+
+    // ─── Wire ToolDispatcher to authoritative execution state (Task 1) ────────
+    this.toolDispatcher.setExecutionState(execState);
+
+    // ─── Seed reread prevention from prior session ──────────────────────────────
+    // Pre-populate the ToolDispatcher's read cache with files read in previous
+    // sessions so the framework actually blocks re-reads (not just a prompt hint).
+    if (execState.resolvedInputs && execState.resolvedInputs.length > 0) {
+      this.toolDispatcher.seedReadCache(execState.resolvedInputs);
     }
 
     // Phase 8.3 — Classify task template once at run start
@@ -852,6 +846,8 @@ export class AgentRunner {
     const maxToolIterations = vsConfig.get<number>('agent.maxToolIterations', 20);
     // #6 — Discovery budget: track consecutive read-only calls with no writes.
     let consecutiveReadCount = 0;
+    // Task 2 — Track unique blocked read paths to avoid double-counting.
+    const blockedReadPaths = new Set<string>();
     // Silent execution: suppress pure narration turns when model is stalling.
     // Triggered by phrases in the user message; per-run only, never persisted.
     const SILENT_TRIGGER_PATTERNS = [
@@ -988,6 +984,40 @@ export class AgentRunner {
             execState.blockedReadCount = 0;
             execState.continueCount = 0;
             consecutiveReadCount = 0;
+            blockedReadPaths.clear();
+
+            // ─── Task 2: Hard strategy switch on blocked rereads ───────────────
+            // After REPEATED_BLOCKED_READS recovery: force a deterministic next
+            // step instead of letting the LLM loop back into reads.
+            if (trigger === 'REPEATED_BLOCKED_READS') {
+              if (execState.nextToolCall) {
+                // Direct dispatch — skip LLM call entirely
+                const ntc = execState.nextToolCall;
+                onThought?.({ type: 'thinking', label: `[Strategy switch] Dispatching stored nextToolCall: ${ntc.tool}`, timestamp: new Date() });
+                const directResult = await this.toolDispatcher.dispatch(
+                  { id: `strategy-${Date.now()}`, name: ntc.tool, input: ntc.input as Record<string, unknown> },
+                  agentId, onApproval, onDiff, onThought
+                );
+                stateManager.markToolExecuted(execState, ntc.tool, (ntc.input as Record<string, unknown>).path as string | undefined, String(directResult).slice(0, 150));
+                stateManager.clearNextToolCall(execState);
+                stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+                const truncDirect = String(directResult).length > 8000 ? String(directResult).slice(0, 8000) + '\n[truncated]' : String(directResult);
+                messages.push({ role: 'tool_result', content: `<tool_result name="${ntc.tool}">\n${truncDirect}\n</tool_result>` });
+                currentStepToolResults.push({ role: 'tool_result', content: `<tool_result name="${ntc.tool}">\n${truncDirect}\n</tool_result>` });
+              } else if (execState.nextActions.length > 0) {
+                // Use first nextAction as the instruction for the next LLM call
+                effectiveUserContent = execState.nextActions[0];
+                onThought?.({ type: 'thinking', label: `[Strategy switch] Using nextAction as instruction: ${effectiveUserContent.slice(0, 100)}`, timestamp: new Date() });
+              } else {
+                // Synthesize from workspace type + what's been done
+                const hint = stateManager.computeNextStep(execState, execState.lastExecutedTool ?? 'none', undefined, '', detectedWsType);
+                if (hint) {
+                  effectiveUserContent = hint.nextAction;
+                  if (hint.nextToolCall) { stateManager.setNextToolCall(execState, hint.nextToolCall.tool, hint.nextToolCall.input, hint.nextToolCall.description); }
+                  onThought?.({ type: 'thinking', label: `[Strategy switch] Synthesized: ${hint.nextAction.slice(0, 100)}`, timestamp: new Date() });
+                }
+              }
+            }
           } else {
             stateManager.setRunPhase(execState, 'RECOVERY_REQUIRED');
             stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
@@ -1241,18 +1271,35 @@ export class AgentRunner {
             {
               const resultStr0 = String(toolResult);
               const isBlockedResult = resultStr0.startsWith('[BLOCKED]');
-              if (isBlockedResult) {
-                // Track blocked reads so REPEATED_BLOCKED_READS recovery trigger can fire.
-                execState.blockedReadCount = (execState.blockedReadCount ?? 0) + 1;
+              const isCachedResult = resultStr0.startsWith('[Cached]');
+              if (isBlockedResult || isCachedResult) {
+                // Track blocked/cached reads so REPEATED_BLOCKED_READS recovery trigger can fire.
+                // Only count unique paths — the same path blocked twice should not double-count.
+                const normBlockedPath = toolCallPath ? this.normalizeWorkspacePath(toolCallPath) : '';
+                if (normBlockedPath && !blockedReadPaths.has(normBlockedPath)) {
+                  blockedReadPaths.add(normBlockedPath);
+                  execState.blockedReadCount = (execState.blockedReadCount ?? 0) + 1;
+                }
               }
-              if (!isBlockedResult) {
-                // Only record successful (non-blocked) executions as ground-truth state.
+              if (!isBlockedResult && !isCachedResult) {
+                // Only record successful (non-blocked/non-cached) executions as ground-truth state.
                 stateManager.markToolExecuted(execState, event.name, toolCallPath, resultStr0.slice(0, 150));
                 if (event.name === 'read_file' && toolCallPath) {
                   stateManager.markFileRead(execState, this.normalizeWorkspacePath(toolCallPath));
                   // Cache the full content so reread attempts return the content
                   // instead of a useless BLOCKED message.
                   this.toolDispatcher.cacheReadResult(toolCallPath, resultStr0);
+                }
+
+                // ─── Task 5: Compute deterministic next step after every successful tool call ──
+                const nextStep = stateManager.computeNextStep(
+                  execState, event.name, toolCallPath, resultStr0, detectedWsType
+                );
+                if (nextStep) {
+                  stateManager.setNextAction(execState, nextStep.nextAction);
+                  if (nextStep.nextToolCall) {
+                    stateManager.setNextToolCall(execState, nextStep.nextToolCall.tool, nextStep.nextToolCall.input, nextStep.nextToolCall.description);
+                  }
                 }
               }
             }
@@ -1981,8 +2028,11 @@ export class AgentRunner {
     try {
       const raw = await fs.readFile(this.artifactRegistryPath(), 'utf8');
       const entries: Array<{ agentId: string; path: string; timestamp: string }> = JSON.parse(raw);
-      if (entries.length === 0) { return ''; }
-      const lines = entries.map(e => `- ${e.path} (created by ${e.agentId})`).join('\n');
+      // Task 9: Filter out .bormagi/ internal paths so the model does not see
+      // framework state files (e.g. .bormagi/plans/...) as continuation targets.
+      const visibleEntries = entries.filter(e => !e.path.replace(/\\/g, '/').startsWith('.bormagi/'));
+      if (visibleEntries.length === 0) { return ''; }
+      const lines = visibleEntries.map(e => `- ${e.path} (created by ${e.agentId})`).join('\n');
       return `[Artifact Registry — files created in previous sessions]\n${lines}\n\nBefore writing any file, check if it already exists at one of these paths.`;
     } catch {
       return '';

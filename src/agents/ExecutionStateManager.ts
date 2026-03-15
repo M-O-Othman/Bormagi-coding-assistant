@@ -187,6 +187,54 @@ export class ExecutionStateManager {
     };
   }
 
+  // ── Reconciliation ──────────────────────────────────────────────────────────
+
+  private static readonly CONTINUE_PATTERN = /^\s*(continu[ei]|proceed|keep going|go on|go ahead|resume)\s*[.!]?\s*$/i;
+
+  /**
+   * Reconcile persisted execution state with an incoming user message.
+   *
+   * - If the message is a "continue" variant: only update objective text.
+   * - Otherwise (new task): reset objective, mode, runtime counters, executed
+   *   tools, blockedReadCount, continueCount, nextActions, nextToolCall, and
+   *   taskTemplate.  resolvedInputs and artifactsCreated are kept so the
+   *   reread / duplicate-write guards still function.
+   *
+   * The explicit `mode` parameter ALWAYS wins — stored mode is never carried
+   * over (Tasks 3 + 4).
+   */
+  reconcileWithUserMessage(
+    state: ExecutionStateData,
+    userMessage: string,
+    mode: string,
+  ): void {
+    const isContinue = ExecutionStateManager.CONTINUE_PATTERN.test(userMessage);
+
+    // Mode parameter always wins — never let stored mode survive into a
+    // different-mode session (Task 4).
+    state.mode = mode;
+
+    if (isContinue) {
+      // Continuation: only refresh objective text (trim to 500 chars).
+      state.objective = userMessage.slice(0, 500);
+    } else {
+      // New task: reset everything that is task-scoped.
+      state.objective = userMessage.slice(0, 500);
+      state.runPhase = 'RUNNING';
+      state.waitStateReason = undefined;
+      state.iterationsUsed = 0;
+      state.blockedReadCount = 0;
+      state.continueCount = 0;
+      state.executedTools = [];
+      state.nextActions = [];
+      state.nextToolCall = undefined;
+      state.taskTemplate = undefined;
+      // Keep resolvedInputs + artifactsCreated so reread/dupe guards work.
+    }
+
+    state.updatedAt = new Date().toISOString();
+  }
+
   // ── Mutation helpers (V2) ─────────────────────────────────────────────────
   // These update the in-memory state object. The caller is responsible for
   // calling save() at appropriate checkpoints.
@@ -347,6 +395,78 @@ export class ExecutionStateManager {
     }
 
     return lines.join('\n');
+  }
+
+  // ── Next-step synthesis (Task 5) ─────────────────────────────────────────
+
+  /**
+   * Deterministic next-step computation after each successful tool call.
+   * Returns an action hint (and optionally a structured NextToolCall) so the
+   * agent does not need to re-derive what to do next from scratch.
+   *
+   * Returns null when there is no deterministic recommendation — the LLM
+   * should decide on its own.
+   */
+  computeNextStep(
+    state: ExecutionStateData,
+    lastToolName: string,
+    lastToolPath: string | undefined,
+    lastToolResult: string,
+    workspaceType: 'greenfield' | 'scaffolded' | 'mature',
+  ): { nextAction: string; nextToolCall?: NextToolCall } | null {
+    const planned = state.plannedFileBatch ?? [];
+    const completed = state.completedBatchFiles ?? [];
+    const remaining = planned.filter(f => !completed.includes(f));
+
+    // After read_file on a spec / requirements file in greenfield → declare batch + write
+    if (lastToolName === 'read_file' && workspaceType === 'greenfield' && lastToolPath) {
+      const lower = lastToolPath.toLowerCase();
+      if (lower.includes('spec') || lower.includes('requirement') || lower.includes('readme')) {
+        return {
+          nextAction: 'declare_file_batch with the project structure, then write the first file',
+        };
+      }
+    }
+
+    // After read_file on any file → proceed to implementation
+    if (lastToolName === 'read_file') {
+      return {
+        nextAction: 'Proceed to implementation — write or edit a file based on what you just read',
+      };
+    }
+
+    // After list_files → read the most relevant file or start writing
+    if (lastToolName === 'list_files') {
+      return {
+        nextAction: 'Read the most relevant file, or start writing if you have enough context',
+      };
+    }
+
+    // After write_file with batch remaining → write the next batch file
+    if (lastToolName === 'write_file' && remaining.length > 0) {
+      const nextFile = remaining[0];
+      return {
+        nextAction: `Write the next file in the batch: ${nextFile}`,
+        nextToolCall: { tool: 'write_file', input: { path: nextFile }, description: `Write batch file: ${nextFile}` },
+      };
+    }
+
+    // After write_file without batch in greenfield → declare batch if not done
+    if (lastToolName === 'write_file' && workspaceType === 'greenfield' && planned.length === 0) {
+      return {
+        nextAction: 'declare_file_batch if not done, then continue writing',
+      };
+    }
+
+    // After edit_file → verify the edit, then continue
+    if (lastToolName === 'edit_file') {
+      return {
+        nextAction: 'Verify the edit, then continue to next task',
+      };
+    }
+
+    // Fallback: let the LLM decide
+    return null;
   }
 
   // ── Context note builder ──────────────────────────────────────────────────
