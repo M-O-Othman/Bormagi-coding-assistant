@@ -1531,7 +1531,7 @@ ${truncated}
               // auto-routed to edit_file instead of being hard-rejected.
               const redirectedResult = await this.toolDispatcher.dispatch(
                 {
-                  type: 'tool_use',
+                  id: `redirect-${Date.now()}`,
                   name: 'edit_file',
                   input: { path: toolCallPath, content: rewrittenContent },
                 },
