@@ -1644,7 +1644,11 @@ ${truncated}
             toolPathCounts.set(toolPathKey, toolPathCount);
 
             let toolResult: DispatchResult;
-            if (toolPathCount >= 3 && ['read_file', 'list_files', 'search_files'].includes(event.name)) {
+            const shouldForceWriteOnlyForLoop =
+              (execState.executionPhase ?? 'DISCOVERING') !== 'WRITE_ONLY' &&
+              toolPathCount >= 3 &&
+              ['read_file', 'list_files', 'search_files'].includes(event.name);
+            if (shouldForceWriteOnlyForLoop) {
               // FIX 3b: Hard state transition to WRITE_ONLY — no more reads allowed.
               stateManager.setExecutionPhase(execState, 'WRITE_ONLY');
               this.toolDispatcher.lockDiscovery();
@@ -1682,9 +1686,16 @@ ${truncated}
               const isBlockedResult = toolResult.status === 'blocked' || toolResult.status === 'cached' || toolResult.status === 'budget_exhausted';
               if (isBlockedResult) {
                 // DD4: Track blocked/cached reads via structured reasonCode.
-                if (toolResult.reasonCode === 'ALREADY_READ_UNCHANGED' || toolResult.reasonCode === 'LOOP_DETECTED') {
-                  const normBlockedPath = toolCallPath ? this.normalizeWorkspacePath(toolCallPath) : '';
-                  if (normBlockedPath && !blockedReadPaths.has(normBlockedPath)) {
+                const shouldTrackBlockedRead = (
+                  toolResult.reasonCode === 'ALREADY_READ_UNCHANGED' ||
+                  toolResult.reasonCode === 'LOOP_DETECTED' ||
+                  toolResult.reasonCode === 'WRITE_ONLY_PHASE' ||
+                  toolResult.reasonCode === 'DISCOVERY_LOCKED' ||
+                  toolResult.reasonCode === 'DISCOVERY_BUDGET_EXHAUSTED'
+                );
+                if (shouldTrackBlockedRead) {
+                  const normBlockedPath = this.normalizeWorkspacePath(toolCallPath ?? loopTarget ?? event.name);
+                  if (!blockedReadPaths.has(normBlockedPath)) {
                     blockedReadPaths.add(normBlockedPath);
                     stateManager.incrementBlockedRead(execState, normBlockedPath);
                   }
