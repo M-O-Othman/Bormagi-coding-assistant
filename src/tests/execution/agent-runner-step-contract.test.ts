@@ -47,4 +47,52 @@ describe('AgentRunner step-contract process controls', () => {
     expect(names).not.toContain('list_files');
     expect(names).not.toContain('search_files');
   });
+
+  test('filterToolsByStepContract narrows tool list for validate', () => {
+    const tools = [
+      { name: 'run_command' },
+      { name: 'get_diagnostics' },
+      { name: 'git_diff' },
+      { name: 'write_file' },
+      { name: 'edit_file' },
+      { name: 'list_files' },
+    ] as any;
+
+    const filtered = proto.filterToolsByStepContract.call({}, tools, 'validate');
+    const names = filtered.map((t: any) => t.name);
+
+    expect(names).toEqual(expect.arrayContaining(['run_command', 'get_diagnostics', 'git_diff']));
+    expect(names).not.toContain('write_file');
+    expect(names).not.toContain('edit_file');
+    expect(names).not.toContain('list_files');
+  });
+
+  test('extractFileBlocksFromAssistantText parses file/path fenced blocks and skips invalid', () => {
+    const text = [
+      'File: src/a.ts',
+      '```ts',
+      'export const a = 1;',
+      '```',
+      '',
+      '```src/b.ts',
+      'export const b = 2;',
+      '```',
+      '',
+      'Path: .bormagi/secret.md',
+      '```md',
+      'should be ignored by persistence path checks',
+      '```',
+      '',
+      'Path: src/noext',
+      '```txt',
+      'no extension should be ignored by extractor path validation',
+      '```',
+    ].join('\n');
+
+    const extracted = proto.extractFileBlocksFromAssistantText.call({}, text);
+    expect(extracted).toHaveLength(3);
+    const paths = extracted.map((f: any) => f.path);
+    expect(paths).toEqual(expect.arrayContaining(['src/a.ts', 'src/b.ts', '.bormagi/secret.md']));
+    expect(paths).not.toContain('src/noext');
+  });
 });
