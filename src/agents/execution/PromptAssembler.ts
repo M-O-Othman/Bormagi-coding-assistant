@@ -33,6 +33,20 @@ function assertNoProtocolLeak(messages: ChatMessage[]): void {
   }
 }
 
+
+
+function suppressReadFirstInstruction(instruction: string, hasResolvedContents: boolean): string {
+  if (!hasResolvedContents || !instruction) { return instruction; }
+
+  const withoutReadFirst = instruction
+    .replace(/(read|inspect|list)[^.\n]*(first|before\s+writing)[^.\n]*[.\n]?/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  const base = withoutReadFirst || 'Continue implementation.';
+  return `${base} Use resolved inputs as authoritative. Do not re-read unchanged files.`;
+}
+
 /**
  * Input context for building a compact LLM message array.
  * All fields are plain strings — no raw history turns.
@@ -167,8 +181,9 @@ export class PromptAssembler {
       });
     }
 
-    // 6. Current user instruction
-    msgs.push({ role: 'user', content: ctx.currentInstruction });
+    // 6. Current user instruction (suppress generic read-first guidance when resolved inputs exist)
+    const userInstruction = suppressReadFirstInstruction(ctx.currentInstruction, !!ctx.resolvedFileContents);
+    msgs.push({ role: 'user', content: userInstruction });
 
     // 7. Current-step tool results only
     // Convert tool_result role → user role (API only accepts system/user/assistant/tool).

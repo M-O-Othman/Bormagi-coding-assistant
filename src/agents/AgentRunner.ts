@@ -61,6 +61,7 @@ import { ContextPacketBuilder } from './execution/ContextPacketBuilder';
 import { ContextCostTracker } from './execution/ContextCostTracker';
 import { ProgressGuard } from './execution/ProgressGuard';
 import { classifyUserMessage } from './execution/ObjectiveNormalizer';
+import { authMethodRequiresCredential } from '../providers/AuthSupport';
 
 // ─── Sandbox imports ────────────────────────────────────────────────────────
 import { SandboxHandle } from '../sandbox/types';
@@ -230,13 +231,13 @@ export class AgentRunner {
       effectiveProvider = def;
       apiKeyId = '__default__';
     } else {
-      const needsOwnKey = (agentConfig.provider?.auth_method ?? 'api_key') === 'api_key';
+      const needsOwnKey = authMethodRequiresCredential(agentConfig.provider?.auth_method ?? 'api_key');
       if (needsOwnKey) {
         const ownKey = await this.agentManager.getApiKey(agentId);
         if (!ownKey) {
           const def = await this.configManager.readDefaultProvider();
           if (def?.type) {
-            const defNeedsKey = (def.auth_method ?? 'api_key') === 'api_key';
+            const defNeedsKey = authMethodRequiresCredential(def.auth_method ?? 'api_key');
             const defKey = defNeedsKey ? await this.agentManager.getApiKey('__default__') : 'ok';
             if (defKey) {
               effectiveProvider = def;
@@ -248,8 +249,8 @@ export class AgentRunner {
     }
 
     const apiKey = await this.agentManager.getApiKey(apiKeyId);
-    if (!apiKey && effectiveProvider.auth_method === 'api_key') {
-      onText('API key not configured. Add a per-agent key in Agent Settings, or set a workspace default provider.');
+    if (!apiKey && authMethodRequiresCredential(effectiveProvider.auth_method)) {
+      onText('Credential not configured. Add a per-agent API key/access token in Agent Settings, or set a workspace default provider.');
       return;
     }
 
@@ -350,7 +351,7 @@ export class AgentRunner {
       const classifierProviderCfg = await this.configManager.readClassifierProvider();
       if (classifierProviderCfg) {
         const classifierKey = await this.agentManager.getApiKey('__classifier__');
-        if (classifierKey || classifierProviderCfg.auth_method !== 'api_key') {
+        if (classifierKey || !authMethodRequiresCredential(classifierProviderCfg.auth_method)) {
           const classifierLLM = ProviderFactory.create(
             { ...agentConfig, provider: classifierProviderCfg },
             classifierKey,
@@ -467,7 +468,7 @@ export class AgentRunner {
       projectName,
     });
     let fullSystem = skillsSection ? `${assembledSystem}\n\n${skillsSection}` : assembledSystem;
-    agentLog.logSystemPrompt(fullSystem);
+    agentLog.logSystemPrompt(fullSystem, agentConfig.system_prompt_files ?? []);
 
     if (kbEvidence && kbEvidence.chunks.length > 0) {
       const formattedEvidence = RetrievalService.formatEvidenceForPrompt(kbEvidence);
@@ -1095,6 +1096,49 @@ export class AgentRunner {
         isFirstModelRequest = false;
       }
 
+      // Deterministic pre-LLM dispatch gate.
+      // If we already know the next tool call or are in forced-write recovery,
+      // do not ask the LLM to decide whether to rediscover.
+      if (mode === 'code') {
+        const phase = stateManager.getExecutionPhase(execState);
+        const shouldForceWrite = phase === 'WRITE_ONLY' || (execState.blockedReadCount ?? 0) >= 2;
+        const preLlmNtc = execState.nextToolCall;
+
+        if (preLlmNtc && !VIRTUAL_TOOLS.has(preLlmNtc.tool)) {
+          contextCostTracker.recordSkippedLLMCall();
+          onThought?.({ type: 'thinking', label: `[Pre-LLM dispatch] ${preLlmNtc.tool}`, timestamp: new Date() });
+          const preResult = await this.toolDispatcher.dispatch(
+            { id: `prellm-${Date.now()}`, name: preLlmNtc.tool, input: preLlmNtc.input as Record<string, unknown> },
+            agentId, onApproval, onDiff, onThought,
+          );
+          stateManager.markToolExecuted(execState, preLlmNtc.tool, (preLlmNtc.input as Record<string, unknown>).path as string | undefined, preResult.text.slice(0, 150));
+          stateManager.clearNextToolCall(execState);
+          stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+
+          let truncated = preResult.text;
+          if (preResult.text.length > 8000) {
+            truncated = `${preResult.text.slice(0, 8000)}\n[truncated]`;
+          }
+          const preMsg: ChatMessage = { role: 'tool_result', content: `<tool_result name="${preLlmNtc.tool}">
+${truncated}
+</tool_result>` };
+          messages.push(preMsg);
+          currentStepToolResults.push(preMsg);
+          calledATool = true;
+          continueLoop = true;
+          iterationCount++;
+          continue;
+        }
+
+        if (shouldForceWrite) {
+          stateManager.setExecutionPhase(execState, 'WRITE_ONLY');
+          this.toolDispatcher.setExecutionPhase('WRITE_ONLY');
+          silentExecution = true;
+          effectiveUserContent = 'WRITE_ONLY phase: generate and call write_file or edit_file now. Do not call read_file, list_files, search_files, or glob_files.';
+        }
+      }
+
+
       // Phase 5: RecoveryManager — check all 5 triggers before each LLM call.
       // Skip if we've already exhausted recovery attempts for this run — prevents
       // infinite recovery loops where the same trigger fires every iteration.
@@ -1300,6 +1344,7 @@ export class AgentRunner {
       // Phase 1: PromptAssembler — code mode uses compact, no-history messages per EQ-15.
       // All other modes use prepareMessagesForProvider.
       let messagesForProvider: ChatMessage[];
+      let stepContractKind: 'discover' | 'mutate' | 'validate' = 'discover';
       if (mode === 'code') {
         // DD7: Build compact context packet from execution state for prompt assembly.
         const contextPacket = contextPacketBuilder.build(
@@ -1308,12 +1353,18 @@ export class AgentRunner {
         const compactSummary = contextPacket.stateSummary;
         const compactWorkspace = contextPacket.workspaceSummary;
 
+        const stepContract = this.computeStepContract(execState);
+        stepContractKind = stepContract.kind;
+        const toolResultsForPrompt = stepContract.kind === 'mutate'
+          ? currentStepToolResults.slice(-2)
+          : [...currentStepToolResults];
+
         messagesForProvider = promptAssembler.assembleMessages({
           systemPrompt: isFirstIteration ? fullSystem : compactSystem,
           executionStateSummary: compactSummary,
           workspaceSummary: compactWorkspace,
           currentInstruction: effectiveUserContent,
-          currentStepToolResults: [...currentStepToolResults],
+          currentStepToolResults: toolResultsForPrompt,
           milestoneSummary: execState.lastExecutedTool
             ? `Last tool: ${execState.lastExecutedTool}`
             : undefined,
@@ -1322,6 +1373,8 @@ export class AgentRunner {
           // FIX 2c / FIX 9: inject resolved file contents so model never re-reads
           resolvedFileContents: contextPacket.resolvedFileContents || undefined,
         });
+        messagesForProvider.push({ role: 'system', content: stepContract.instruction });
+        agentLog.logAction('STEP_CONTRACT', `${stepContract.kind}: ${stepContract.summary}`);
         isFirstIteration = false;
 
         // DD12: Record per-turn context cost telemetry.
@@ -1368,7 +1421,10 @@ export class AgentRunner {
       agentLog.logProviderRequest(iterationCount, messagesForProvider, mode);
       agentLog.logExecutionState(iterationCount, execState);
 
-      for await (const event of provider.stream(messagesForProvider, this.filterToolsByMode(tools, mode), actualMaxOutputTokens)) {
+      const toolsForTurn = mode === 'code'
+        ? this.filterToolsByStepContract(this.filterToolsByMode(tools, mode), stepContractKind)
+        : this.filterToolsByMode(tools, mode);
+      for await (const event of provider.stream(messagesForProvider, toolsForTurn, actualMaxOutputTokens)) {
         if (event.type === 'provider_headers') {
           const importantHeaders = this.selectImportantHeaders(event.headers);
           await this.auditLogger.logLLMResponseHeaders(
@@ -1443,7 +1499,9 @@ export class AgentRunner {
           // its own prior tool calls on the next iteration and won't rewrite files.
           // For file-write/edit tools, include the path and content size so the model
           // knows exactly what it wrote and does not produce a second write to the same path.
-          const toolCallPath = (event.input as Record<string, unknown>)?.path as string | undefined;
+          const toolInput = (event.input as Record<string, unknown>) ?? {};
+          const toolCallPath = toolInput.path as string | undefined;
+          const loopTarget = stateManager.buildLoopTarget(event.name, toolInput);
           const toolCallContent = (event.input as Record<string, unknown>)?.content as string | undefined;
           let assistantTurnLabel: string;
           if (toolCallPath && (event.name === 'write_file' || event.name === 'edit_file')) {
@@ -1479,12 +1537,40 @@ export class AgentRunner {
           let toolResultContent: string;
 
           if (isFileWrite && toolCallPath && writtenPaths.has(toolCallPath)) {
-            const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
-            const rejection = `[SYSTEM ERROR] write_file REJECTED: "${toolCallPath}" was already written this task. The file has NOT been changed. You MUST use edit_file for any corrections to existing files. Written paths: ${pathList}. Proceed with remaining tasks or summarise.`;
-            agentLog.logToolResult(event.name, rejection);
-            turnMemory.addToolResult(event.name, rejection);
-            toolResultContent = `<tool_result name="${event.name}" status="error">\n${rejection}\n</tool_result>`;
-            onThought({ type: 'error', label: `Rewrite blocked: ${toolCallPath}`, detail: rejection, timestamp: new Date() });
+            const rewrittenContent = (event.input as Record<string, unknown>)?.content;
+            if (typeof rewrittenContent === 'string') {
+              // Preserve progress: repeated write_file attempts on the same path are
+              // auto-routed to edit_file instead of being hard-rejected.
+              const redirectedResult = await this.toolDispatcher.dispatch(
+                {
+                  id: `redirect-${Date.now()}`,
+                  name: 'edit_file',
+                  input: { path: toolCallPath, content: rewrittenContent },
+                },
+                agentId,
+                onApproval,
+                onDiff,
+                onThought,
+              );
+              const redirectNote = `[AUTO-REDIRECT] write_file→edit_file for "${toolCallPath}" because it was already written this task.`;
+              const redirectedText = `${redirectedResult.text}\n${redirectNote}`;
+              agentLog.logToolResult('edit_file', redirectedText);
+              turnMemory.addToolResult('edit_file', redirectedText);
+              toolResultContent = `<tool_result name="edit_file">\n${this.truncateToolResult(redirectedText, 'edit_file', iterationCount, toolCallPath)}\n</tool_result>`;
+              stateManager.markToolExecuted(execState, 'edit_file', toolCallPath, redirectedText.slice(0, 150));
+              stateManager.markProgress(execState);
+              if (execState.executionPhase === 'WRITE_ONLY') {
+                stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
+                this.toolDispatcher.setExecutionPhase('EXECUTING_STEP');
+              }
+            } else {
+              const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
+              const rejection = `[SYSTEM ERROR] write_file REJECTED: "${toolCallPath}" was already written this task. The file has NOT been changed. You MUST use edit_file for any corrections to existing files. Written paths: ${pathList}. Proceed with remaining tasks or summarise.`;
+              agentLog.logToolResult(event.name, rejection);
+              turnMemory.addToolResult(event.name, rejection);
+              toolResultContent = `<tool_result name="${event.name}" status="error">\n${rejection}\n</tool_result>`;
+              onThought({ type: 'error', label: `Rewrite blocked: ${toolCallPath}`, detail: rejection, timestamp: new Date() });
+            }
           } else if (isFileWrite && toolCallPath && (() => {
             // ─── Batch enforcement (Phase 4) ─────────────────────────────────
             // Greenfield/scaffolded: must declare a batch before first write_file.
@@ -1593,35 +1679,39 @@ export class AgentRunner {
             stateManager.markToolExecuted(execState, event.name, undefined, (toolResultContent ?? '').slice(0, 150));
           } else {
             // Task 10: Same-tool same-path loop breaker
-            const toolPathKey = `${event.name}:${toolCallPath ?? ''}`;
+            const toolPathKey = `${event.name}:${loopTarget ?? ''}`;
             const toolPathCount = (toolPathCounts.get(toolPathKey) ?? 0) + 1;
             toolPathCounts.set(toolPathKey, toolPathCount);
 
             let toolResult: DispatchResult;
-            if (toolPathCount >= 3 && ['read_file', 'list_files', 'search_files'].includes(event.name)) {
+            const shouldForceWriteOnlyForLoop =
+              (execState.executionPhase ?? 'DISCOVERING') !== 'WRITE_ONLY' &&
+              toolPathCount >= 3 &&
+              ['read_file', 'list_files', 'search_files'].includes(event.name);
+            if (shouldForceWriteOnlyForLoop) {
               // FIX 3b: Hard state transition to WRITE_ONLY — no more reads allowed.
               stateManager.setExecutionPhase(execState, 'WRITE_ONLY');
               this.toolDispatcher.lockDiscovery();
               this.toolDispatcher.setExecutionPhase('WRITE_ONLY');
 
               // Inject the file content the model is trying to read (if stored)
-              const storedContent = execState.resolvedInputContents?.[
-                this.normalizeWorkspacePath(toolCallPath ?? '')
-              ];
+              const storedContent = (event.name === 'read_file' && toolCallPath)
+                ? execState.resolvedInputContents?.[this.normalizeWorkspacePath(toolCallPath)]
+                : undefined;
               const contentInjection = storedContent
                 ? `\n\nHere is the content you are trying to read:\n${storedContent}`
                 : '';
 
               toolResult = {
-                text: `[READ BLOCKED] You already read "${toolCallPath}". Phase is now WRITE_ONLY. All further reads will be rejected. Write the next file now.${contentInjection}`,
+                text: `[READ BLOCKED] Repeated ${event.name} call on "${loopTarget ?? event.name}". Phase is now WRITE_ONLY. All further reads will be rejected. Write the next file now.${contentInjection}`,
                 status: 'blocked',
                 reasonCode: 'WRITE_ONLY_PHASE',
                 toolName: event.name,
-                path: toolCallPath,
+                path: loopTarget,
               };
-              onThought?.({ type: 'error', label: `Loop detected → WRITE_ONLY: ${event.name}:${toolCallPath} x${toolPathCount}`, timestamp: new Date() });
-              agentLog.logGuardActivation('WRITE_ONLY', event.name, toolCallPath, iterationCount);
-              agentLog.logPhaseTransition(execState.executionPhase ?? 'DISCOVERING', 'WRITE_ONLY', `loop on ${event.name}:${toolCallPath}`);
+              onThought?.({ type: 'error', label: `Loop detected → WRITE_ONLY: ${event.name}:${loopTarget ?? ''} x${toolPathCount}`, timestamp: new Date() });
+              agentLog.logGuardActivation('WRITE_ONLY', event.name, loopTarget, iterationCount);
+              agentLog.logPhaseTransition(execState.executionPhase ?? 'DISCOVERING', 'WRITE_ONLY', `loop on ${event.name}:${loopTarget ?? ''}`);
             } else {
               toolResult = await this.toolDispatcher.dispatch(
                 event, agentId, onApproval, onDiff, onThought
@@ -1636,14 +1726,21 @@ export class AgentRunner {
               const isBlockedResult = toolResult.status === 'blocked' || toolResult.status === 'cached' || toolResult.status === 'budget_exhausted';
               if (isBlockedResult) {
                 // DD4: Track blocked/cached reads via structured reasonCode.
-                if (toolResult.reasonCode === 'ALREADY_READ_UNCHANGED' || toolResult.reasonCode === 'LOOP_DETECTED') {
-                  const normBlockedPath = toolCallPath ? this.normalizeWorkspacePath(toolCallPath) : '';
-                  if (normBlockedPath && !blockedReadPaths.has(normBlockedPath)) {
+                const shouldTrackBlockedRead = (
+                  toolResult.reasonCode === 'ALREADY_READ_UNCHANGED' ||
+                  toolResult.reasonCode === 'LOOP_DETECTED' ||
+                  toolResult.reasonCode === 'WRITE_ONLY_PHASE' ||
+                  toolResult.reasonCode === 'DISCOVERY_LOCKED' ||
+                  toolResult.reasonCode === 'DISCOVERY_BUDGET_EXHAUSTED'
+                );
+                if (shouldTrackBlockedRead) {
+                  const normBlockedPath = this.normalizeWorkspacePath(toolCallPath ?? loopTarget ?? event.name);
+                  if (!blockedReadPaths.has(normBlockedPath)) {
                     blockedReadPaths.add(normBlockedPath);
                     stateManager.incrementBlockedRead(execState, normBlockedPath);
                   }
                   // DD4: Record tool loop for same-tool detection
-                  stateManager.recordToolLoop(execState, event.name, toolCallPath);
+                  stateManager.recordToolLoop(execState, event.name, loopTarget);
                 }
               }
               if (toolResult.status === 'success') {
@@ -1981,6 +2078,34 @@ export class AgentRunner {
           lastAssistantText = `Progress checkpoint: completed ${written.length} file(s) in this session — ${written.slice(0, 8).join(', ')}${written.length > 8 ? `, ... and ${written.length - 8} more` : ''}. Session paused at the tool iteration limit; continue to resume implementation.`;
         } else {
           lastAssistantText = `Session paused at tool iteration limit after ${toolsUsed.length} operations. Continue to resume.`;
+        }
+      }
+
+      // If the model emitted file content in plain assistant text (without tool calls),
+      // salvage it by materialising those files directly via write_file/edit_file tools.
+      if (!calledATool && turnAssistantText) {
+        const persistedCount = await this.persistAssistantGeneratedFiles(
+          turnAssistantText,
+          agentId,
+          writtenPaths,
+          messages,
+          currentStepToolResults,
+          execState,
+          stateManager,
+          toolsUsed,
+          onApproval,
+          onDiff,
+          onThought,
+        );
+        if (persistedCount > 0) {
+          calledATool = true;
+          continueLoop = true;
+          turnAssistantText = `${turnAssistantText}\n\n[Auto-persisted ${persistedCount} file block(s) from assistant output.]`;
+          onThought?.({
+            type: 'thinking',
+            label: `Auto-persisted ${persistedCount} file block(s) from assistant output`,
+            timestamp: new Date(),
+          });
         }
       }
 
@@ -2719,6 +2844,103 @@ export class AgentRunner {
     }
   }
 
+  /**
+   * Extract markdown file blocks from assistant prose and persist them via tools.
+   * This is a safety net for provider turns that render code in chat instead of
+   * issuing write_file/edit_file calls.
+   */
+  private async persistAssistantGeneratedFiles(
+    assistantText: string,
+    agentId: string,
+    writtenPaths: Set<string>,
+    messages: ChatMessage[],
+    currentStepToolResults: ChatMessage[],
+    execState: ExecutionStateData,
+    stateManager: ExecutionStateManager,
+    toolsUsed: string[],
+    onApproval: ApprovalCallback,
+    onDiff: DiffCallback,
+    onThought: ThoughtCallback,
+  ): Promise<number> {
+    const extracted = this.extractFileBlocksFromAssistantText(assistantText);
+    if (extracted.length === 0) {
+      return 0;
+    }
+
+    let persisted = 0;
+    for (const file of extracted) {
+      const normalizedPath = this.normalizeWorkspacePath(file.path);
+      if (!normalizedPath || normalizedPath.startsWith('.bormagi/')) {
+        continue;
+      }
+
+      const toolName = writtenPaths.has(normalizedPath) ? 'edit_file' : 'write_file';
+      const dispatchResult = await this.toolDispatcher.dispatch(
+        {
+          id: `autopersist-${Date.now()}-${persisted}`,
+          name: toolName,
+          input: { path: normalizedPath, content: file.content },
+        },
+        agentId,
+        onApproval,
+        onDiff,
+        onThought,
+      );
+
+      const toolMsg: ChatMessage = {
+        role: 'tool_result',
+        content: `<tool_result name="${toolName}">\n${dispatchResult.text}\n</tool_result>`,
+      };
+      messages.push(toolMsg);
+      currentStepToolResults.push(toolMsg);
+      toolsUsed.push(toolName);
+
+      if (dispatchResult.status === 'success') {
+        writtenPaths.add(normalizedPath);
+        stateManager.markFileWritten(execState, normalizedPath);
+        stateManager.markToolExecuted(execState, toolName, normalizedPath, dispatchResult.text.slice(0, 150));
+        stateManager.markProgress(execState);
+        persisted++;
+      }
+    }
+
+    return persisted;
+  }
+
+  /** Parse assistant markdown for file-oriented code fences. */
+  private extractFileBlocksFromAssistantText(text: string): Array<{ path: string; content: string }> {
+    const results: Array<{ path: string; content: string }> = [];
+    const seen = new Set<string>();
+
+    const push = (pathValue: string, contentValue: string) => {
+      const path = pathValue.trim().replace(/^['"`]|['"`]$/g, '');
+      const content = contentValue.replace(/\n$/, '');
+      if (!path || content.trim().length < 8) {
+        return;
+      }
+      if (!/^[a-zA-Z0-9_./-]+\.[a-zA-Z0-9_-]+$/.test(path)) {
+        return;
+      }
+      if (!seen.has(path)) {
+        seen.add(path);
+        results.push({ path, content });
+      }
+    };
+
+    const fileHeaderFence = /(?:^|\n)(?:\*\*\s*)?(?:file|path)\s*:\s*`?([^`\n]+)`?(?:\s*\*\*)?\s*\n```[^\n]*\n([\s\S]*?)```/gim;
+    let match: RegExpExecArray | null;
+    while ((match = fileHeaderFence.exec(text)) !== null) {
+      push(match[1], match[2]);
+    }
+
+    const pathFence = /(?:^|\n)```\s*([a-zA-Z0-9_./-]+\.[a-zA-Z0-9_-]+)\s*\n([\s\S]*?)```/gm;
+    while ((match = pathFence.exec(text)) !== null) {
+      push(match[1], match[2]);
+    }
+
+    return results;
+  }
+
   // ─── Task 9: Repetitive narration detection ─────────────────────────────
 
   /**
@@ -2804,6 +3026,65 @@ export class AgentRunner {
     }
     // code (default): all tools available
     return tools;
+  }
+
+  /**
+   * Apply step-contract tool narrowing inside code mode.
+   * This reduces read/write oscillation by constraining the tool surface per step.
+   */
+  private filterToolsByStepContract(
+    tools: MCPToolDefinition[],
+    contractKind: 'discover' | 'mutate' | 'validate'
+  ): MCPToolDefinition[] {
+    if (contractKind === 'mutate') {
+      const allowed = new Set(['write_file', 'edit_file', 'replace_range', 'multi_edit', 'run_command', 'update_task_state']);
+      return tools.filter(t => allowed.has(t.name));
+    }
+    if (contractKind === 'validate') {
+      const allowed = new Set(['run_command', 'get_diagnostics', 'git_diff', 'git_status', 'update_task_state']);
+      return tools.filter(t => allowed.has(t.name));
+    }
+    return tools;
+  }
+
+  /**
+   * Build a compact step contract that proactively directs model behaviour.
+   * Guards should become exceptional by making the intended step explicit.
+   */
+  private computeStepContract(
+    state: ExecutionStateData
+  ): { kind: 'discover' | 'mutate' | 'validate'; instruction: string; summary: string } {
+    const planned = state.plannedFileBatch ?? [];
+    const completed = state.completedBatchFiles ?? [];
+    const remaining = planned.filter(f => !completed.includes(f));
+    const phase = state.executionPhase ?? 'INITIALISING';
+
+    if (phase === 'VALIDATING_STEP') {
+      return {
+        kind: 'validate',
+        summary: 'validate recent mutations and capture results',
+        instruction: 'STEP CONTRACT (VALIDATE): Run validation/diagnostics now. Allowed tools: run_command, get_diagnostics, git_diff/git_status, update_task_state. Do not read/search unless strictly required by a failing test trace.'
+      };
+    }
+
+    if (phase === 'WRITE_ONLY' || remaining.length > 0 || (state.blockedReadCount ?? 0) >= 1) {
+      const nextFile = remaining[0];
+      return {
+        kind: 'mutate',
+        summary: nextFile
+          ? `mutate next scheduled file (${nextFile})`
+          : 'mutate now (write/edit) with no additional discovery',
+        instruction: nextFile
+          ? `STEP CONTRACT (MUTATE): Write or edit ${nextFile} now. Allowed tools: write_file, edit_file, replace_range, multi_edit, run_command, update_task_state. Do NOT call read/list/search tools in this step.`
+          : 'STEP CONTRACT (MUTATE): Perform a file mutation now. Allowed tools: write_file, edit_file, replace_range, multi_edit, run_command, update_task_state. Do NOT call read/list/search tools in this step.'
+      };
+    }
+
+    return {
+      kind: 'discover',
+      summary: 'perform minimal targeted discovery before next mutation',
+      instruction: 'STEP CONTRACT (DISCOVER): Use minimal targeted discovery (prefer read_file_range/read_symbol_block over broad list/search). After enough evidence, switch to a write/edit in the next step.'
+    };
   }
 
   /** Return a short system note describing workspace maturity to the model. */

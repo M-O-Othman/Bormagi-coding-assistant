@@ -21,6 +21,7 @@ export class AgentLogger {
   private readonly logPath: string;
   private readonly maxChars: number;
   private readonly enabled: boolean;
+  private systemPromptReference = '[system prompt used]';
 
   constructor(
     private readonly workspaceRoot: string,
@@ -54,16 +55,23 @@ export class AgentLogger {
     );
   }
 
-  logSystemPrompt(systemPrompt: string): void {
+  logSystemPrompt(systemPrompt: string, promptSources: string[] = []): void {
     if (!this.enabled) { return; }
-    this.section('SYSTEM PROMPT', this.truncate(systemPrompt));
+    const sourceLabel = promptSources.length > 0
+      ? `[system prompt used from file(s): ${promptSources.join(', ')}]`
+      : '[system prompt used from in-memory/default sources]';
+    this.systemPromptReference = sourceLabel;
+    this.section('SYSTEM PROMPT', `${sourceLabel}\n[length=${systemPrompt.length} chars]`);
   }
 
   /** Log the full messages array before an LLM API call. */
   logApiCall(callIndex: number, messages: ChatMessage[]): void {
     if (!this.enabled) { return; }
-    const formatted = messages.map(m => {
+    const formatted = messages.map((m, idx) => {
       const tag = `[${m.role.toUpperCase()}]`;
+      if (idx === 0 && m.role === 'system') {
+        return `${tag} ${this.systemPromptReference}`;
+      }
       return `${tag} ${this.truncate(m.content, 800)}`;
     }).join('\n');
     this.section(`MESSAGES → LLM  (call #${callIndex})`, formatted);
@@ -87,6 +95,12 @@ export class AgentLogger {
   logToolResult(name: string, result: string): void {
     if (!this.enabled) { return; }
     this.section(`TOOL RESULT: ${name}`, this.truncate(result));
+  }
+
+  /** Log a compact action breadcrumb for process tracing. */
+  logAction(action: string, detail?: string): void {
+    if (!this.enabled) { return; }
+    this.writeLine(`── ACTION: ${action}${detail ? ` | ${this.truncate(detail, 200)}` : ''}`);
   }
 
   logModelText(text: string): void {
@@ -130,6 +144,9 @@ export class AgentLogger {
   logProviderRequest(iterationNumber: number, messages: ChatMessage[], mode: string): void {
     if (!this.enabled) { return; }
     const summary = messages.map((m, i) => {
+      if (i === 0 && m.role === 'system') {
+        return `  [${i}] role=system len=${m.content.length} "${this.systemPromptReference}"`;
+      }
       const contentLen = m.content.length;
       const preview = m.content.slice(0, 200).replace(/\n/g, ' ');
       return `  [${i}] role=${m.role} len=${contentLen} "${preview}…"`;

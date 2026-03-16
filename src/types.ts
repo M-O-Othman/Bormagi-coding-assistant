@@ -28,7 +28,7 @@ export type ProviderType = 'openai' | 'anthropic' | 'gemini' | 'deepseek' | 'qwe
  * Authentication mode for provider calls.
  * `gcp_adc` is kept as a legacy alias and mapped to `vertex_ai` at runtime.
  */
-export type AuthMethod = 'api_key' | 'oauth_proxy' | 'vertex_ai' | 'gcp_adc';
+export type AuthMethod = 'api_key' | 'subscription' | 'oauth_proxy' | 'vertex_ai' | 'gcp_adc';
 
 export interface ProviderConfig {
   type: ProviderType;

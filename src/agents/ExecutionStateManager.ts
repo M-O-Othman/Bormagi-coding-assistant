@@ -737,18 +737,50 @@ export class ExecutionStateManager {
   // ── DD4: Blocked read and tool loop tracking ─────────────────────────────
 
   /** Increment blocked read counter and record the path. */
-  incrementBlockedRead(state: ExecutionStateData, blockedPath: string): void {
+  incrementBlockedRead(state: ExecutionStateData, _blockedPath: string): void {
     state.blockedReadCount = (state.blockedReadCount ?? 0) + 1;
     state.updatedAt = new Date().toISOString();
   }
 
+  /**
+   * Build a stable loop-tracking key segment for tools with/without file paths.
+   * Prevents malformed keys such as `list_files:undefined`.
+   */
+  buildLoopTarget(tool: string, input: Record<string, unknown>): string | undefined {
+    const pathLike = (input.path as string | undefined)
+      ?? (input.file_path as string | undefined)
+      ?? (input.directory as string | undefined);
+    if (typeof pathLike === 'string' && pathLike.trim().length > 0) {
+      return pathLike.replace(/\\/g, '/').trim();
+    }
+
+    if (tool === 'search_files' || tool === 'grep_content') {
+      const query = (input.query as string | undefined)
+        ?? (input.pattern as string | undefined)
+        ?? (input.search as string | undefined);
+      if (typeof query === 'string' && query.trim().length > 0) {
+        return `query:${query.trim()}`;
+      }
+    }
+
+    if (tool === 'glob_files') {
+      const pattern = input.pattern as string | undefined;
+      if (typeof pattern === 'string' && pattern.trim().length > 0) {
+        return `pattern:${pattern.trim()}`;
+      }
+    }
+
+    return undefined;
+  }
+
   /** Record a tool+path repetition for same-tool loop detection. */
   recordToolLoop(state: ExecutionStateData, tool: string, toolPath?: string): void {
+    const normalizedPath = toolPath ? toolPath.replace(/\\/g, '/').trim() : undefined;
     const current = state.sameToolLoop;
-    if (current && current.tool === tool && current.path === toolPath) {
+    if (current && current.tool === tool && current.path === normalizedPath) {
       current.count += 1;
     } else {
-      state.sameToolLoop = { tool, path: toolPath, count: 1 };
+      state.sameToolLoop = { tool, path: normalizedPath, count: 1 };
     }
     state.updatedAt = new Date().toISOString();
   }

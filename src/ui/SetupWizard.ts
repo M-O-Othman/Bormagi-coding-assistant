@@ -15,7 +15,7 @@ import { ConfigManager } from '../config/ConfigManager';
 import { SecretsManager } from '../config/SecretsManager';
 import { AgentManager } from '../agents/AgentManager';
 import { GitignoreManager } from '../config/GitignoreManager';
-import { UserRole, ProjectConfig, ProviderConfig } from '../types';
+import { UserRole, ProjectConfig, ProviderConfig, AuthMethod } from '../types';
 import { getAppData } from '../data/DataStore';
 
 // ─── Wizard result ─────────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ export class SetupWizard {
 
     const providerItems = providerPresets.map(p => ({
       label: p.label,
-      description: `Default model: ${p.defaultModel}`,
+      description: `Default model: ${p.defaultModel} · Auth: ${p.authMethod.replace('_', ' ')}`,
       preset: p,
     }));
 
@@ -88,6 +88,31 @@ export class SetupWizard {
 
     if (modelName === undefined) { return null; }
 
+    let selectedAuthMethod = preset.authMethod;
+
+    // If provider supports multiple auth methods, ask explicitly.
+    if (preset.type === 'anthropic' || preset.type === 'gemini') {
+      const authItems: Array<{ label: string; value: AuthMethod; description: string }> = preset.type === 'anthropic'
+        ? [
+            { label: 'API Key', value: 'api_key', description: 'Standard Anthropic API key' },
+            { label: 'Claude Subscription Token', value: 'subscription', description: 'Use Anthropic auth token from subscription session' },
+          ]
+        : [
+            { label: 'API Key', value: 'api_key', description: 'Google AI Studio API key' },
+            { label: 'OAuth via Proxy', value: 'oauth_proxy', description: 'Bearer identity via proxy' },
+            { label: 'Vertex AI (ADC/OAuth)', value: 'vertex_ai', description: 'Use gcloud ADC token flow' },
+          ];
+
+      const authPick = await vscode.window.showQuickPick<{ label: string; value: AuthMethod; description: string }>(authItems, {
+        title: 'Bormagi Setup (2/4) — Authentication method',
+        placeHolder: `Choose auth method for ${preset.label}`,
+        ignoreFocusOut: true,
+      });
+
+      if (!authPick) { return null; }
+      selectedAuthMethod = authPick.value;
+    }
+
     // ── Step 2b: Base URL (required for openai_compatible only) ───────────────
 
     let customBaseUrl: string | null = null;
@@ -110,24 +135,28 @@ export class SetupWizard {
       model: modelName.trim(),
       base_url: customBaseUrl,
       proxy_url: null,
-      auth_method: preset.authMethod,
+      auth_method: selectedAuthMethod,
     };
 
     // ── Step 3: API key entry (skip for non-api_key auth; optional for openai_compatible) ──
 
     let apiKey: string | null = null;
 
-    if (preset.authMethod === 'api_key') {
+    if (selectedAuthMethod === 'api_key' || selectedAuthMethod === 'subscription') {
       const keyOptional = preset.type === 'openai_compatible';
       const keyInput = await vscode.window.showInputBox({
-        title: `Bormagi Setup (3/4) — ${preset.label} API key`,
-        prompt: keyOptional
-          ? 'Paste your API key, or leave blank if the endpoint does not require one (e.g. Ollama).'
-          : `Paste your ${preset.label} API key. It will be stored in VS Code SecretStorage (never on disk in plain text).`,
+        title: selectedAuthMethod === 'subscription'
+          ? `Bormagi Setup (3/4) — ${preset.label} subscription token`
+          : `Bormagi Setup (3/4) — ${preset.label} API key`,
+        prompt: selectedAuthMethod === 'subscription'
+          ? `Paste your ${preset.label} auth token from your subscription session. Stored in VS Code SecretStorage.`
+          : (keyOptional
+            ? 'Paste your API key, or leave blank if the endpoint does not require one (e.g. Ollama).'
+            : `Paste your ${preset.label} API key. It will be stored in VS Code SecretStorage (never on disk in plain text).`),
         placeHolder: preset.keyPlaceholder,
         password: true,
         ignoreFocusOut: true,
-        validateInput: v => (!keyOptional && v.trim().length === 0 ? 'API key cannot be empty' : null),
+        validateInput: v => (!keyOptional && v.trim().length === 0 ? (selectedAuthMethod === 'subscription' ? 'Subscription token cannot be empty' : 'API key cannot be empty') : null),
       });
 
       if (keyInput === undefined) { return null; }

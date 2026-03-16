@@ -54,6 +54,20 @@ describe('PromptAssembler — assembleMessages', () => {
     expect(wsMsg!.content).toContain('Greenfield');
   });
 
+
+
+  test('suppresses read-first language when resolved inputs are already present', () => {
+    const assembler = makeAssembler();
+    const msgs = assembler.assembleMessages({
+      ...baseContext(),
+      currentInstruction: 'Read the requirements first, then write src/index.ts',
+      resolvedFileContents: `[requirements.md]\n...content...`,
+    });
+    const userMsg = msgs.find(m => m.role === 'user');
+    expect(userMsg).toBeDefined();
+    expect(userMsg!.content.toLowerCase()).not.toContain('read the requirements first');
+    expect(userMsg!.content).toContain('Use resolved inputs as authoritative');
+  });
   test('current instruction appears as user message', () => {
     const assembler = makeAssembler();
     const msgs = assembler.assembleMessages(baseContext());

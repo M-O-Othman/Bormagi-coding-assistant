@@ -14,6 +14,13 @@
     "keyPlaceholder": "sk-ant-..."
   },
   {
+    "label": "Anthropic (Claude Subscription)",
+    "type": "anthropic",
+    "defaultModel": "claude-sonnet-4-6",
+    "authMethod": "subscription",
+    "keyPlaceholder": "anthropic-auth-token"
+  },
+  {
     "label": "Google AI",
     "type": "gemini",
     "defaultModel": "gemini-2.0-flash",

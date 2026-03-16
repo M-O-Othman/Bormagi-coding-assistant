@@ -4,6 +4,7 @@ import { SecretsManager } from '../config/SecretsManager';
 import { ConfigManager } from '../config/ConfigManager';
 import { AgentConfig, ProviderConfig, ProviderType } from '../types';
 import { getAppData } from '../data/DataStore';
+import { normaliseAuthMethodForProvider } from '../providers/AuthSupport';
 
 type PanelMode = 'list' | 'new' | 'edit';
 
@@ -92,13 +93,10 @@ export class AgentSettingsPanel {
   }
 
   private normaliseAuthMethod(provider: ProviderConfig): ProviderConfig {
-    if (provider.type !== 'gemini') {
-      return { ...provider, auth_method: 'api_key' };
-    }
-    if (provider.auth_method === 'gcp_adc') {
-      return { ...provider, auth_method: 'vertex_ai' };
-    }
-    return provider;
+    return {
+      ...provider,
+      auth_method: normaliseAuthMethodForProvider(provider.type, provider.auth_method),
+    };
   }
 
   private async handleMessage(msg: Record<string, unknown>): Promise<void> {
@@ -316,12 +314,16 @@ export class AgentSettingsPanel {
 </head>
 <body>
   <h1>Bormagi — Agent Settings</h1>
+  <p style="font-size:12px;opacity:0.8;margin-top:-4px;margin-bottom:14px">
+    <strong>Auth update:</strong> Anthropic now supports <strong>Claude Subscription (Auth Token)</strong> in both
+    <em>Workspace Default Provider</em> and <em>Individual Agent Provider</em> sections.
+  </p>
 
   <!-- Default Provider Card -->
   <div class="default-card">
     <h3>Workspace Default Provider</h3>
     <p style="font-size:11px;opacity:0.6;margin-bottom:10px">
-      Set one provider + API key here, then click <strong>Apply to all agents</strong> to switch every agent to this provider instantly.
+      Set one provider + credential here, then click <strong>Apply to all agents</strong> to switch every agent to this provider instantly.
       Individual agents can still override this in their own settings.
     </p>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -334,17 +336,19 @@ export class AgentSettingsPanel {
         <select id="dp-model"></select>
       </div>
     </div>
-    <label for="dp-apikey">API Key</label>
+    <label for="dp-apikey">Credential (API Key / Access Token)</label>
     <input id="dp-apikey" type="password" placeholder="Leave blank to keep existing key"/>
     <label for="dp-base-url">Custom Base URL (optional)</label>
     <input id="dp-base-url" type="text" placeholder="https://api.example.com/v1beta"/>
     <label for="dp-proxy-url">Proxy URL (optional)</label>
     <input id="dp-proxy-url" type="text" placeholder="https://proxy.example.com"/>
-    <label for="dp-auth">Auth Method (Gemini only)</label>
+    <label for="dp-auth">Auth Method (Gemini / Anthropic)</label>
+    <p class="hint" style="margin-top:-4px">Anthropic supports <strong>Claude Subscription (Auth Token)</strong>.</p>
     <select id="dp-auth" onchange="syncDefaultAuthControls()">
       <option value="api_key">API Key</option>
       <option value="oauth_proxy">OAuth Identity via Proxy (no API key)</option>
       <option value="vertex_ai">GCP Vertex AI (ADC/OAuth)</option>
+      <option value="subscription">Claude Subscription (Auth Token)</option>
     </select>
     <div id="dp-vertex-location-row" style="display:none">
       <label for="dp-vertex-location">Vertex AI Region</label>
@@ -442,15 +446,17 @@ export class AgentSettingsPanel {
       <label for="f-model">Model</label>
       <select id="f-model"></select>
 
-      <label for="f-apikey">API Key</label>
+      <label for="f-apikey">Credential (API Key / Access Token)</label>
       <input id="f-apikey" type="password" placeholder="sk-… (stored in encrypted VS Code secret storage)"/>
-      <p class="hint" id="f-auth-hint">Leave blank to keep existing key. For Gemini OAuth/Vertex modes, API key is not required.</p>
+      <p class="hint" id="f-auth-hint">Leave blank to keep existing credential. For Gemini OAuth/Vertex modes, API key is not required.</p>
 
-      <label for="f-auth-method">Auth Method (Gemini only)</label>
+      <label for="f-auth-method">Auth Method (Gemini / Anthropic)</label>
+      <p class="hint" style="margin-top:-4px">For Claude subscription, select <strong>Claude Subscription (Auth Token)</strong> then paste token in Credential.</p>
       <select id="f-auth-method">
         <option value="api_key">API Key</option>
         <option value="oauth_proxy">OAuth Identity via Proxy (no API key)</option>
         <option value="vertex_ai">GCP Vertex AI (ADC/OAuth)</option>
+      <option value="subscription">Claude Subscription (Auth Token)</option>
       </select>
 
       <label for="f-base-url">Custom Base URL (optional)</label>
@@ -478,8 +484,13 @@ export class AgentSettingsPanel {
 
     const MODELS = ${JSON.stringify(getAppData().providerModels)};
 
-    function normaliseAuthMethod(raw) {
-      return raw === 'gcp_adc' ? 'vertex_ai' : raw;
+    function normaliseAuthMethod(raw, providerType) {
+      if (providerType === 'gemini') {
+        const normalized = raw === 'gcp_adc' ? 'vertex_ai' : raw;
+        return ['api_key', 'oauth_proxy', 'vertex_ai'].includes(normalized) ? normalized : 'api_key';
+      }
+      if (providerType === 'anthropic') return raw === 'subscription' ? 'subscription' : 'api_key';
+      return 'api_key';
     }
 
     function parseLines(text) {
@@ -503,9 +514,10 @@ export class AgentSettingsPanel {
     function syncDefaultAuthControls() {
       const provider = document.getElementById('dp-provider').value;
       const isGemini = provider === 'gemini';
+      const isAnthropic = provider === 'anthropic';
       const authSel = document.getElementById('dp-auth');
-      authSel.disabled = !isGemini;
-      if (!isGemini) authSel.value = 'api_key';
+      authSel.disabled = !(isGemini || isAnthropic);
+      authSel.value = normaliseAuthMethod(authSel.value, provider);
       const isVertex = isGemini && authSel.value === 'vertex_ai';
       document.getElementById('dp-vertex-location-row').style.display = isVertex ? '' : 'none';
     }
@@ -513,14 +525,18 @@ export class AgentSettingsPanel {
     function syncAgentAuthControls() {
       const provider = document.getElementById('f-provider').value;
       const isGemini = provider === 'gemini';
+      const isAnthropic = provider === 'anthropic';
       const authSel = document.getElementById('f-auth-method');
       const hint = document.getElementById('f-auth-hint');
-      authSel.disabled = !isGemini;
-      if (!isGemini) authSel.value = 'api_key';
+      authSel.disabled = !(isGemini || isAnthropic);
+      authSel.value = normaliseAuthMethod(authSel.value, provider);
+
       if (isGemini && authSel.value !== 'api_key') {
         hint.textContent = 'OAuth/Vertex mode selected: API key is optional.';
+      } else if (isAnthropic && authSel.value === 'subscription') {
+        hint.textContent = 'Claude subscription mode selected: paste your Anthropic auth token as credential.';
       } else {
-        hint.textContent = 'Leave blank to keep existing key. For Gemini OAuth/Vertex modes, API key is not required.';
+        hint.textContent = 'Leave blank to keep existing credential. For Gemini OAuth/Vertex modes, API key is not required.';
       }
       const isVertex = isGemini && authSel.value === 'vertex_ai';
       document.getElementById('f-vertex-location-row').style.display = isVertex ? '' : 'none';
@@ -537,7 +553,7 @@ export class AgentSettingsPanel {
     function saveDefaultProvider() {
       const type = document.getElementById('dp-provider').value;
       const model = document.getElementById('dp-model').value;
-      const authMethod = type === 'gemini' ? normaliseAuthMethod(document.getElementById('dp-auth').value) : 'api_key';
+      const authMethod = normaliseAuthMethod(document.getElementById('dp-auth').value, type);
       const apiKey = document.getElementById('dp-apikey').value.trim();
       const baseUrl = document.getElementById('dp-base-url').value.trim() || null;
       const proxyUrl = document.getElementById('dp-proxy-url').value.trim() || null;
@@ -598,7 +614,7 @@ export class AgentSettingsPanel {
       document.getElementById('cl-base-url').value = cfg.base_url || '';
       document.getElementById('cl-proxy-url').value = cfg.proxy_url || '';
       const status = document.getElementById('classifier-status');
-      status.textContent = hasKey ? '✓ API key stored' : '';
+      status.textContent = hasKey ? '✓ Credential stored' : '';
     }
 
     // ── Per-agent provider fields toggle ──────────────────────────────────
@@ -630,7 +646,7 @@ export class AgentSettingsPanel {
         <div class="agent-item">
           <div class="agent-info">
             <div class="agent-name">@\${a.id} — \${a.name}</div>
-            <div class="agent-meta">\${a.category} · \${providerLabel} · API key: \${a.hasApiKey ? 'set' : 'NOT SET'}</div>
+            <div class="agent-meta">\${a.category} · \${providerLabel} · Credential: \${a.hasApiKey ? 'set' : 'NOT SET'}</div>
           </div>
           <div class="agent-actions">
             <button class="btn btn-secondary" onclick="showForm('\${a.id}')">Edit</button>
@@ -665,7 +681,7 @@ export class AgentSettingsPanel {
           document.getElementById('f-provider').value = a.provider.type;
           onProviderChange();
           document.getElementById('f-model').value = a.provider.model;
-          document.getElementById('f-auth-method').value = normaliseAuthMethod(a.provider.auth_method || 'api_key');
+          document.getElementById('f-auth-method').value = normaliseAuthMethod(a.provider.auth_method || 'api_key', a.provider.type);
           document.getElementById('f-base-url').value = a.provider.base_url || '';
           document.getElementById('f-proxy-url').value = a.provider.proxy_url || '';
           document.getElementById('f-vertex-location').value = a.provider.vertex_location || '';
@@ -710,9 +726,7 @@ export class AgentSettingsPanel {
       const useDefaultProvider = document.getElementById('f-use-default').checked;
       const providerType = document.getElementById('f-provider').value;
       const model = document.getElementById('f-model').value;
-      const authMethod = providerType === 'gemini'
-        ? normaliseAuthMethod(document.getElementById('f-auth-method').value)
-        : 'api_key';
+      const authMethod = normaliseAuthMethod(document.getElementById('f-auth-method').value, providerType);
       const baseUrl = document.getElementById('f-base-url').value.trim() || null;
       const proxyUrl = document.getElementById('f-proxy-url').value.trim() || null;
       const vertexLocation = document.getElementById('f-vertex-location').value.trim() || null;
@@ -807,14 +821,14 @@ export class AgentSettingsPanel {
           document.getElementById('dp-provider').value = msg.defaultProvider.type;
           onDefaultProviderChange();
           document.getElementById('dp-model').value = msg.defaultProvider.model;
-          document.getElementById('dp-auth').value = normaliseAuthMethod(msg.defaultProvider.auth_method || 'api_key');
+          document.getElementById('dp-auth').value = normaliseAuthMethod(msg.defaultProvider.auth_method || 'api_key', msg.defaultProvider.type);
           document.getElementById('dp-base-url').value = msg.defaultProvider.base_url || '';
           document.getElementById('dp-proxy-url').value = msg.defaultProvider.proxy_url || '';
           document.getElementById('dp-vertex-location').value = msg.defaultProvider.vertex_location || '';
           syncDefaultAuthControls();
         }
         document.getElementById('default-status').textContent =
-          msg.hasDefaultKey ? '✓ Default API key is set' : 'No default API key set';
+          msg.hasDefaultKey ? '✓ Default credential is set' : 'No default credential set';
         document.getElementById('default-status').style.opacity = '0.6';
         // Populate classifier fields
         if (msg.classifierProvider) {

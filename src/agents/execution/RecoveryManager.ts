@@ -141,6 +141,11 @@ export class RecoveryManager {
           : 'Declare file batch and write the first implementation file';
       }
 
+
+      if (trigger === 'REPEATED_BLOCKED_READS') {
+        this.execState.nextActions = [nextActionHint];
+      }
+
       const lastToolEntry = executedTools[executedTools.length - 1];
       const milestoneSummary = lastToolEntry
         ? `Last tool: ${lastToolEntry.name}${lastToolEntry.inputPath ? ` on ${lastToolEntry.inputPath}` : ''}`
@@ -153,7 +158,9 @@ export class RecoveryManager {
         systemPrompt: this.systemPrompt,
         executionStateSummary: stateSummary,
         workspaceSummary,
-        currentInstruction: nextActionHint,
+        currentInstruction: trigger === 'REPEATED_BLOCKED_READS'
+          ? `WRITE_ONLY RECOVERY: ${nextActionHint} Only use write_file/edit_file/run_command. Do not call read/list/search tools.`
+          : nextActionHint,
         currentStepToolResults: [],
         milestoneSummary,
       });

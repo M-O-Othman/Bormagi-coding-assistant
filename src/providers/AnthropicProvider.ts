@@ -3,7 +3,8 @@ import { ILLMProvider } from './ILLMProvider';
 import { ChatMessage, MCPToolDefinition, StreamEvent } from '../types';
 
 interface AnthropicProviderOptions {
-  apiKey: string;
+  credential?: string;
+  authMethod?: 'api_key' | 'subscription';
   model: string;
   baseUrl?: string;
   proxyUrl?: string;
@@ -19,7 +20,8 @@ export class AnthropicProvider implements ILLMProvider {
     this.model = options.model;
 
     const clientOptions: ConstructorParameters<typeof Anthropic>[0] = {
-      apiKey: options.apiKey
+      apiKey: options.authMethod === 'subscription' ? undefined : options.credential,
+      authToken: options.authMethod === 'subscription' ? options.credential : undefined
     };
 
     if (options.baseUrl) {
