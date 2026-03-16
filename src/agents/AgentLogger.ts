@@ -97,6 +97,12 @@ export class AgentLogger {
     this.section(`TOOL RESULT: ${name}`, this.truncate(result));
   }
 
+  /** Log a compact action breadcrumb for process tracing. */
+  logAction(action: string, detail?: string): void {
+    if (!this.enabled) { return; }
+    this.writeLine(`── ACTION: ${action}${detail ? ` | ${this.truncate(detail, 200)}` : ''}`);
+  }
+
   logModelText(text: string): void {
     if (!this.enabled) { return; }
     // Batch text output — don't write per-delta; caller should call this once per turn.

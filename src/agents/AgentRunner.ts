@@ -1344,6 +1344,7 @@ ${truncated}
       // Phase 1: PromptAssembler — code mode uses compact, no-history messages per EQ-15.
       // All other modes use prepareMessagesForProvider.
       let messagesForProvider: ChatMessage[];
+      let stepContractKind: 'discover' | 'mutate' | 'validate' = 'discover';
       if (mode === 'code') {
         // DD7: Build compact context packet from execution state for prompt assembly.
         const contextPacket = contextPacketBuilder.build(
@@ -1352,12 +1353,18 @@ ${truncated}
         const compactSummary = contextPacket.stateSummary;
         const compactWorkspace = contextPacket.workspaceSummary;
 
+        const stepContract = this.computeStepContract(execState);
+        stepContractKind = stepContract.kind;
+        const toolResultsForPrompt = stepContract.kind === 'mutate'
+          ? currentStepToolResults.slice(-2)
+          : [...currentStepToolResults];
+
         messagesForProvider = promptAssembler.assembleMessages({
           systemPrompt: isFirstIteration ? fullSystem : compactSystem,
           executionStateSummary: compactSummary,
           workspaceSummary: compactWorkspace,
           currentInstruction: effectiveUserContent,
-          currentStepToolResults: [...currentStepToolResults],
+          currentStepToolResults: toolResultsForPrompt,
           milestoneSummary: execState.lastExecutedTool
             ? `Last tool: ${execState.lastExecutedTool}`
             : undefined,
@@ -1366,6 +1373,8 @@ ${truncated}
           // FIX 2c / FIX 9: inject resolved file contents so model never re-reads
           resolvedFileContents: contextPacket.resolvedFileContents || undefined,
         });
+        messagesForProvider.push({ role: 'system', content: stepContract.instruction });
+        agentLog.logAction('STEP_CONTRACT', `${stepContract.kind}: ${stepContract.summary}`);
         isFirstIteration = false;
 
         // DD12: Record per-turn context cost telemetry.
@@ -1412,7 +1421,10 @@ ${truncated}
       agentLog.logProviderRequest(iterationCount, messagesForProvider, mode);
       agentLog.logExecutionState(iterationCount, execState);
 
-      for await (const event of provider.stream(messagesForProvider, this.filterToolsByMode(tools, mode), actualMaxOutputTokens)) {
+      const toolsForTurn = mode === 'code'
+        ? this.filterToolsByStepContract(this.filterToolsByMode(tools, mode), stepContractKind)
+        : this.filterToolsByMode(tools, mode);
+      for await (const event of provider.stream(messagesForProvider, toolsForTurn, actualMaxOutputTokens)) {
         if (event.type === 'provider_headers') {
           const importantHeaders = this.selectImportantHeaders(event.headers);
           await this.auditLogger.logLLMResponseHeaders(
@@ -3014,6 +3026,65 @@ ${truncated}
     }
     // code (default): all tools available
     return tools;
+  }
+
+  /**
+   * Apply step-contract tool narrowing inside code mode.
+   * This reduces read/write oscillation by constraining the tool surface per step.
+   */
+  private filterToolsByStepContract(
+    tools: MCPToolDefinition[],
+    contractKind: 'discover' | 'mutate' | 'validate'
+  ): MCPToolDefinition[] {
+    if (contractKind === 'mutate') {
+      const allowed = new Set(['write_file', 'edit_file', 'replace_range', 'multi_edit', 'run_command', 'update_task_state']);
+      return tools.filter(t => allowed.has(t.name));
+    }
+    if (contractKind === 'validate') {
+      const allowed = new Set(['run_command', 'get_diagnostics', 'git_diff', 'git_status', 'update_task_state']);
+      return tools.filter(t => allowed.has(t.name));
+    }
+    return tools;
+  }
+
+  /**
+   * Build a compact step contract that proactively directs model behaviour.
+   * Guards should become exceptional by making the intended step explicit.
+   */
+  private computeStepContract(
+    state: ExecutionStateData
+  ): { kind: 'discover' | 'mutate' | 'validate'; instruction: string; summary: string } {
+    const planned = state.plannedFileBatch ?? [];
+    const completed = state.completedBatchFiles ?? [];
+    const remaining = planned.filter(f => !completed.includes(f));
+    const phase = state.executionPhase ?? 'INITIALISING';
+
+    if (phase === 'VALIDATING_STEP') {
+      return {
+        kind: 'validate',
+        summary: 'validate recent mutations and capture results',
+        instruction: 'STEP CONTRACT (VALIDATE): Run validation/diagnostics now. Allowed tools: run_command, get_diagnostics, git_diff/git_status, update_task_state. Do not read/search unless strictly required by a failing test trace.'
+      };
+    }
+
+    if (phase === 'WRITE_ONLY' || remaining.length > 0 || (state.blockedReadCount ?? 0) >= 1) {
+      const nextFile = remaining[0];
+      return {
+        kind: 'mutate',
+        summary: nextFile
+          ? `mutate next scheduled file (${nextFile})`
+          : 'mutate now (write/edit) with no additional discovery',
+        instruction: nextFile
+          ? `STEP CONTRACT (MUTATE): Write or edit ${nextFile} now. Allowed tools: write_file, edit_file, replace_range, multi_edit, run_command, update_task_state. Do NOT call read/list/search tools in this step.`
+          : 'STEP CONTRACT (MUTATE): Perform a file mutation now. Allowed tools: write_file, edit_file, replace_range, multi_edit, run_command, update_task_state. Do NOT call read/list/search tools in this step.'
+      };
+    }
+
+    return {
+      kind: 'discover',
+      summary: 'perform minimal targeted discovery before next mutation',
+      instruction: 'STEP CONTRACT (DISCOVER): Use minimal targeted discovery (prefer read_file_range/read_symbol_block over broad list/search). After enough evidence, switch to a write/edit in the next step.'
+    };
   }
 
   /** Return a short system note describing workspace maturity to the model. */
