@@ -1525,12 +1525,40 @@ ${truncated}
           let toolResultContent: string;
 
           if (isFileWrite && toolCallPath && writtenPaths.has(toolCallPath)) {
-            const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
-            const rejection = `[SYSTEM ERROR] write_file REJECTED: "${toolCallPath}" was already written this task. The file has NOT been changed. You MUST use edit_file for any corrections to existing files. Written paths: ${pathList}. Proceed with remaining tasks or summarise.`;
-            agentLog.logToolResult(event.name, rejection);
-            turnMemory.addToolResult(event.name, rejection);
-            toolResultContent = `<tool_result name="${event.name}" status="error">\n${rejection}\n</tool_result>`;
-            onThought({ type: 'error', label: `Rewrite blocked: ${toolCallPath}`, detail: rejection, timestamp: new Date() });
+            const rewrittenContent = (event.input as Record<string, unknown>)?.content;
+            if (typeof rewrittenContent === 'string') {
+              // Preserve progress: repeated write_file attempts on the same path are
+              // auto-routed to edit_file instead of being hard-rejected.
+              const redirectedResult = await this.toolDispatcher.dispatch(
+                {
+                  type: 'tool_use',
+                  name: 'edit_file',
+                  input: { path: toolCallPath, content: rewrittenContent },
+                },
+                agentId,
+                onApproval,
+                onDiff,
+                onThought,
+              );
+              const redirectNote = `[AUTO-REDIRECT] write_file→edit_file for "${toolCallPath}" because it was already written this task.`;
+              const redirectedText = `${redirectedResult.text}\n${redirectNote}`;
+              agentLog.logToolResult('edit_file', redirectedText);
+              turnMemory.addToolResult('edit_file', redirectedText);
+              toolResultContent = `<tool_result name="edit_file">\n${this.truncateToolResult(redirectedText, 'edit_file', iterationCount, toolCallPath)}\n</tool_result>`;
+              stateManager.markToolExecuted(execState, 'edit_file', toolCallPath, redirectedText.slice(0, 150));
+              stateManager.markProgress(execState);
+              if (execState.executionPhase === 'WRITE_ONLY') {
+                stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
+                this.toolDispatcher.setExecutionPhase('EXECUTING_STEP');
+              }
+            } else {
+              const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
+              const rejection = `[SYSTEM ERROR] write_file REJECTED: "${toolCallPath}" was already written this task. The file has NOT been changed. You MUST use edit_file for any corrections to existing files. Written paths: ${pathList}. Proceed with remaining tasks or summarise.`;
+              agentLog.logToolResult(event.name, rejection);
+              turnMemory.addToolResult(event.name, rejection);
+              toolResultContent = `<tool_result name="${event.name}" status="error">\n${rejection}\n</tool_result>`;
+              onThought({ type: 'error', label: `Rewrite blocked: ${toolCallPath}`, detail: rejection, timestamp: new Date() });
+            }
           } else if (isFileWrite && toolCallPath && (() => {
             // ─── Batch enforcement (Phase 4) ─────────────────────────────────
             // Greenfield/scaffolded: must declare a batch before first write_file.
