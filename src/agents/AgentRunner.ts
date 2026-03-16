@@ -468,7 +468,7 @@ export class AgentRunner {
       projectName,
     });
     let fullSystem = skillsSection ? `${assembledSystem}\n\n${skillsSection}` : assembledSystem;
-    agentLog.logSystemPrompt(fullSystem);
+    agentLog.logSystemPrompt(fullSystem, agentConfig.system_prompt_files ?? []);
 
     if (kbEvidence && kbEvidence.chunks.length > 0) {
       const formattedEvidence = RetrievalService.formatEvidenceForPrompt(kbEvidence);
@@ -2069,6 +2069,34 @@ ${truncated}
         }
       }
 
+      // If the model emitted file content in plain assistant text (without tool calls),
+      // salvage it by materialising those files directly via write_file/edit_file tools.
+      if (!calledATool && turnAssistantText) {
+        const persistedCount = await this.persistAssistantGeneratedFiles(
+          turnAssistantText,
+          agentId,
+          writtenPaths,
+          messages,
+          currentStepToolResults,
+          execState,
+          stateManager,
+          toolsUsed,
+          onApproval,
+          onDiff,
+          onThought,
+        );
+        if (persistedCount > 0) {
+          calledATool = true;
+          continueLoop = true;
+          turnAssistantText = `${turnAssistantText}\n\n[Auto-persisted ${persistedCount} file block(s) from assistant output.]`;
+          onThought?.({
+            type: 'thinking',
+            label: `Auto-persisted ${persistedCount} file block(s) from assistant output`,
+            timestamp: new Date(),
+          });
+        }
+      }
+
       if (!calledATool) {
         // If the model narrated intent to call a tool (e.g. "Now let me read X:")
         // but emitted no function call, push a recovery nudge and re-enter the loop.
@@ -2802,6 +2830,103 @@ ${truncated}
     } catch {
       return true; // file not readable — approve by default
     }
+  }
+
+  /**
+   * Extract markdown file blocks from assistant prose and persist them via tools.
+   * This is a safety net for provider turns that render code in chat instead of
+   * issuing write_file/edit_file calls.
+   */
+  private async persistAssistantGeneratedFiles(
+    assistantText: string,
+    agentId: string,
+    writtenPaths: Set<string>,
+    messages: ChatMessage[],
+    currentStepToolResults: ChatMessage[],
+    execState: ExecutionStateData,
+    stateManager: ExecutionStateManager,
+    toolsUsed: string[],
+    onApproval: ApprovalCallback,
+    onDiff: DiffCallback,
+    onThought: ThoughtCallback,
+  ): Promise<number> {
+    const extracted = this.extractFileBlocksFromAssistantText(assistantText);
+    if (extracted.length === 0) {
+      return 0;
+    }
+
+    let persisted = 0;
+    for (const file of extracted) {
+      const normalizedPath = this.normalizeWorkspacePath(file.path);
+      if (!normalizedPath || normalizedPath.startsWith('.bormagi/')) {
+        continue;
+      }
+
+      const toolName = writtenPaths.has(normalizedPath) ? 'edit_file' : 'write_file';
+      const dispatchResult = await this.toolDispatcher.dispatch(
+        {
+          id: `autopersist-${Date.now()}-${persisted}`,
+          name: toolName,
+          input: { path: normalizedPath, content: file.content },
+        },
+        agentId,
+        onApproval,
+        onDiff,
+        onThought,
+      );
+
+      const toolMsg: ChatMessage = {
+        role: 'tool_result',
+        content: `<tool_result name="${toolName}">\n${dispatchResult.text}\n</tool_result>`,
+      };
+      messages.push(toolMsg);
+      currentStepToolResults.push(toolMsg);
+      toolsUsed.push(toolName);
+
+      if (dispatchResult.status === 'success') {
+        writtenPaths.add(normalizedPath);
+        stateManager.markFileWritten(execState, normalizedPath);
+        stateManager.markToolExecuted(execState, toolName, normalizedPath, dispatchResult.text.slice(0, 150));
+        stateManager.markProgress(execState);
+        persisted++;
+      }
+    }
+
+    return persisted;
+  }
+
+  /** Parse assistant markdown for file-oriented code fences. */
+  private extractFileBlocksFromAssistantText(text: string): Array<{ path: string; content: string }> {
+    const results: Array<{ path: string; content: string }> = [];
+    const seen = new Set<string>();
+
+    const push = (pathValue: string, contentValue: string) => {
+      const path = pathValue.trim().replace(/^['"`]|['"`]$/g, '');
+      const content = contentValue.replace(/\n$/, '');
+      if (!path || content.trim().length < 8) {
+        return;
+      }
+      if (!/^[a-zA-Z0-9_./-]+\.[a-zA-Z0-9_-]+$/.test(path)) {
+        return;
+      }
+      if (!seen.has(path)) {
+        seen.add(path);
+        results.push({ path, content });
+      }
+    };
+
+    const fileHeaderFence = /(?:^|\n)(?:\*\*\s*)?(?:file|path)\s*:\s*`?([^`\n]+)`?(?:\s*\*\*)?\s*\n```[^\n]*\n([\s\S]*?)```/gim;
+    let match: RegExpExecArray | null;
+    while ((match = fileHeaderFence.exec(text)) !== null) {
+      push(match[1], match[2]);
+    }
+
+    const pathFence = /(?:^|\n)```\s*([a-zA-Z0-9_./-]+\.[a-zA-Z0-9_-]+)\s*\n([\s\S]*?)```/gm;
+    while ((match = pathFence.exec(text)) !== null) {
+      push(match[1], match[2]);
+    }
+
+    return results;
   }
 
   // ─── Task 9: Repetitive narration detection ─────────────────────────────
