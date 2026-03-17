@@ -351,7 +351,7 @@ export class AuditLogger {
     agentId: string,
     fromMode: string,
     toMode: string,
-    source: 'user_picker' | 'slash_command' | 'auto_detect',
+    source: 'user_picker' | 'slash_command' | 'auto_detect' | 'system_default',
   ): Promise<void> {
     await this.log({ event: 'MODE_CHANGED', agent: agentId, fromMode, toMode, source });
   }

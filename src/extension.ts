@@ -330,9 +330,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         agentManager!
       );
       if (result) {
+        await chatController!.refreshAgentList();
+        const preferredAgentId = agentManager!.getAgent('advanced-coder') ? 'advanced-coder' : (agentManager!.listAgents()[0]?.id ?? undefined);
+        if (preferredAgentId) {
+          await chatController!.setActiveAgent(preferredAgentId);
+        }
+        await chatController!.setMode('code', 'system_default');
         statusBar!.update(chatController!.activeAgentName);
         vscode.window.showInformationMessage(
-          `Bormagi is ready! Role: ${result.role} · ${result.installedAgents.length} agent(s) installed.`
+          `Bormagi is ready! ${result.installedAgents.length} agent(s) installed. Active agent: ${chatController!.activeAgentName ?? 'none'} · Mode: Code.`
         );
       } else {
         // Wizard cancelled — surface a manual init command hint

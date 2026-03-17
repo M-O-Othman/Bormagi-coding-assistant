@@ -72,29 +72,46 @@ export class AgentLogger {
       if (idx === 0 && m.role === 'system') {
         return `${tag} ${this.systemPromptReference}`;
       }
-      return `${tag} ${this.truncate(m.content, 800)}`;
+      // Compact: show role + first 200 chars only. File contents are referenced, not dumped.
+      const preview = m.content.slice(0, 200).replace(/\n/g, ' ');
+      return `${tag} (${m.content.length} chars) ${preview}${m.content.length > 200 ? '…' : ''}`;
     }).join('\n');
     this.section(`MESSAGES → LLM  (call #${callIndex})`, formatted);
   }
 
   logToolCall(name: string, input: Record<string, unknown>): void {
     if (!this.enabled) { return; }
-    // Truncate large content fields (write_file payloads, etc.)
-    const sanitised = { ...input };
-    for (const key of ['content', 'content_markdown', 'slides_markdown']) {
-      if (typeof sanitised[key] === 'string') {
-        const val = sanitised[key] as string;
-        sanitised[key] = val.length > this.maxChars
-          ? `${val.slice(0, this.maxChars)}… [${val.length} chars total]`
-          : val;
+    // For write tools, log path + content length only (not full content).
+    if (['write_file', 'edit_file', 'replace_range', 'multi_edit'].includes(name)) {
+      const summary: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(input)) {
+        if (k === 'content' && typeof v === 'string') {
+          const lines = v.split('\n').length;
+          summary[k] = `[${lines} lines, ${v.length} chars]`;
+        } else if (k === 'content_markdown' && typeof v === 'string') {
+          summary[k] = `[${v.length} chars]`;
+        } else {
+          summary[k] = v;
+        }
       }
+      this.section(`TOOL CALL: ${name}`, JSON.stringify(summary, null, 2));
+    } else {
+      this.section(`TOOL CALL: ${name}`, JSON.stringify(input, null, 2));
     }
-    this.section(`TOOL CALL: ${name}`, JSON.stringify(sanitised, null, 2));
   }
 
   logToolResult(name: string, result: string): void {
     if (!this.enabled) { return; }
-    this.section(`TOOL RESULT: ${name}`, this.truncate(result));
+    // For file-read tools, log a compact digest instead of the full content.
+    if (['read_file', 'read_file_range', 'read_head'].includes(name) && result.length > 500) {
+      const lines = result.split('\n');
+      const preview = lines.slice(0, 5).join('\n');
+      const lineCount = lines.length;
+      this.section(`TOOL RESULT: ${name}`,
+        `${preview}\n… [${lineCount} lines, ${result.length} chars total]`);
+    } else {
+      this.section(`TOOL RESULT: ${name}`, this.truncate(result));
+    }
   }
 
   /** Log a compact action breadcrumb for process tracing. */
@@ -105,8 +122,12 @@ export class AgentLogger {
 
   logModelText(text: string): void {
     if (!this.enabled) { return; }
-    // Batch text output — don't write per-delta; caller should call this once per turn.
-    this.section('MODEL TEXT', this.truncate(text));
+    // Log a compact version: first 500 chars + total length.
+    if (text.length > 500) {
+      this.section('MODEL TEXT', `${text.slice(0, 500)}\n… [${text.length} chars total]`);
+    } else {
+      this.section('MODEL TEXT', text);
+    }
   }
 
   logTokenUsage(callIndex: number, input: number, output: number, cacheRead = 0, cacheCreate = 0): void {
@@ -136,6 +157,51 @@ export class AgentLogger {
     this.writeLine(
       `\n── SESSION END  tools=[${toolsUsed.join(', ')}]  ${new Date().toISOString()} ──\n`
     );
+  }
+
+  // ─── Runtime events (previously UI-only onThought messages) ─────────────────
+
+  /** Log a runtime event that was previously only shown in the chat UI via onThought. */
+  logEvent(label: string, detail?: string): void {
+    if (!this.enabled) { return; }
+    const detailSuffix = detail ? `  ${this.truncate(detail, 300)}` : '';
+    this.writeLine(`── EVENT: ${label}${detailSuffix}`);
+  }
+
+  /** Log session configuration at startup (runtime engine settings, template, etc.). */
+  logSessionConfig(config: Record<string, unknown>): void {
+    if (!this.enabled) { return; }
+    const lines = Object.entries(config)
+      .map(([k, v]) => `  ${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+      .join('\n');
+    this.section('SESSION CONFIG', lines);
+  }
+
+  /** Log request size estimate before provider call. */
+  logRequestSize(estimate: {
+    systemChars: number; historyChars: number; userChars: number;
+    toolSchemaChars: number; totalBytes: number; estimatedInputTokens: number;
+    contextCacheHit: boolean;
+  }): void {
+    if (!this.enabled) { return; }
+    const lines = [
+      `  system: ${estimate.systemChars} chars`,
+      `  history: ${estimate.historyChars} chars`,
+      `  user: ${estimate.userChars} chars`,
+      `  toolSchema: ${estimate.toolSchemaChars} chars`,
+      `  total: ${estimate.totalBytes} bytes (~${estimate.estimatedInputTokens} input tokens)`,
+      `  cacheHit: ${estimate.contextCacheHit}`,
+    ];
+    this.section('REQUEST SIZE', lines.join('\n'));
+  }
+
+  /** Log session health score at the end of a run. */
+  logSessionHealth(score: number, details: Record<string, unknown>): void {
+    if (!this.enabled) { return; }
+    const lines = Object.entries(details)
+      .map(([k, v]) => `  ${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+      .join('\n');
+    this.section(`SESSION HEALTH: ${score}/100`, lines);
   }
 
   // ─── FIX 8: Comprehensive structured logging ────────────────────────────────

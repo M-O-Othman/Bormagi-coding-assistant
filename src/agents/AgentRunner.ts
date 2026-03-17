@@ -379,6 +379,20 @@ export class AgentRunner {
     const requestId = `${agentId}-${Date.now()}`;
     const agentLog = new AgentLogger(this.workspaceRoot, agentId);
     agentLog.sessionStart(mode);
+
+    // Wrap onThought so every UI event is also captured in the log file.
+    // Uses a separate variable name to avoid parameter reassignment warnings.
+    const _origOnThought = onThought;
+    const onThoughtLogged: ThoughtCallback = (event) => {
+      agentLog.logEvent(
+        `[${event.type.toUpperCase()}] ${event.label}`,
+        event.detail,
+      );
+      _origOnThought(event);
+    };
+    // eslint-disable-next-line no-param-reassign
+    onThought = onThoughtLogged;
+
     const enhancedPipeline = vsConfig.get<boolean>('contextPipeline.enabled', false);
 
     // ─── Phase-1: Git Capabilities & Pre-Edit State (FR-001, FR-006, FR-020) ─
@@ -1044,6 +1058,9 @@ export class AgentRunner {
       // a proper assistant turn to messages before each tool result. Without this,
       // the model cannot see its own prior tool calls and rewrites files repeatedly.
       let turnAssistantText = '';
+      // Track where this iteration's tools start in the cumulative toolsUsed array,
+      // so inferStepContract sees only this turn's tools, not the full session.
+      const turnToolStartIdx = toolsUsed.length;
 
       agentLog.logApiCall(iterationCount + 1, messages);
       if (isFirstModelRequest) {
@@ -1684,9 +1701,17 @@ ${truncated}
             toolPathCounts.set(toolPathKey, toolPathCount);
 
             let toolResult: DispatchResult;
+
+            // Pre-dispatch budget guard: block the Nth consecutive read BEFORE dispatching
+            // so we don't waste an API call on a read that will just be overwritten.
+            const isPreDispatchReadBlock =
+              (execState.executionPhase ?? 'DISCOVERING') !== 'WRITE_ONLY' &&
+              ['read_file', 'list_files', 'search_files', 'glob_files', 'grep_content'].includes(event.name) &&
+              consecutiveReadCount >= 2 && writtenPaths.size === 0;
+
             const shouldForceWriteOnlyForLoop =
               (execState.executionPhase ?? 'DISCOVERING') !== 'WRITE_ONLY' &&
-              toolPathCount >= 3 &&
+              (toolPathCount >= 2 || isPreDispatchReadBlock) &&
               ['read_file', 'list_files', 'search_files'].includes(event.name);
             if (shouldForceWriteOnlyForLoop) {
               // FIX 3b: Hard state transition to WRITE_ONLY — no more reads allowed.
@@ -2197,7 +2222,9 @@ ${truncated}
       // Phase 2.2 — StepContract inference
       // Classify the iteration outcome and drive loop continuation.
       {
-        const contract = inferStepContract(toolsUsed, turnAssistantText || lastAssistantText, execState.runPhase ?? 'RUNNING');
+        // Use only the tools from this iteration, not the cumulative session list.
+        const turnTools = toolsUsed.slice(turnToolStartIdx);
+        const contract = inferStepContract(turnTools, turnAssistantText || lastAssistantText, execState.runPhase ?? 'RUNNING');
         onThought?.({
           type: 'thinking',
           label: `[StepContract] kind=${contract.kind}${contract.toolName ? ` tool=${contract.toolName}` : ''}`,
@@ -3067,7 +3094,11 @@ ${truncated}
       };
     }
 
-    if (phase === 'WRITE_ONLY' || remaining.length > 0 || (state.blockedReadCount ?? 0) >= 1) {
+    // If inputs are resolved and at least one read has happened, transition to mutate.
+    const hasResolvedInputs = (state.resolvedInputs ?? []).length > 0;
+    const hasCompletedReads = (state.iterationsUsed ?? 0) >= 1 && hasResolvedInputs;
+
+    if (phase === 'WRITE_ONLY' || remaining.length > 0 || (state.blockedReadCount ?? 0) >= 1 || hasCompletedReads) {
       const nextFile = remaining[0];
       return {
         kind: 'mutate',

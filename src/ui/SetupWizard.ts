@@ -1,11 +1,11 @@
-// ─── NF2-UX-003: Role-based onboarding wizard ──────────────────────────────
+// ─── NF2-UX-003: Simplified onboarding wizard ──────────────────────────────
 //
 // Shown on first launch when no .bormagi/ folder is detected.
 // Guides the user through:
-//   1. Role selection (Developer / Architect / Business Analyst / Reviewer)
-//   2. Workspace default provider configuration (type + model)
-//   3. API key entry
-//   4. Predefined agent installation (pre-selected per role)
+//   1. Workspace default provider configuration (type + model)
+//   2. API key/token entry (when required)
+//
+// Then installs all predefined agents by default.
 //
 // Uses VS Code's native QuickPick and InputBox — no custom webview needed.
 
@@ -43,24 +43,10 @@ export class SetupWizard {
     agentManager: AgentManager
   ): Promise<SetupWizardResult | null> {
 
-    // ── Step 1: Welcome + Role selection ──────────────────────────────────────
+    // ── Step 1: Provider selection ───────────────────────────────────────────
 
     const { onboarding, providerPresets } = getAppData();
-    const roleItems = onboarding.roles.map(r => ({
-      label: r.id as UserRole,
-      description: r.description,
-    }));
-
-    const rolePick = await vscode.window.showQuickPick(roleItems, {
-      title: 'Bormagi Setup (1/4) — What is your primary role?',
-      placeHolder: 'Select the role that best describes how you will use Bormagi',
-      ignoreFocusOut: true,
-    });
-
-    if (!rolePick) { return null; }
-    const role = rolePick.label as UserRole;
-
-    // ── Step 2: Provider selection ────────────────────────────────────────────
+    const role: UserRole = 'Developer';
 
     const providerItems = providerPresets.map(p => ({
       label: p.label,
@@ -69,7 +55,7 @@ export class SetupWizard {
     }));
 
     const providerPick = await vscode.window.showQuickPick(providerItems, {
-      title: 'Bormagi Setup (2/4) — Choose a default AI provider',
+      title: 'Bormagi Setup (1/2) — Choose a default AI provider',
       placeHolder: 'You can change this later in Agent Settings',
       ignoreFocusOut: true,
     });
@@ -79,7 +65,7 @@ export class SetupWizard {
 
     // Allow custom model name
     const modelName = await vscode.window.showInputBox({
-      title: 'Bormagi Setup (2/4) — Model name',
+      title: 'Bormagi Setup (1/2) — Model name',
       prompt: `Enter the model name for ${preset.label}`,
       value: preset.defaultModel,
       ignoreFocusOut: true,
@@ -104,7 +90,7 @@ export class SetupWizard {
           ];
 
       const authPick = await vscode.window.showQuickPick<{ label: string; value: AuthMethod; description: string }>(authItems, {
-        title: 'Bormagi Setup (2/4) — Authentication method',
+        title: 'Bormagi Setup (1/2) — Authentication method',
         placeHolder: `Choose auth method for ${preset.label}`,
         ignoreFocusOut: true,
       });
@@ -119,7 +105,7 @@ export class SetupWizard {
 
     if (preset.type === 'openai_compatible') {
       const urlInput = await vscode.window.showInputBox({
-        title: 'Bormagi Setup (2/4) — API base URL',
+        title: 'Bormagi Setup (1/2) — API base URL',
         prompt: 'Enter the OpenAI-compatible API base URL for this provider.',
         placeHolder: 'e.g. http://localhost:11434/v1  (Ollama)  or  https://openrouter.ai/api/v1',
         ignoreFocusOut: true,
@@ -138,7 +124,7 @@ export class SetupWizard {
       auth_method: selectedAuthMethod,
     };
 
-    // ── Step 3: API key entry (skip for non-api_key auth; optional for openai_compatible) ──
+    // ── Step 2: API key/token entry (skip for non-key methods) ───────────────
 
     let apiKey: string | null = null;
 
@@ -146,8 +132,8 @@ export class SetupWizard {
       const keyOptional = preset.type === 'openai_compatible';
       const keyInput = await vscode.window.showInputBox({
         title: selectedAuthMethod === 'subscription'
-          ? `Bormagi Setup (3/4) — ${preset.label} subscription token`
-          : `Bormagi Setup (3/4) — ${preset.label} API key`,
+          ? `Bormagi Setup (2/2) — ${preset.label} subscription token`
+          : `Bormagi Setup (2/2) — ${preset.label} API key`,
         prompt: selectedAuthMethod === 'subscription'
           ? `Paste your ${preset.label} auth token from your subscription session. Stored in VS Code SecretStorage.`
           : (keyOptional
@@ -163,26 +149,8 @@ export class SetupWizard {
       apiKey = keyInput.trim() || null;
     }
 
-    // ── Step 4: Predefined agents ──────────────────────────────────────────────
-
-    const recommended = onboarding.roles.find(r => r.id === role)?.recommendedAgents ?? [];
-    const allAgents = onboarding.availableAgents;
-
-    const agentItems = allAgents.map(id => ({
-      label: id,
-      description: recommended.includes(id) ? '★ Recommended for your role' : undefined,
-      picked: recommended.includes(id),
-    }));
-
-    const agentPick = await vscode.window.showQuickPick(agentItems, {
-      title: `Bormagi Setup (4/4) — Install agents (recommended for ${role} pre-selected)`,
-      placeHolder: 'Select agents to install now. You can add more later.',
-      canPickMany: true,
-      ignoreFocusOut: true,
-    });
-
-    if (!agentPick) { return null; }
-    const selectedAgentIds = agentPick.map(a => a.label);
+    // ── Step 3: Install all predefined agents by default ──────────────────────
+    const selectedAgentIds = onboarding.availableAgents.slice();
 
     // ── Persist configuration ─────────────────────────────────────────────────
 

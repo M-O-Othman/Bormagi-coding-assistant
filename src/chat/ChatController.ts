@@ -447,9 +447,14 @@ export class ChatController {
     }
   }
 
+  /** Programmatically set mode (used by onboarding defaults). */
+  async setMode(newMode: string, source: 'user_picker' | 'slash_command' | 'auto_detect' | 'system_default' = 'system_default'): Promise<void> {
+    await this.applyModeChange(newMode, source);
+  }
+
   private async applyModeChange(
     newMode: string,
-    source: 'user_picker' | 'slash_command' | 'auto_detect'
+    source: 'user_picker' | 'slash_command' | 'auto_detect' | 'system_default'
   ): Promise<void> {
     const prevMode = this.currentMode;
     this.currentMode = newMode;
