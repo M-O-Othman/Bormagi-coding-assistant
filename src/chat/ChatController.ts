@@ -87,6 +87,10 @@ export class ChatController {
     private readonly runner: AgentRunner,
     private readonly undoManager: UndoManager
   ) {
+    // Wire inline approval to DiffManager so file diffs show in chat, not popup dialogs
+    this.diffManager.setInlineApproval((prompt, actions, meta) =>
+      this.requestInlineAction(prompt, actions, meta)
+    );
     this.startGitPolling();
   }
 
@@ -298,6 +302,17 @@ export class ChatController {
         },
         // userMode — pass explicitly selected mode so AgentRunner doesn't auto-override it
         this.currentMode as import('../context/types').AssistantMode,
+        // onSandboxApproval — inline chat card with scope options
+        async (prompt, actions) => {
+          const result = await this.requestInlineAction(prompt, actions, { kind: 'command', risk: 'medium' });
+          void this.auditLogger.logApprovalDecision(
+            Math.random().toString(36).slice(2),
+            'command',
+            result === 'Deny' || !result ? 'denied' : 'approved',
+            agentId
+          );
+          return result;
+        },
       );
     } catch (err) {
       this.post({ type: 'error', message: String(err) });
@@ -637,6 +652,17 @@ export class ChatController {
             this.post({ type: 'context_update', items, tokenHealth });
           },
           this.currentMode as import('../context/types').AssistantMode,
+          // onSandboxApproval — inline chat card with scope options
+          async (sandboxPrompt, actions) => {
+            const result = await this.requestInlineAction(sandboxPrompt, actions, { kind: 'command', risk: 'medium' });
+            void this.auditLogger.logApprovalDecision(
+              Math.random().toString(36).slice(2),
+              'command',
+              result === 'Deny' || !result ? 'denied' : 'approved',
+              agentId
+            );
+            return result;
+          },
         );
       } catch (err) {
         this.post({ type: 'error', message: `Ralph Loop iteration ${iteration} error: ${String(err)}` });
@@ -903,6 +929,11 @@ export class ChatController {
     return undefined;
   }
 
+  /** Signal the currently running agent to stop after its current iteration. */
+  stopCurrentRun(): void {
+    this.runner.stopCurrentRun();
+  }
+
   private estimateCost(model: string, totalInputTokens: number, totalOutputTokens: number): number {
     const p = getAppData().pricing[model];
     if (!p) return 0;
@@ -910,11 +941,15 @@ export class ChatController {
   }
 
   /** Post an inline action card to the webview and await the user's choice. */
-  private requestInlineAction(prompt: string, actions: string[]): Promise<string | undefined> {
+  private requestInlineAction(
+    prompt: string,
+    actions: string[],
+    meta?: { kind?: 'edit' | 'command' | 'network' | 'git' | 'external_tool'; reason?: string; scope?: string[]; risk?: 'low' | 'medium' | 'high' }
+  ): Promise<string | undefined> {
     const id = Math.random().toString(36).slice(2);
     return new Promise(resolve => {
       this._pendingActions.set(id, resolve);
-      this.post({ type: 'action_request', id, prompt, actions });
+      this.post({ type: 'action_request', id, prompt, actions, ...meta });
     });
   }
 

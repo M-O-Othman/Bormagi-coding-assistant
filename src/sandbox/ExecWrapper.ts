@@ -23,6 +23,11 @@ export class ExecWrapper {
         private rawExecute: RawExecuteCallback
     ) { }
 
+    /** Replace the prompt callback (e.g. to route through inline chat cards instead of modal dialogs). */
+    setPromptUser(fn: PromptApprovalCallback): void {
+        this.promptUser = fn;
+    }
+
     public async guardedCommand(
         taskId: string,
         userId: string,

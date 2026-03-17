@@ -202,8 +202,14 @@ function resize() {
 // ── Send ───────────────────────────────────────────────────────────────────
 
 function sendMessage() {
+  if (isStreaming) {
+    vscode.postMessage({ type: 'stop_agent' });
+    sendBtn.disabled = true;
+    sendBtn.title = 'Stopping…';
+    return;
+  }
   const text = inputEl.value.trim();
-  if (!text || isStreaming) return;
+  if (!text) return;
   // Save to input history
   if (inputHistory[0] !== text) inputHistory.unshift(text);
   if (inputHistory.length > 50) inputHistory.length = 50;
@@ -318,7 +324,9 @@ function appendUserMsg(text) {
 
 function beginStream() {
   isStreaming = true;
-  sendBtn.disabled = true;
+  sendBtn.classList.add('stop-mode');
+  sendBtn.title = 'Stop (Enter)';
+  sendBtn.disabled = false;
   typingRow.style.display = 'flex';
   typingLabel.textContent = (activeAgentId || 'Agent') + ' is thinking…';
   setStatus((activeAgentName || activeAgentId || 'Agent') + ' is responding…', 'active');
@@ -461,6 +469,8 @@ window.toggleThoughtDetail = function (id, btn, fullText) {
 
 function endStream() {
   isStreaming = false;
+  sendBtn.classList.remove('stop-mode');
+  sendBtn.title = 'Send (Enter)';
   sendBtn.disabled = false;
   typingRow.style.display = 'none';
 

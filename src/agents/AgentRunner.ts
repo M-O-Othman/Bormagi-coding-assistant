@@ -113,6 +113,8 @@ export class AgentRunner {
   private readonly hookEngine: HookEngine;
   private activeSandbox: SandboxHandle | null = null;
   private execWrapper: ExecWrapper | null = null;
+  /** Set to true by stopCurrentRun() to signal the main loop to exit early. */
+  private abortRequested = false;
   private readonly gitService: GitService;
   private readonly checkpointManager: CheckpointManager;
   private readonly validationService: ValidationService;
@@ -146,28 +148,14 @@ export class AgentRunner {
       this.execWrapper = new ExecWrapper(
         this.policyEngine,
         this.approvalService,
-        // Interactive user prompt for execution policy overrides
-        async (cmd, reason, rule) => {
-          const res = await vscode.window.showWarningMessage(
-            `Sandbox Policy: Agent wants to run a shell command.\nCommand: ${cmd}\nMatched Rule: ${rule}`,
-            { modal: true },
-            'Allow Once',
-            'Allow for Task',
-            'Allow for Project',
-            'Deny'
-          );
-
-          if (res === 'Allow Once') return { allow: true, scope: 'once' };
-          if (res === 'Allow for Task') return { allow: true, scope: 'task' };
-          if (res === 'Allow for Project') return { allow: true, scope: 'project' };
-
+        // Default prompt — will be replaced with inline chat callback during run()
+        async (_cmd, _reason, _rule) => {
           return { allow: false, scope: 'once' };
         },
         // Real execute via MCP
         async (cmd) => {
           try {
             const tc = { name: 'run_command', input: { command: cmd } };
-            // Depending on how MCP returns, we will fake a 0 exit code on success.
             const res = await this.mcpHost.callTool('terminal', tc);
             const text = res.content.map(c => c.text).join('\n');
             return { stdout: text, stderr: '', exitCode: 0, durationMs: 0 };
@@ -191,6 +179,11 @@ export class AgentRunner {
     return this.checkpointManager;
   }
 
+  /** Request the current agent run to stop after the current iteration. */
+  stopCurrentRun(): void {
+    this.abortRequested = true;
+  }
+
 
   async run(
     agentId: string,
@@ -206,11 +199,38 @@ export class AgentRunner {
     onCheckpointCreated?: CheckpointCreatedCallback,
     onContextUpdate?: ContextUpdateCallback,
     userMode?: import('../context/types').AssistantMode,
+    onSandboxApproval?: (prompt: string, actions: string[]) => Promise<string | undefined>,
   ): Promise<void> {
+    // Reset abort flag at the start of each run
+    this.abortRequested = false;
+
     const agentConfig = this.agentManager.getAgent(agentId);
     if (!agentConfig) {
       onText(`Agent "${agentId}" not found.`);
       return;
+    }
+
+    // Wire sandbox command approval through the inline chat card system
+    if (this.execWrapper) {
+      this.execWrapper.setPromptUser(async (cmd, _reason, rule) => {
+        const prompt =
+          `**Sandbox Policy:** Agent wants to run a shell command.\n` +
+          `**Command:** \`${cmd}\`\n` +
+          (rule ? `**Matched Rule:** ${rule}` : '');
+
+        if (onSandboxApproval) {
+          // Use inline chat card with scope options
+          const result = await onSandboxApproval(prompt, ['Allow Once', 'Allow for Task', 'Allow for Project', 'Deny']);
+          if (result === 'Allow Once') return { allow: true, scope: 'once' as const };
+          if (result === 'Allow for Task') return { allow: true, scope: 'task' as const };
+          if (result === 'Allow for Project') return { allow: true, scope: 'project' as const };
+          return { allow: false, scope: 'once' as const };
+        }
+
+        // Fallback to simple onApproval (Allow/Deny only)
+        const result = await onApproval(prompt);
+        return { allow: result, scope: 'once' as const };
+      });
     }
 
     // Resolve effective provider:
@@ -1079,6 +1099,13 @@ export class AgentRunner {
     await mcpStartPromise;
 
     while (continueLoop) {
+      // ── User-initiated stop ─────────────────────────────────────────────────
+      if (this.abortRequested) {
+        onText('\n\n**Session stopped by user.**');
+        onThought({ type: 'thinking', label: 'User interrupted the session', timestamp: new Date() });
+        break;
+      }
+
       // Phase 4: terminal state check — exit immediately if runPhase is no longer RUNNING
       if ((execState.runPhase ?? 'RUNNING') !== 'RUNNING') {
         const phase = execState.runPhase!;

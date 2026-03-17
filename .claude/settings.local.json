@@ -21,7 +21,14 @@
       "Bash(ls:*)",
       "Bash(git apply:*)",
       "Bash(git push:*)",
-      "Bash(find C:UsersmothmDownloadsnew_bormagiBormagi-coding-assistant -type f \\\\\\(-name *README* -o -name *help* -o -name *onboard* -o -path */docs/* \\\\\\))"
+      "Bash(find C:UsersmothmDownloadsnew_bormagiBormagi-coding-assistant -type f \\\\\\(-name *README* -o -name *help* -o -name *onboard* -o -path */docs/* \\\\\\))",
+      "Bash(/dev/null -A 30)",
+      "Bash(/dev/null -A 40)",
+      "Bash(/dev/null -B 5 -A 10)",
+      "Bash(/dev/null -A 15)",
+      "Bash(/dev/null -A 10)",
+      "Bash(/dev/null -B 2 -A 5)",
+      "Bash(/dev/null -A 3)"
     ]
   }
 }

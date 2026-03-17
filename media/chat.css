@@ -560,6 +560,26 @@
       cursor: not-allowed;
     }
 
+    #send-btn .stop-icon {
+      display: none;
+    }
+
+    #send-btn.stop-mode {
+      background: var(--vscode-inputValidation-errorBorder, #be1100);
+    }
+
+    #send-btn.stop-mode:hover {
+      opacity: 0.85;
+    }
+
+    #send-btn.stop-mode .send-icon {
+      display: none;
+    }
+
+    #send-btn.stop-mode .stop-icon {
+      display: block;
+    }
+
     #input-hint {
       font-size: 10px;
       opacity: 0.28;
