@@ -22,7 +22,21 @@ export interface ValidationResult {
 }
 
 export class ValidationService {
+    private npmAvailable: boolean | null = null;
+
     constructor(private workspaceRoot: string) { }
+
+    /** Check once whether npm is available on this machine. */
+    private async isNpmAvailable(): Promise<boolean> {
+        if (this.npmAvailable !== null) return this.npmAvailable;
+        try {
+            await execAsync('npm --version', { timeout: 5000 });
+            this.npmAvailable = true;
+        } catch {
+            this.npmAvailable = false;
+        }
+        return this.npmAvailable;
+    }
 
     /** Find known testing frameworks in the ecosystem */
     private autoDetectCommands(): string[] {
@@ -54,6 +68,19 @@ export class ValidationService {
                     source: "custom",
                     severity: "info",
                     message: "No standard validation commands auto-detected (e.g. package.json scripts missing)."
+                }],
+                rawOutput: ""
+            };
+        }
+
+        // Skip validation entirely if npm is not installed
+        if (!(await this.isNpmAvailable())) {
+            return {
+                ok: true,
+                diagnostics: [{
+                    source: "custom",
+                    severity: "info",
+                    message: "npm is not installed — skipping validation. File writes are unaffected."
                 }],
                 rawOutput: ""
             };

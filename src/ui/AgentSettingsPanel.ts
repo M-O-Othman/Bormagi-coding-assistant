@@ -5,6 +5,7 @@ import { ConfigManager } from '../config/ConfigManager';
 import { AgentConfig, ProviderConfig, ProviderType } from '../types';
 import { getAppData } from '../data/DataStore';
 import { normaliseAuthMethodForProvider } from '../providers/AuthSupport';
+import { EnvironmentChecker, EnvironmentReport } from '../config/EnvironmentChecker';
 
 type PanelMode = 'list' | 'new' | 'edit';
 
@@ -238,6 +239,13 @@ export class AgentSettingsPanel {
         await this.sendAgentList();
         break;
       }
+
+      case 'check_environment': {
+        const checker = new EnvironmentChecker();
+        const report = await checker.check();
+        this.panel.webview.postMessage({ type: 'environment_report', report });
+        break;
+      }
     }
   }
 
@@ -335,6 +343,19 @@ export class AgentSettingsPanel {
     #default-status { font-size: 12px; margin-top: 8px; min-height: 16px; }
     .btn-secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
     .btn-secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    .env-card { padding: 12px 14px; border: 1px solid var(--vscode-panel-border, #444); border-radius: 6px; background: var(--vscode-editorWidget-background); margin-bottom: 20px; }
+    .env-card h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+    .env-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 10px; }
+    .env-table th, .env-table td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--vscode-panel-border, #333); }
+    .env-table th { opacity: 0.6; font-weight: 600; }
+    .env-status-ok { color: var(--vscode-terminal-ansiGreen); }
+    .env-status-miss { color: var(--vscode-errorForeground); }
+    .env-status-err { color: var(--vscode-editorWarning-foreground, orange); }
+    .env-impact { font-size: 11px; opacity: 0.7; margin-top: 2px; }
+    .env-install { font-size: 11px; opacity: 0.6; font-style: italic; }
+    .env-summary { display: flex; gap: 16px; font-size: 12px; margin-top: 8px; }
+    .env-os-info { font-size: 12px; opacity: 0.75; margin-bottom: 8px; }
+    .env-warning { font-size: 11px; color: var(--vscode-editorWarning-foreground, orange); margin-bottom: 4px; }
   </style>
 </head>
 <body>
@@ -343,6 +364,16 @@ export class AgentSettingsPanel {
     <strong>Auth update:</strong> Anthropic now supports <strong>Claude Subscription (Auth Token)</strong> in both
     <em>Workspace Default Provider</em> and <em>Individual Agent Provider</em> sections.
   </p>
+
+  <!-- Environment Check Card -->
+  <div class="env-card">
+    <h3>Host Environment <span style="font-size:11px;opacity:0.5;font-weight:400;margin-left:6px">What works on this machine</span></h3>
+    <div id="env-content">
+      <p style="opacity:0.5;font-size:12px">Click the button below to scan your system.</p>
+    </div>
+    <button class="btn btn-secondary" onclick="checkEnvironment()" id="env-check-btn">Check Environment</button>
+    <div id="env-status" style="font-size:12px;min-height:16px;margin-top:6px"></div>
+  </div>
 
   <!-- Default Provider Card -->
   <div class="default-card">
@@ -671,6 +702,69 @@ export class AgentSettingsPanel {
       vscode.postMessage({ type: 'save_classifier_provider', provider: null });
     }
 
+    function checkEnvironment() {
+      document.getElementById('env-check-btn').disabled = true;
+      document.getElementById('env-status').textContent = 'Scanning…';
+      vscode.postMessage({ type: 'check_environment' });
+    }
+
+    function renderEnvironmentReport(report) {
+      const el = document.getElementById('env-content');
+      let html = '';
+
+      // OS info
+      html += '<div class="env-os-info">';
+      html += '<strong>OS:</strong> ' + report.os.friendly + ' &nbsp;|&nbsp; ';
+      html += '<strong>Arch:</strong> ' + report.os.arch + ' &nbsp;|&nbsp; ';
+      html += '<strong>Node:</strong> ' + report.nodeVersion + ' &nbsp;|&nbsp; ';
+      html += '<strong>Shell:</strong> ' + report.shell;
+      html += '</div>';
+
+      // Path warnings
+      if (report.pathInfo.warnings.length > 0) {
+        for (const w of report.pathInfo.warnings) {
+          html += '<div class="env-warning">⚠ ' + w + '</div>';
+        }
+      }
+
+      // Tools table
+      html += '<table class="env-table"><thead><tr>';
+      html += '<th>Tool</th><th>Status</th><th>Version</th><th>Purpose</th>';
+      html += '</tr></thead><tbody>';
+      for (const t of report.tools) {
+        const cls = t.status === 'available' ? 'env-status-ok' : t.status === 'missing' ? 'env-status-miss' : 'env-status-err';
+        const icon = t.status === 'available' ? '✓' : t.status === 'missing' ? '✗' : '⚠';
+        html += '<tr>';
+        html += '<td><strong>' + t.name + '</strong></td>';
+        html += '<td class="' + cls + '">' + icon + ' ' + t.status + '</td>';
+        html += '<td>' + (t.version || '—') + '</td>';
+        html += '<td>' + t.purpose;
+        if (t.status !== 'available') {
+          html += '<div class="env-impact"><strong>Impact:</strong> ' + t.impact + '</div>';
+          html += '<div class="env-install"><strong>Install:</strong> ' + t.installHint + '</div>';
+        }
+        html += '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+
+      // Summary
+      html += '<div class="env-summary">';
+      html += '<span class="env-status-ok">✓ ' + report.summary.available + ' available</span>';
+      if (report.summary.missing > 0) {
+        html += '<span class="env-status-miss">✗ ' + report.summary.missing + ' missing</span>';
+      }
+      if (report.summary.errors > 0) {
+        html += '<span class="env-status-err">⚠ ' + report.summary.errors + ' error(s)</span>';
+      }
+      html += '</div>';
+
+      el.innerHTML = html;
+      document.getElementById('env-check-btn').disabled = false;
+      document.getElementById('env-check-btn').textContent = 'Re-check Environment';
+      document.getElementById('env-status').textContent = 'Last checked: ' + new Date(report.checkedAt).toLocaleTimeString();
+    }
+
     function runGcloudAuth(authType) {
       vscode.postMessage({ type: 'run_gcloud_auth', authType });
     }
@@ -960,6 +1054,8 @@ export class AgentSettingsPanel {
             el.style.color = 'var(--vscode-terminal-ansiGreen)';
           }
         });
+      } else if (msg.type === 'environment_report') {
+        renderEnvironmentReport(msg.report);
       } else if (msg.type === 'error') {
         showStatus(msg.message, false);
       }
@@ -971,6 +1067,8 @@ export class AgentSettingsPanel {
     onProviderChange();
     document.getElementById('f-auth-method').addEventListener('change', syncAgentAuthControls);
     vscode.postMessage({ type: 'get_agents' });
+    // Auto-run environment check on panel open
+    checkEnvironment();
   </script>
 </body>
 </html>`;

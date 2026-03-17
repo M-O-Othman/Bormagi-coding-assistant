@@ -146,6 +146,11 @@
         "command": "bormagi.switchMode",
         "title": "Bormagi: Switch Mode (Ask / Plan / Code)",
         "category": "Bormagi"
+      },
+      {
+        "command": "bormagi.checkEnvironment",
+        "title": "Bormagi: Check Environment",
+        "category": "Bormagi"
       }
     ],
     "configuration": {
@@ -641,6 +646,10 @@
         {
           "command": "bormagi.resetExecutionState",
           "when": "workspaceFolderCount > 0 && config.bormagi.developerMode"
+        },
+        {
+          "command": "bormagi.checkEnvironment",
+          "when": "workspaceFolderCount > 0"
         }
       ]
     }

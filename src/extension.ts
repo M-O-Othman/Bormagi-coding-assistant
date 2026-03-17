@@ -6,6 +6,7 @@ import { ConfigManager } from './config/ConfigManager';
 import { verifyAuditLog } from './audit/AuditVerifier';
 import { SecretsManager } from './config/SecretsManager';
 import { GitignoreManager } from './config/GitignoreManager';
+import { EnvironmentChecker, EnvironmentReport } from './config/EnvironmentChecker';
 import { AgentManager } from './agents/AgentManager';
 import { AgentRunner } from './agents/AgentRunner';
 import { MemoryManager } from './agents/MemoryManager';
@@ -46,6 +47,7 @@ let agentManager: AgentManager | undefined;
 let chatController: ChatController | undefined;
 let mcpHost: MCPHost | undefined;
 let statusBar: StatusBar | undefined;
+let lastEnvReport: EnvironmentReport | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   // Initialise DataStore first — all other components depend on it.
@@ -268,6 +270,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('bormagi.disableSandbox', async () => {
       await vscode.workspace.getConfiguration('bormagi').update('sandbox.enabled', false, vscode.ConfigurationTarget.Global);
       vscode.window.showWarningMessage('Bormagi Sandbox disabled. Agents will write directly to your workspace.');
+    }),
+
+    vscode.commands.registerCommand('bormagi.checkEnvironment', async () => {
+      const checker = new EnvironmentChecker();
+      const report = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'Bormagi: Checking environment…' },
+        () => checker.check()
+      );
+      lastEnvReport = report;
+      showEnvironmentReport(report);
     })
   );
 
@@ -313,6 +325,31 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
   }
 
+  // ─── Environment check (non-blocking) ────────────────────────────────────
+  const envChecker = new EnvironmentChecker();
+  envChecker.check().then(report => {
+    lastEnvReport = report;
+    // Notify user if critical tools are missing
+    const missing = report.tools.filter(t => t.status === 'missing');
+    const critical = missing.filter(t => t.name === 'git');
+    if (critical.length > 0) {
+      const names = critical.map(t => t.name).join(', ');
+      vscode.window.showWarningMessage(
+        `Bormagi: Critical tool(s) missing: ${names}. Some features will be unavailable.`,
+        'View Details'
+      ).then(action => {
+        if (action === 'View Details') {
+          vscode.commands.executeCommand('bormagi.checkEnvironment');
+        }
+      });
+    } else if (missing.length > 0) {
+      const names = missing.map(t => t.name).join(', ');
+      vscode.window.showInformationMessage(
+        `Bormagi: Optional tool(s) not found: ${names}. Run "Bormagi: Check Environment" for details.`
+      );
+    }
+  }).catch(() => { /* non-critical */ });
+
   // ─── Auto-initialise or run first-launch wizard ───────────────────────────
   const existingConfig = await configManager.readProjectConfig();
   if (existingConfig) {
@@ -353,6 +390,57 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }, 800);
   }
+}
+
+function showEnvironmentReport(report: EnvironmentReport): void {
+  const lines: string[] = [];
+  lines.push(`# Bormagi — Environment Report`);
+  lines.push(``);
+  lines.push(`## System`);
+  lines.push(`- **OS:** ${report.os.friendly}`);
+  lines.push(`- **Architecture:** ${report.os.arch}`);
+  lines.push(`- **Node.js:** ${report.nodeVersion}`);
+  lines.push(`- **Shell:** ${report.shell}`);
+  lines.push(`- **Path separator:** ${report.pathInfo.separator}`);
+  if (report.pathInfo.warnings.length > 0) {
+    lines.push(``);
+    lines.push(`### Path Warnings`);
+    for (const w of report.pathInfo.warnings) {
+      lines.push(`- ⚠ ${w}`);
+    }
+  }
+  lines.push(``);
+  lines.push(`## Tools`);
+  lines.push(``);
+  lines.push(`| Tool | Status | Version | Purpose |`);
+  lines.push(`|------|--------|---------|---------|`);
+  for (const t of report.tools) {
+    const icon = t.status === 'available' ? '✅' : t.status === 'missing' ? '❌' : '⚠️';
+    lines.push(`| ${t.name} | ${icon} ${t.status} | ${t.version ?? '—'} | ${t.purpose} |`);
+  }
+
+  const missing = report.tools.filter(t => t.status !== 'available');
+  if (missing.length > 0) {
+    lines.push(``);
+    lines.push(`## Impact of Missing Tools`);
+    for (const t of missing) {
+      lines.push(``);
+      lines.push(`### ${t.name} (${t.status})`);
+      lines.push(`- **Impact:** ${t.impact}`);
+      lines.push(`- **Install:** ${t.installHint}`);
+    }
+  }
+
+  lines.push(``);
+  lines.push(`## Summary`);
+  lines.push(`- **Available:** ${report.summary.available} | **Missing:** ${report.summary.missing} | **Errors:** ${report.summary.errors}`);
+  lines.push(`- Checked at: ${report.checkedAt}`);
+
+  // Show as a virtual document
+  const content = lines.join('\n');
+  vscode.workspace.openTextDocument({ content, language: 'markdown' }).then(doc => {
+    vscode.window.showTextDocument(doc, { preview: true });
+  });
 }
 
 export async function deactivate(): Promise<void> {
