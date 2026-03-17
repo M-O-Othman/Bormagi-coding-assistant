@@ -345,7 +345,8 @@ export class AgentRunner {
     const projectName = projectConfig?.project.name ?? '';
 
     // 1. Classify mode — use explicitly set userMode if provided, otherwise auto-detect.
-    //    When a classifierProvider is configured, delegate to the secondary LLM.
+    //    OPT-4: When userMode is explicitly set, skip the LLM classifier (2-5s saved).
+    //    Still run the regex classifier for modeDecision metadata (confidence, reason).
     let modeDecision = classifyMode(userMessage);
     if (!userMode) {
       const classifierProviderCfg = await this.configManager.readClassifierProvider();
@@ -925,7 +926,10 @@ export class AgentRunner {
     const providerConfig = { ...agentConfig, provider: effectiveProvider };
     const provider = ProviderFactory.create(providerConfig, apiKey);
 
-    if (shouldCompact(historyTokens, profile, sessionHistory.length)) {
+    // OPT-5: Skip compaction entirely when history is empty or very short.
+    // shouldCompact already checks messageCount >= 6 and token threshold,
+    // but we add an explicit fast-path to avoid even estimating tokens on fresh sessions.
+    if (sessionHistory.length > 0 && historyTokens > 0 && shouldCompact(historyTokens, profile, sessionHistory.length)) {
       onThought({
         type: 'thinking',
         label: 'Compacting conversation history…',
@@ -1018,10 +1022,12 @@ export class AgentRunner {
       SILENT_TRIGGER_PATTERNS.some(p => p.test(userMessage)) || forceSilentOnResume;
     // V2 — Nudge retry cap: prevent infinite nudge loops (max 2 retries per run).
     let nudgeRetryCount = 0;
-    const MAX_NUDGE_RETRIES = 2;
-    // Phase 5.2 — Silent reprompt counter: max 2 reprompts before treating as blocked
+    // OPT-6: Reduced from 2 to 1 — each retry costs a full LLM round-trip.
+    // If the model narrates instead of acting after 1 nudge, further nudges rarely help.
+    const MAX_NUDGE_RETRIES = 1;
+    // Phase 5.2 — Silent reprompt counter: max 1 reprompt before treating as blocked
     let silentRepromptCount = 0;
-    const MAX_SILENT_REPROMPTS = 2;
+    const MAX_SILENT_REPROMPTS = 1;
     // Bug-fix004 item 15 — ProgressGuard: track productive vs non-productive turns
     const progressGuard = new ProgressGuard();
     // #15 — Milestone stopping: pause the session every N writes so the agent
@@ -1826,10 +1832,11 @@ ${truncated}
               ['read_file', 'list_files', 'search_files', 'glob_files', 'grep_content'].includes(event.name) &&
               consecutiveReadCount >= 2 && writtenPaths.size === 0;
 
+            // OPT-7: Aligned tool list with isPreDispatchReadBlock (was missing glob_files, grep_content)
             const shouldForceWriteOnlyForLoop =
               (execState.executionPhase ?? 'DISCOVERING') !== 'WRITE_ONLY' &&
               (toolPathCount >= 2 || isPreDispatchReadBlock) &&
-              ['read_file', 'list_files', 'search_files'].includes(event.name);
+              ['read_file', 'list_files', 'search_files', 'glob_files', 'grep_content'].includes(event.name);
             if (shouldForceWriteOnlyForLoop) {
               // FIX 3b: Hard state transition to WRITE_ONLY — no more reads allowed.
               stateManager.setExecutionPhase(execState, 'WRITE_ONLY');
@@ -1951,27 +1958,17 @@ ${truncated}
             );
             toolResultContent = `<tool_result name="${event.name}">\n${truncatedResult}\n</tool_result>`;
 
-            // ─── #6 Discovery budget enforcement ─────────────────────────────
-            // Count consecutive reads with no writes. After the threshold,
-            // replace the tool result with a hard directive and set the
-            // execution phase to EXECUTING_STEP to force a write.
+            // ─── OPT-7: Consolidated discovery budget counter ─────────────────
+            // Track consecutive reads/writes for the pre-dispatch guard (layer 2).
+            // The post-dispatch override (old layer 3) has been removed — the
+            // pre-dispatch guard at consecutiveReadCount >= 2 and the ToolDispatcher's
+            // WRITE_ONLY/discoveryLocked checks (layer 1) handle blocking.
             const isReadOnlyTool = ['read_file', 'list_files', 'search_files', 'glob_files', 'grep_content'].includes(event.name);
             const isWriteOrActionTool = ['write_file', 'edit_file', 'run_command', 'replace_range', 'multi_edit'].includes(event.name);
             if (isReadOnlyTool) {
               consecutiveReadCount++;
             } else if (isWriteOrActionTool) {
               consecutiveReadCount = 0;
-            }
-            if (consecutiveReadCount >= 3 && writtenPaths.size === 0) {
-              // Hard override at 3 reads: replace the tool result content, activate
-              // discovery lock in ToolDispatcher, and force execution phase.
-              // This prevents the advisory-only behaviour that allowed 6+ reads.
-              toolResultContent = `[DISCOVERY BUDGET EXCEEDED] ${consecutiveReadCount} consecutive reads with no writes. Further discovery calls will be BLOCKED. You MUST call write_file or edit_file now. Do not read, list, or search any more files.`;
-              stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
-              // Activate hard lockout in ToolDispatcher so subsequent reads are rejected
-              this.toolDispatcher.lockDiscovery();
-              // Activate silent execution to suppress narration and force tool calls
-              silentExecution = true;
             }
 
             if (isFileWrite && toolCallPath && toolResult.status === 'success' && toolResult.text.startsWith('File written')) {
