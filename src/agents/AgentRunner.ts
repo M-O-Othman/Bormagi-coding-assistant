@@ -3489,6 +3489,25 @@ ${truncated}
 
     if (phase === 'WRITE_ONLY' || remaining.length > 0 || (state.blockedReadCount ?? 0) >= 1 || hasCompletedReads) {
       const nextFile = remaining[0];
+
+      // Forcefully update nextActions and nextToolCall so the execution state
+      // is authoritative — stale discovery guidance must not leak into mutate steps.
+      if (nextFile) {
+        state.nextActions = [`Write ${nextFile} now. Generate the full file content.`];
+        if (!state.nextToolCall || state.nextToolCall.input?.path !== nextFile) {
+          state.nextToolCall = {
+            tool: 'write_file',
+            input: { path: nextFile },
+            description: `Write ${nextFile} (LLM must generate content)`,
+          };
+        }
+      } else {
+        // Generic mutate — clear stale discovery actions
+        if (state.nextActions.length > 0 && state.nextActions[0]?.toLowerCase().includes('read')) {
+          state.nextActions = ['Perform file mutation now — write or edit the next file.'];
+        }
+      }
+
       return {
         kind: 'mutate',
         summary: nextFile
