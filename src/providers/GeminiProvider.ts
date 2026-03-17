@@ -19,6 +19,10 @@ interface GeminiProviderOptions {
   proxyUrl?: string;
   /** GCP region for Vertex AI, e.g. "europe-west4". Overrides env vars when set. */
   vertexLocation?: string;
+  /** GCP project ID for Vertex AI. Overrides env vars and gcloud config when set. */
+  gcpProjectId?: string;
+  /** Vertex AI API version, e.g. "v1" or "v1beta1". Defaults to "v1". */
+  vertexApiVersion?: string;
 }
 
 export class GeminiProvider implements ILLMProvider {
@@ -29,6 +33,8 @@ export class GeminiProvider implements ILLMProvider {
   private readonly baseUrl?: string;
   private readonly proxyUrl?: string;
   private readonly vertexLocation?: string;
+  private readonly gcpProjectId?: string;
+  private readonly vertexApiVersion: string;
   private readonly apiClient: GoogleGenerativeAI | null;
 
   constructor(options: GeminiProviderOptions) {
@@ -38,6 +44,8 @@ export class GeminiProvider implements ILLMProvider {
     this.baseUrl = options.baseUrl?.trim() || undefined;
     this.proxyUrl = options.proxyUrl?.trim() || undefined;
     this.vertexLocation = options.vertexLocation?.trim() || undefined;
+    this.gcpProjectId = options.gcpProjectId?.trim() || undefined;
+    this.vertexApiVersion = options.vertexApiVersion?.trim() || 'v1';
 
     if (this.authMethod === 'api_key') {
       if (!this.apiKey) {
@@ -105,6 +113,12 @@ export class GeminiProvider implements ILLMProvider {
   }
 
   private getGcpProjectId(): string {
+    // 1. Explicit config from agent settings takes priority
+    if (this.gcpProjectId) {
+      return this.gcpProjectId;
+    }
+
+    // 2. Environment variables
     const fromEnv = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT;
     if (fromEnv?.trim()) {
       return fromEnv.trim();
@@ -196,7 +210,7 @@ export class GeminiProvider implements ILLMProvider {
     const location = this.getVertexLocation();
     headers['x-goog-user-project'] = projectId;
     // proxyUrl is a network proxy, not the API endpoint — use baseUrl or the default
-    const base = this.stripTrailingSlash(this.baseUrl || `https://${location}-aiplatform.googleapis.com/v1`);
+    const base = this.stripTrailingSlash(this.baseUrl || `https://${location}-aiplatform.googleapis.com/${this.vertexApiVersion}`);
     const modelId = this.model.replace(/^models\//, '');
     const url = `${base}/projects/${projectId}/locations/${location}/publishers/google/models/${modelId}:streamGenerateContent?alt=sse`;
     return { url, headers };

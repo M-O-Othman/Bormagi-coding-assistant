@@ -40,7 +40,9 @@ export class ProviderFactory {
           authMethod: normaliseAuthMethodForProvider('gemini', provider.auth_method) as 'api_key' | 'oauth_proxy' | 'vertex_ai' | 'gcp_adc',
           baseUrl: provider.base_url ?? undefined,
           proxyUrl: provider.proxy_url ?? undefined,
-          vertexLocation: provider.vertex_location ?? undefined
+          vertexLocation: provider.vertex_location ?? undefined,
+          gcpProjectId: provider.gcp_project_id ?? undefined,
+          vertexApiVersion: provider.vertex_api_version ?? undefined
         });
 
       case 'deepseek':

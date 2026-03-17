@@ -38,6 +38,10 @@ export interface ProviderConfig {
   auth_method: AuthMethod;
   /** GCP region for Vertex AI, e.g. "europe-west4". Overrides env vars. */
   vertex_location?: string | null;
+  /** GCP project ID for Vertex AI. Overrides env vars and gcloud config. */
+  gcp_project_id?: string | null;
+  /** Vertex AI API version, e.g. "v1" or "v1beta1". Defaults to "v1". */
+  vertex_api_version?: string | null;
 }
 
 export interface MCPServerConfig {

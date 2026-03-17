@@ -193,6 +193,31 @@ export class AgentSettingsPanel {
         break;
       }
 
+      case 'run_gcloud_auth': {
+        const authType = msg.authType as string;
+        const command = authType === 'adc'
+          ? 'gcloud auth application-default login'
+          : 'gcloud auth login';
+        const terminal = vscode.window.createTerminal({ name: `Bormagi — ${command}` });
+        terminal.show();
+        terminal.sendText(command);
+        this.panel.webview.postMessage({ type: 'gcloud_auth_started', authType });
+        break;
+      }
+
+      case 'run_gcloud_set_project': {
+        const projectId = msg.projectId as string;
+        if (!projectId?.trim()) {
+          this.panel.webview.postMessage({ type: 'error', message: 'Project ID is required.' });
+          return;
+        }
+        const terminal = vscode.window.createTerminal({ name: 'Bormagi — gcloud set project' });
+        terminal.show();
+        terminal.sendText(`gcloud config set project ${projectId.trim()}`);
+        this.panel.webview.postMessage({ type: 'gcloud_project_set' });
+        break;
+      }
+
       case 'save_classifier_provider': {
         const provider = msg.provider as ProviderConfig | null;
         const apiKey = msg.apiKey as string | undefined;
@@ -350,9 +375,29 @@ export class AgentSettingsPanel {
       <option value="vertex_ai">GCP Vertex AI (ADC/OAuth)</option>
       <option value="subscription">Claude Subscription (Auth Token)</option>
     </select>
-    <div id="dp-vertex-location-row" style="display:none">
-      <label for="dp-vertex-location">Vertex AI Region</label>
-      <input id="dp-vertex-location" type="text" placeholder="europe-west4"/>
+    <div id="dp-vertex-fields" style="display:none">
+      <label for="dp-gcp-project-id">GCP Project ID</label>
+      <input id="dp-gcp-project-id" type="text" placeholder="my-gcp-project-123"/>
+      <p class="hint">Overrides env vars and gcloud config. Leave blank to auto-detect from gcloud.</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <label for="dp-vertex-location">Vertex AI Region</label>
+          <input id="dp-vertex-location" type="text" placeholder="us-central1"/>
+        </div>
+        <div>
+          <label for="dp-vertex-api-version">API Version</label>
+          <select id="dp-vertex-api-version">
+            <option value="v1">v1 (stable)</option>
+            <option value="v1beta1">v1beta1 (preview features)</option>
+          </select>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        <button class="btn btn-secondary" onclick="runGcloudAuth('adc')" title="Opens a terminal and runs gcloud auth application-default login">Run gcloud ADC Login</button>
+        <button class="btn btn-secondary" onclick="runGcloudAuth('user')" title="Opens a terminal and runs gcloud auth login">Run gcloud auth login</button>
+        <button class="btn btn-secondary" onclick="runGcloudSetProject('dp')" title="Runs gcloud config set project with the Project ID above">Set gcloud project</button>
+      </div>
+      <div id="dp-gcloud-status" style="font-size:12px;min-height:16px;margin-bottom:8px"></div>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn" onclick="saveDefaultProvider()">Save Default Provider</button>
@@ -465,9 +510,29 @@ export class AgentSettingsPanel {
       <label for="f-proxy-url">Proxy URL (optional)</label>
       <input id="f-proxy-url" type="text" placeholder="https://proxy.example.com"/>
 
-      <div id="f-vertex-location-row" style="display:none">
-        <label for="f-vertex-location">Vertex AI Region</label>
-        <input id="f-vertex-location" type="text" placeholder="europe-west4"/>
+      <div id="f-vertex-fields" style="display:none">
+        <label for="f-gcp-project-id">GCP Project ID</label>
+        <input id="f-gcp-project-id" type="text" placeholder="my-gcp-project-123"/>
+        <p class="hint">Overrides env vars and gcloud config. Leave blank to auto-detect from gcloud.</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <label for="f-vertex-location">Vertex AI Region</label>
+            <input id="f-vertex-location" type="text" placeholder="us-central1"/>
+          </div>
+          <div>
+            <label for="f-vertex-api-version">API Version</label>
+            <select id="f-vertex-api-version">
+              <option value="v1">v1 (stable)</option>
+              <option value="v1beta1">v1beta1 (preview features)</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+          <button class="btn btn-secondary" onclick="runGcloudAuth('adc')" title="Opens a terminal and runs gcloud auth application-default login">Run gcloud ADC Login</button>
+          <button class="btn btn-secondary" onclick="runGcloudAuth('user')" title="Opens a terminal and runs gcloud auth login">Run gcloud auth login</button>
+          <button class="btn btn-secondary" onclick="runGcloudSetProject('f')" title="Runs gcloud config set project with the Project ID above">Set gcloud project</button>
+        </div>
+        <div id="f-gcloud-status" style="font-size:12px;min-height:16px;margin-bottom:8px"></div>
       </div>
     </div>
 
@@ -519,7 +584,7 @@ export class AgentSettingsPanel {
       authSel.disabled = !(isGemini || isAnthropic);
       authSel.value = normaliseAuthMethod(authSel.value, provider);
       const isVertex = isGemini && authSel.value === 'vertex_ai';
-      document.getElementById('dp-vertex-location-row').style.display = isVertex ? '' : 'none';
+      document.getElementById('dp-vertex-fields').style.display = isVertex ? '' : 'none';
     }
 
     function syncAgentAuthControls() {
@@ -539,7 +604,7 @@ export class AgentSettingsPanel {
         hint.textContent = 'Leave blank to keep existing credential. For Gemini OAuth/Vertex modes, API key is not required.';
       }
       const isVertex = isGemini && authSel.value === 'vertex_ai';
-      document.getElementById('f-vertex-location-row').style.display = isVertex ? '' : 'none';
+      document.getElementById('f-vertex-fields').style.display = isVertex ? '' : 'none';
     }
 
     // ── Default provider section ───────────────────────────────────────────
@@ -558,9 +623,11 @@ export class AgentSettingsPanel {
       const baseUrl = document.getElementById('dp-base-url').value.trim() || null;
       const proxyUrl = document.getElementById('dp-proxy-url').value.trim() || null;
       const vertexLocation = document.getElementById('dp-vertex-location').value.trim() || null;
+      const gcpProjectId = document.getElementById('dp-gcp-project-id').value.trim() || null;
+      const vertexApiVersion = document.getElementById('dp-vertex-api-version').value || null;
       vscode.postMessage({
         type: 'save_default_provider',
-        provider: { type, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod, vertex_location: vertexLocation },
+        provider: { type, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod, vertex_location: vertexLocation, gcp_project_id: gcpProjectId, vertex_api_version: vertexApiVersion },
         apiKey: apiKey || undefined
       });
     }
@@ -602,6 +669,21 @@ export class AgentSettingsPanel {
 
     function clearClassifierProvider() {
       vscode.postMessage({ type: 'save_classifier_provider', provider: null });
+    }
+
+    function runGcloudAuth(authType) {
+      vscode.postMessage({ type: 'run_gcloud_auth', authType });
+    }
+
+    function runGcloudSetProject(prefix) {
+      const projectId = document.getElementById(prefix + '-gcp-project-id').value.trim();
+      if (!projectId) {
+        const statusEl = document.getElementById(prefix + '-gcloud-status');
+        statusEl.textContent = '⚠ Enter a Project ID first.';
+        statusEl.style.color = 'var(--vscode-errorForeground)';
+        return;
+      }
+      vscode.postMessage({ type: 'run_gcloud_set_project', projectId });
     }
 
     function populateClassifierCard(cfg, hasKey) {
@@ -685,6 +767,8 @@ export class AgentSettingsPanel {
           document.getElementById('f-base-url').value = a.provider.base_url || '';
           document.getElementById('f-proxy-url').value = a.provider.proxy_url || '';
           document.getElementById('f-vertex-location').value = a.provider.vertex_location || '';
+          document.getElementById('f-gcp-project-id').value = a.provider.gcp_project_id || '';
+          document.getElementById('f-vertex-api-version').value = a.provider.vertex_api_version || 'v1';
           document.getElementById('f-apikey').value = '';
           syncAgentAuthControls();
           onUseDefaultChange();
@@ -706,6 +790,8 @@ export class AgentSettingsPanel {
         document.getElementById('f-base-url').value = '';
         document.getElementById('f-proxy-url').value = '';
         document.getElementById('f-vertex-location').value = '';
+        document.getElementById('f-gcp-project-id').value = '';
+        document.getElementById('f-vertex-api-version').value = 'v1';
         document.getElementById('f-apikey').value = '';
         syncAgentAuthControls();
         onUseDefaultChange();
@@ -730,6 +816,8 @@ export class AgentSettingsPanel {
       const baseUrl = document.getElementById('f-base-url').value.trim() || null;
       const proxyUrl = document.getElementById('f-proxy-url').value.trim() || null;
       const vertexLocation = document.getElementById('f-vertex-location').value.trim() || null;
+      const gcpProjectId = document.getElementById('f-gcp-project-id').value.trim() || null;
+      const vertexApiVersion = document.getElementById('f-vertex-api-version').value || null;
       const apiKey = document.getElementById('f-apikey').value;
 
       if (!id || !name) {
@@ -752,7 +840,7 @@ export class AgentSettingsPanel {
             description,
             enabled: existing.enabled !== false,
             useDefaultProvider,
-            provider: { type: providerType, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod, vertex_location: vertexLocation },
+            provider: { type: providerType, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod, vertex_location: vertexLocation, gcp_project_id: gcpProjectId, vertex_api_version: vertexApiVersion },
             system_prompt_files: Array.isArray(existing.system_prompt_files) && existing.system_prompt_files.length > 0
               ? existing.system_prompt_files
               : ['system-prompt.md'],
@@ -766,7 +854,7 @@ export class AgentSettingsPanel {
             description,
             enabled: true,
             useDefaultProvider,
-            provider: { type: providerType, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod, vertex_location: vertexLocation },
+            provider: { type: providerType, model, base_url: baseUrl, proxy_url: proxyUrl, auth_method: authMethod, vertex_location: vertexLocation, gcp_project_id: gcpProjectId, vertex_api_version: vertexApiVersion },
             system_prompt_files: ['system-prompt.md'],
             mcp_servers: [],
             context_filter: defaultContextFilter()
@@ -825,6 +913,8 @@ export class AgentSettingsPanel {
           document.getElementById('dp-base-url').value = msg.defaultProvider.base_url || '';
           document.getElementById('dp-proxy-url').value = msg.defaultProvider.proxy_url || '';
           document.getElementById('dp-vertex-location').value = msg.defaultProvider.vertex_location || '';
+          document.getElementById('dp-gcp-project-id').value = msg.defaultProvider.gcp_project_id || '';
+          document.getElementById('dp-vertex-api-version').value = msg.defaultProvider.vertex_api_version || 'v1';
           syncDefaultAuthControls();
         }
         document.getElementById('default-status').textContent =
@@ -853,6 +943,23 @@ export class AgentSettingsPanel {
       } else if (msg.type === 'apply_default_done') {
         document.getElementById('default-status').textContent = '✓ Applied to ' + msg.count + ' agent(s). Refresh the chat sidebar to see changes.';
         document.getElementById('default-status').style.color = 'var(--vscode-terminal-ansiGreen)';
+      } else if (msg.type === 'gcloud_auth_started') {
+        const label = msg.authType === 'adc' ? 'ADC login' : 'gcloud auth login';
+        ['dp-gcloud-status', 'f-gcloud-status'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) {
+            el.textContent = '✓ ' + label + ' opened in terminal. Complete the flow there, then save.';
+            el.style.color = 'var(--vscode-terminal-ansiGreen)';
+          }
+        });
+      } else if (msg.type === 'gcloud_project_set') {
+        ['dp-gcloud-status', 'f-gcloud-status'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) {
+            el.textContent = '✓ gcloud project set command sent to terminal.';
+            el.style.color = 'var(--vscode-terminal-ansiGreen)';
+          }
+        });
       } else if (msg.type === 'error') {
         showStatus(msg.message, false);
       }
