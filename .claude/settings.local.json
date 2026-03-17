@@ -16,7 +16,11 @@
       "Bash(cat:*)",
       "Read(//tmp/**)",
       "Bash(jq:*)",
-      "Bash(npm show:*)"
+      "Bash(npm show:*)",
+      "Bash(sed:*)",
+      "Bash(ls:*)",
+      "Bash(git apply:*)",
+      "Bash(git push:*)"
     ]
   }
 }

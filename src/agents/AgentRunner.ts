@@ -626,6 +626,60 @@ export class AgentRunner {
       this.toolDispatcher.seedReadCache(execState.resolvedInputs);
     }
 
+    // ─── OPT-2: Pre-load file references from user message ──────────────────
+    // When the user names specific files (e.g. "modify clock.html", "create app.js"),
+    // pre-read existing files into resolvedInputContents so the model can skip
+    // the list_files → read_file discovery iterations entirely.
+    const isLikelyContinue = /^(continue|proceed|go ahead|why did you stop|keep going)/i.test(userMessage.trim());
+    if (mode === 'code' && !isLikelyContinue) {
+      // Extract filenames: match patterns like "file.ext", "src/foo/bar.ts", etc.
+      const fileRefPattern = /(?:^|\s|["'`(])([a-zA-Z0-9_./\\-]+\.[a-zA-Z]{1,10})(?=[\s"'`),.:;!?]|$)/g;
+      const mentionedFiles = new Set<string>();
+      let fileMatch: RegExpExecArray | null;
+      while ((fileMatch = fileRefPattern.exec(userMessage)) !== null) {
+        const candidate = fileMatch[1].replace(/\\/g, '/');
+        // Filter out URLs, version numbers, and common non-file patterns
+        if (candidate.includes('://') || /^\d+\.\d+/.test(candidate)) { continue; }
+        // Filter out common non-file extensions
+        if (/\.(com|org|net|io|ai)$/i.test(candidate)) { continue; }
+        mentionedFiles.add(candidate);
+      }
+
+      if (mentionedFiles.size > 0) {
+        const MAX_STORED_CONTENT_CHARS = 6000;
+        const MAX_TOTAL_STORED_CHARS = 24000;
+        execState.resolvedInputContents ??= {};
+
+        for (const filePath of mentionedFiles) {
+          const normalizedPath = this.normalizeWorkspacePath(filePath);
+          // Skip files already resolved from a prior session
+          if (execState.resolvedInputs.includes(normalizedPath)) { continue; }
+          if (execState.resolvedInputContents[normalizedPath]) { continue; }
+
+          const absPath = path.isAbsolute(filePath)
+            ? filePath
+            : path.join(this.workspaceRoot, filePath);
+          try {
+            const content = await fs.readFile(absPath, 'utf8');
+            // File exists — pre-load it
+            stateManager.markFileRead(execState, normalizedPath, content);
+            this.toolDispatcher.cacheReadResult(filePath, content);
+            const currentTotal = Object.values(execState.resolvedInputContents)
+              .reduce((sum, c) => sum + c.length, 0);
+            if (currentTotal + Math.min(content.length, MAX_STORED_CONTENT_CHARS) <= MAX_TOTAL_STORED_CHARS) {
+              execState.resolvedInputContents[normalizedPath] =
+                content.slice(0, MAX_STORED_CONTENT_CHARS);
+            }
+            agentLog.logEvent('FILE_PRELOAD', `Pre-loaded "${normalizedPath}" (${content.length} chars) from user message reference`);
+            onThought({ type: 'thinking', label: `Pre-loaded ${normalizedPath} (${content.length} chars)`, timestamp: new Date() });
+          } catch {
+            // File doesn't exist — not an error, the model will create it
+            agentLog.logEvent('FILE_PRELOAD_SKIP', `"${normalizedPath}" does not exist (will be created)`);
+          }
+        }
+      }
+    }
+
     // ─── DD2 + DD10: Build messages array — code mode uses execution history, not raw transcript ──
     const stateNote = stateManager.buildContextNote(execState);
     const messages: ChatMessage[] = [
@@ -974,6 +1028,9 @@ export class AgentRunner {
     // does not attempt to scaffold an entire project in one run.
     const milestoneWriteSize = vsConfig.get<number>('agent.milestoneWriteSize', 8);
     let nextMilestoneAt = milestoneWriteSize;
+
+    // OPT-1: Track per-path artifact guard rejections so we can auto-recover on 2nd attempt.
+    const artifactGuardHits = new Map<string, number>();
 
     // Phase 4 — MilestoneFinalizer: deterministic per-step continue/wait/validate/complete
     const _mmSection = (getAppData().executionMessages.milestoneDecisions ?? {}) as Record<string, string>;
@@ -1612,15 +1669,75 @@ ${truncated}
             toolResultContent = `<tool_result name="${event.name}" status="error">\n${batchRejection}\n</tool_result>`;
             onThought({ type: 'error', label: `Batch violation: ${toolCallPath}`, detail: batchRejection, timestamp: new Date() });
           } else if (isFileWrite && toolCallPath && registeredArtifactPaths.has(this.normalizeWorkspacePath(toolCallPath))) {
-            // ─── Cross-session artifact guard ────────────────────────────────
-            // File was created in a PREVIOUS session. Prevent silent re-creation
-            // that discards prior work. Force the model to use edit_file instead.
+            // ─── OPT-1+3: Smart cross-session artifact guard ─────────────────
+            // File was created in a PREVIOUS session. Instead of hard-blocking
+            // (which causes the model to retry write_file until halted), we:
+            //   1st hit: Read the existing file, inject content, guide model to edit_file.
+            //   2nd hit: Allow the write_file through (model clearly intends a full rewrite).
             const normalizedGuard = this.normalizeWorkspacePath(toolCallPath);
-            const rejection = `[SYSTEM ERROR] write_file REJECTED: "${normalizedGuard}" already exists from a previous session (artifact registry). The file has NOT been changed. Use edit_file to modify it, or read it first to see what was already written.`;
-            agentLog.logToolResult(event.name, rejection);
-            turnMemory.addToolResult(event.name, rejection);
-            toolResultContent = `<tool_result name="${event.name}" status="error">\n${rejection}\n</tool_result>`;
-            onThought({ type: 'error', label: `Cross-session artifact guard: ${normalizedGuard}`, detail: rejection, timestamp: new Date() });
+            const hitCount = (artifactGuardHits.get(normalizedGuard) ?? 0) + 1;
+            artifactGuardHits.set(normalizedGuard, hitCount);
+
+            if (hitCount >= 2) {
+              // OPT-3: 2nd+ attempt — model clearly wants to overwrite. Allow it.
+              agentLog.logEvent('ARTIFACT_GUARD_OVERRIDE', `Allowing write_file on "${normalizedGuard}" (attempt #${hitCount})`);
+              onThought({ type: 'thinking', label: `Artifact guard: allowing rewrite of ${normalizedGuard} (attempt #${hitCount})`, timestamp: new Date() });
+              // Remove from registered set so subsequent writes in this session aren't blocked.
+              registeredArtifactPaths.delete(normalizedGuard);
+              // Fall through to normal dispatch below by NOT setting toolResultContent here.
+              // We need to re-dispatch the tool call.
+              const writeResult = await this.toolDispatcher.dispatch(
+                event, agentId, onApproval, onDiff, onThought
+              );
+              agentLog.logToolResult(event.name, writeResult.text);
+              turnMemory.addToolResult(event.name, writeResult.text);
+              toolResultContent = `<tool_result name="${event.name}">\n${writeResult.text}\n</tool_result>`;
+              if (writeResult.status === 'success' && writeResult.text.startsWith('File written')) {
+                writtenPaths.add(toolCallPath);
+                toolPathCounts.clear();
+                const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
+                toolResultContent += `\n\nFiles written this task: ${pathList}. Use edit_file for any corrections to these paths.`;
+                this.recordArtifact(agentId, toolCallPath).catch(() => { /* non-fatal */ });
+                stateManager.markFileWritten(execState, normalizedGuard);
+                stateManager.markProgress(execState);
+              }
+            } else {
+              // OPT-1: 1st attempt — auto-read the existing file and inject content
+              // so the model has context to use edit_file (or retry as full rewrite).
+              let existingContent = '';
+              const absPath = path.isAbsolute(toolCallPath)
+                ? toolCallPath
+                : path.join(this.workspaceRoot, toolCallPath);
+              try {
+                existingContent = await fs.readFile(absPath, 'utf8');
+              } catch {
+                existingContent = '[could not read existing file]';
+              }
+
+              // Cache the content so the model has it available
+              if (existingContent && existingContent !== '[could not read existing file]') {
+                this.toolDispatcher.cacheReadResult(toolCallPath, existingContent);
+                stateManager.markFileRead(execState, normalizedGuard, existingContent);
+                // Store in resolvedInputContents for context injection
+                const MAX_STORED_CONTENT_CHARS = 6000;
+                execState.resolvedInputContents ??= {};
+                execState.resolvedInputContents[normalizedGuard] =
+                  existingContent.slice(0, MAX_STORED_CONTENT_CHARS);
+              }
+
+              const contentPreview = existingContent.length > 500
+                ? `${existingContent.slice(0, 500)}\n… [${existingContent.length} chars total]`
+                : existingContent;
+              const guidance = `[ARTIFACT GUARD] "${normalizedGuard}" already exists (${existingContent.length} chars). ` +
+                `The file has been auto-loaded into context. You have two options:\n` +
+                `1. Use edit_file to modify specific parts.\n` +
+                `2. Call write_file again with the full new content to overwrite it.\n\n` +
+                `Current file content:\n${contentPreview}`;
+              agentLog.logToolResult(event.name, `artifact guard: auto-read ${normalizedGuard} (${existingContent.length} chars)`);
+              turnMemory.addToolResult(event.name, guidance);
+              toolResultContent = `<tool_result name="${event.name}" status="error">\n${guidance}\n</tool_result>`;
+              onThought({ type: 'thinking', label: `Artifact guard: auto-loaded ${normalizedGuard} into context`, detail: `${existingContent.length} chars`, timestamp: new Date() });
+            }
           } else if (event.name === 'update_task_state') {
             // ─── In-process execution state update ───────────────────────────
             // Handled directly here so the agent can write back to the state
