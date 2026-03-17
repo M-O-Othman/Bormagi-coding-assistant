@@ -99,7 +99,7 @@ export class ChatController {
       } catch {
         // Suppress errors during polling
       }
-    }, 5000);
+    }, 15000);
   }
 
   dispose(): void {

@@ -37,6 +37,14 @@ export class GeminiProvider implements ILLMProvider {
   private readonly vertexApiVersion: string;
   private readonly apiClient: GoogleGenerativeAI | null;
 
+  /** Cached access token to avoid blocking gcloud execSync on every LLM call. */
+  private cachedAccessToken: string | null = null;
+  private cachedAccessTokenExpiry = 0;
+  /** Cache duration: 50 minutes (tokens are valid ~60min, refresh early). */
+  private static readonly TOKEN_CACHE_MS = 50 * 60 * 1000;
+  /** Cached project ID (won't change during a session). */
+  private resolvedProjectId: string | null = null;
+
   constructor(options: GeminiProviderOptions) {
     this.model = options.model;
     this.authMethod = options.authMethod === 'gcp_adc' ? 'vertex_ai' : options.authMethod;
@@ -61,7 +69,7 @@ export class GeminiProvider implements ILLMProvider {
 
   private tryPrintAccessToken(command: string): string | null {
     try {
-      const result = childProcess.execSync(command, { encoding: 'utf8', timeout: 8000 });
+      const result = childProcess.execSync(command, { encoding: 'utf8', timeout: 5000 });
       const token = result.trim();
       return token.length > 0 ? token : null;
     } catch {
@@ -70,6 +78,18 @@ export class GeminiProvider implements ILLMProvider {
   }
 
   private getAccessToken(): string {
+    // Return cached token if still valid (avoids blocking execSync on every call)
+    if (this.cachedAccessToken && Date.now() < this.cachedAccessTokenExpiry) {
+      return this.cachedAccessToken;
+    }
+
+    const token = this.fetchFreshAccessToken();
+    this.cachedAccessToken = token;
+    this.cachedAccessTokenExpiry = Date.now() + GeminiProvider.TOKEN_CACHE_MS;
+    return token;
+  }
+
+  private fetchFreshAccessToken(): string {
     // oauth_proxy targets the Gemini Developer API (generativelanguage.googleapis.com),
     // which requires the generative-language scope. Request it explicitly so the token
     // is not scope-limited to Cloud Platform only.
@@ -113,17 +133,25 @@ export class GeminiProvider implements ILLMProvider {
   }
 
   private getGcpProjectId(): string {
+    // Return cached value (project ID doesn't change during a session)
+    if (this.resolvedProjectId) {
+      return this.resolvedProjectId;
+    }
+
     // 1. Explicit config from agent settings takes priority
     if (this.gcpProjectId) {
-      return this.gcpProjectId;
+      this.resolvedProjectId = this.gcpProjectId;
+      return this.resolvedProjectId;
     }
 
     // 2. Environment variables
     const fromEnv = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT;
     if (fromEnv?.trim()) {
-      return fromEnv.trim();
+      this.resolvedProjectId = fromEnv.trim();
+      return this.resolvedProjectId;
     }
 
+    // 3. gcloud CLI (only called once, then cached)
     try {
       const result = childProcess.execSync(
         'gcloud config get-value project',
@@ -133,7 +161,8 @@ export class GeminiProvider implements ILLMProvider {
       if (!project || project === '(unset)') {
         throw new Error('No project configured');
       }
-      return project;
+      this.resolvedProjectId = project;
+      return this.resolvedProjectId;
     } catch {
       throw new Error(
         'Bormagi: Could not resolve GCP project for Vertex AI. ' +

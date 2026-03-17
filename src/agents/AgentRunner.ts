@@ -254,7 +254,9 @@ export class AgentRunner {
       return;
     }
 
-    await this.agentManager.startMCPServersForAgent(agentId, this.workspaceRoot);
+    // Start MCP servers in background — they're needed for tool dispatch (not prompt assembly).
+    // The promise is awaited later before the first tool call could happen.
+    const mcpStartPromise = this.agentManager.startMCPServersForAgent(agentId, this.workspaceRoot);
 
     const vsConfig = vscode.workspace.getConfiguration('bormagi');
     const isSandboxEnabled = vsConfig.get<boolean>('sandbox.enabled', false);
@@ -314,69 +316,72 @@ export class AgentRunner {
     const turnMemory = new TurnMemory();
     const currentTurn = turnMemory.startTurn(userMessage);
 
-    // ─── Knowledge retrieval ──────────────────────────────────────────────────
-    // Surface a thought notification when knowledge chunks are found; the context
-    // pipeline (signal 3/lexical + signal 6/semantic in RetrievalOrchestrator)
-    // is responsible for injecting retrieved content into the assembled prompt.
-    let kbEvidence: EvidencePack | null = null;
+    // ─── Knowledge retrieval (runs in parallel with context pipeline below) ──
     const kbFolders = agentConfig.knowledge?.source_folders ?? [];
-    if (kbFolders.length > 0 && this.knowledgeManager) {
+    const kbPromise: Promise<EvidencePack | null> = (async () => {
+      if (kbFolders.length === 0 || !this.knowledgeManager) { return null; }
       try {
         if (await this.knowledgeManager.hasKnowledgeBase(agentId)) {
-          kbEvidence = await this.knowledgeManager.query(agentId, userMessage, 5);
-          if (kbEvidence.chunks.length > 0) {
-            turnMemory.addEvidenceSources(kbEvidence.trace.sources);
+          const evidence = await this.knowledgeManager.query(agentId, userMessage, 5);
+          if (evidence.chunks.length > 0) {
+            turnMemory.addEvidenceSources(evidence.trace.sources);
             onThought({
               type: 'thinking',
-              label: `Knowledge: ${kbEvidence.chunks.length} chunks from ${kbEvidence.trace.sources.join(', ')}`,
-              detail: `Latency: ${kbEvidence.trace.latencyMs}ms · Sources: ${kbEvidence.trace.sources.join(', ')}`,
+              label: `Knowledge: ${evidence.chunks.length} chunks from ${evidence.trace.sources.join(', ')}`,
+              detail: `Latency: ${evidence.trace.latencyMs}ms · Sources: ${evidence.trace.sources.join(', ')}`,
               timestamp: new Date(),
             });
           }
+          return evidence;
         }
       } catch (err) {
         console.warn(`AgentRunner: Knowledge retrieval failed for ${agentId}:`, err);
       }
-    }
+      return null;
+    })();
 
-    // ─── Context pipeline ─────────────────────────────────────────────────────
+    // ─── Context pipeline (parallelized for speed) ────────────────────────────
 
-    const projectConfig = await this.configManager.readProjectConfig();
-    const projectName = projectConfig?.project.name ?? '';
-
-    // 1. Classify mode — use explicitly set userMode if provided, otherwise auto-detect.
+    // 1. Classify mode — use regex first (instant), then optionally LLM.
     //    OPT-4: When userMode is explicitly set, skip the LLM classifier (2-5s saved).
-    //    Still run the regex classifier for modeDecision metadata (confidence, reason).
     let modeDecision = classifyMode(userMessage);
-    if (!userMode) {
-      const classifierProviderCfg = await this.configManager.readClassifierProvider();
-      if (classifierProviderCfg) {
-        const classifierKey = await this.agentManager.getApiKey('__classifier__');
-        if (classifierKey || !authMethodRequiresCredential(classifierProviderCfg.auth_method)) {
-          const classifierLLM = ProviderFactory.create(
-            { ...agentConfig, provider: classifierProviderCfg },
-            classifierKey,
-          );
-          modeDecision = await classifyModeWithLLM(userMessage, classifierLLM);
-          onThought({
-            type: 'thinking',
-            label: `Mode classified by LLM (${classifierProviderCfg.model}): ${modeDecision.mode}`,
-            timestamp: new Date(),
-          });
-        }
-      }
-    }
-    const mode: AssistantMode = userMode ?? modeDecision.mode;
-    // V2: reset per-run guard state in ToolDispatcher (reread prevention + discovery budget)
-    // Also initialise BatchEnforcer and ArchitectureLock for Phase 4 enforcement.
+
+    // Fire independent I/O operations in parallel while mode classification proceeds
     const batchEnforcer = new BatchEnforcer(this.workspaceRoot);
     const archLock = new ArchitectureLock(
       this.workspaceRoot,
       getAppData().architecturePatterns
     );
-    let detectedWorkspaceType: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature' = 'mature';
+
+    // Run these in parallel: project config, workspace type, LLM classifier (if needed)
+    const classifierPromise = (async () => {
+      if (userMode) { return; }
+      const classifierProviderCfg = await this.configManager.readClassifierProvider();
+      if (!classifierProviderCfg) { return; }
+      const classifierKey = await this.agentManager.getApiKey('__classifier__');
+      if (!classifierKey && authMethodRequiresCredential(classifierProviderCfg.auth_method)) { return; }
+      const classifierLLM = ProviderFactory.create(
+        { ...agentConfig, provider: classifierProviderCfg },
+        classifierKey,
+      );
+      modeDecision = await classifyModeWithLLM(userMessage, classifierLLM);
+      onThought({
+        type: 'thinking',
+        label: `Mode classified by LLM (${classifierProviderCfg.model}): ${modeDecision.mode}`,
+        timestamp: new Date(),
+      });
+    })();
+
+    const [projectConfig, _detectedWsType] = await Promise.all([
+      this.configManager.readProjectConfig(),
+      batchEnforcer.detectWorkspaceType(),
+      classifierPromise,
+    ]);
+    const projectName = projectConfig?.project.name ?? '';
+    let detectedWorkspaceType: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature' = _detectedWsType;
+
+    const mode: AssistantMode = userMode ?? modeDecision.mode;
     this.toolDispatcher.resetGuardState(mode, true);
-    detectedWorkspaceType = await batchEnforcer.detectWorkspaceType();
     const requestId = `${agentId}-${Date.now()}`;
     const agentLog = new AgentLogger(this.workspaceRoot, agentId);
     agentLog.sessionStart(mode);
@@ -396,81 +401,74 @@ export class AgentRunner {
 
     const enhancedPipeline = vsConfig.get<boolean>('contextPipeline.enabled', false);
 
-    // ─── Phase-1: Git Capabilities & Pre-Edit State (FR-001, FR-006, FR-020) ─
-    const gitContext = await this.gitService.getStatus(this.workspaceRoot);
-    if (gitContext.state !== "clean" && enhancedPipeline) {
-      onThought({
-        type: 'thinking',
-        label: `Repository is dirty (${gitContext.state}). Extracting Git snapshot.`,
-        timestamp: new Date()
-      });
-    }
-
-    // Automatically checkpoint the workspace BEFORE starting any new task iterations
-    if (enhancedPipeline && !this.currentCheckpointId) {
-      const checkpt = await this.checkpointManager.createCheckpoint('task_start', `Start Task: ${userMessage.substring(0, 25)}`);
-      this.currentCheckpointId = checkpt.id;
-      turnMemory.addToolResult('system_checkpoint', `A Git Checkpoint was successfully created before this task began (ID: ${checkpt.id}).`);
-      onCheckpointCreated?.(checkpt.id, `Task start: ${userMessage.substring(0, 40)}`, []);
-    }
-
-    await this.auditLogger.logModeClassified(
-      requestId,
-      mode,
-      modeDecision.confidence,
-      modeDecision.userOverride,
-      modeDecision.reason,
-    );
-
-    // ─── Phase-5: session-start hook + plan creation ───────────────────────────
-    if (enhancedPipeline) {
-      await this.hookEngine.onSessionStart({ mode });
-      if (shouldCreatePlan(userMessage, modeDecision)) {
-        const newPlan = createPlan(this.workspaceRoot, userMessage.slice(0, 200), [], mode);
-        onPlanCreated?.(newPlan);
-      }
-    }
-
-    // 2. Load mode budget and model profile.
-    //    Cap recommendedInputBudget to maxTokens to respect API rate limits.
+    // ─── Parallel pre-loop setup ─────────────────────────────────────────────
+    // Run independent I/O operations concurrently to minimize startup latency.
+    // Budget/profile computation is synchronous and runs inline.
     const budget = getModeBudget(mode);
     const _baseProfile = getActiveModelProfile(effectiveProvider);
     const profile = safeInputTokens < _baseProfile.recommendedInputBudget
       ? { ..._baseProfile, recommendedInputBudget: safeInputTokens }
       : _baseProfile;
-
-    // 3. Load repo map from .bormagi/repo-map.json (null if not yet built).
     const repoMap = loadRepoMap(this.workspaceRoot);
-
-    // 4. Gather, score, and rank context candidates.
     const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath;
     const retrievalQuery = { text: userMessage, mode, activeFile };
+
+    // Fire all independent async operations at once
+    const [gitContext, systemPreamble, , sessionHistoryResult, artifactResults, , , kbEvidence] = await Promise.all([
+      // 1. Git status
+      this.gitService.getStatus(this.workspaceRoot),
+      // 2. System prompt composition
+      this.promptComposer.compose(agentConfig, projectName),
+      // 3. Skills loading
+      this.skillManager.loadAll(),
+      // 4. Session history
+      this.memoryManager.getSessionHistoryWithMemory(agentId),
+      // 5. Artifact registry
+      Promise.all([this.loadArtifactRegistryNote(), this.loadArtifactPaths()]),
+      // 6. Audit log (fire-and-forget, non-blocking)
+      this.auditLogger.logModeClassified(requestId, mode, modeDecision.confidence, modeDecision.userOverride, modeDecision.reason).catch(() => {}),
+      // 7. Enhanced pipeline setup (checkpoint, hooks)
+      (async () => {
+        if (!enhancedPipeline) { return; }
+        if (!this.currentCheckpointId) {
+          const checkpt = await this.checkpointManager.createCheckpoint('task_start', `Start Task: ${userMessage.substring(0, 25)}`);
+          this.currentCheckpointId = checkpt.id;
+          turnMemory.addToolResult('system_checkpoint', `A Git Checkpoint was successfully created before this task began (ID: ${checkpt.id}).`);
+          onCheckpointCreated?.(checkpt.id, `Task start: ${userMessage.substring(0, 40)}`, []);
+        }
+        await this.hookEngine.onSessionStart({ mode });
+        if (shouldCreatePlan(userMessage, modeDecision)) {
+          const newPlan = createPlan(this.workspaceRoot, userMessage.slice(0, 200), [], mode);
+          onPlanCreated?.(newPlan);
+        }
+      })(),
+      // 8. Knowledge retrieval (already started above)
+      kbPromise,
+    ]);
+
+    if (gitContext.state !== "clean" && enhancedPipeline) {
+      onThought({ type: 'thinking', label: `Repository is dirty (${gitContext.state}). Extracting Git snapshot.`, timestamp: new Date() });
+    }
+
+    const [artifactNote, registeredArtifactPaths] = artifactResults;
+
+    // ─── Context retrieval (depends on repoMap + budget, but independent of above) ─
     const candidates = await retrieveCandidates(
       retrievalQuery,
       { workspaceRoot: this.workspaceRoot, repoMap, activeFilePath: activeFile, agentId },
       Math.min(budget.retrievedContext, Math.floor(safeInputTokens * 0.2)),
     );
 
-    // 5. Build candidate paths for YAML instruction glob matching
     const candidatePaths = candidates.map(c => c.path || '').filter(Boolean);
     if (gitContext && gitContext.changedPaths) {
       gitContext.changedPaths.forEach(cp => candidatePaths.push(cp.path));
     }
 
-    // 6. Resolve instructions from .bormagi and .github files, scoped by paths
     const instructions = resolveInstructions(this.workspaceRoot, candidatePaths);
-
-    // 6. Partition candidates into envelope slots (editable / reference / memory / toolOutputs).
     const envelope = buildContextEnvelope(candidates, mode);
-
-    // 7. Enforce token budget — prunes envelope sections if over the soft limit.
     const enforcement = enforcePreflightBudget(envelope, budget, profile);
     const effectiveEnvelope = enforcement.envelope;
 
-    // 8. Assemble full system prompt.
-    //    systemPreamble comes from the agent's configured prompt files (unchanged path).
-    const systemPreamble = await this.promptComposer.compose(agentConfig, projectName);
-    await this.skillManager.loadAll();
     const skillsSection = this.skillManager.buildSkillsPromptSection();
     const assembledSystem = assemblePrompt({
       systemPreamble,
@@ -588,19 +586,11 @@ export class AgentRunner {
     }
 
     // 9. Build conversation messages (system + history + user turn).
-    //    Bootstrap injection and ad-hoc retrieval context are now handled by the
-    //    context pipeline above, so those intermediate messages are no longer needed.
-    const sessionHistory = await this.memoryManager.getSessionHistoryWithMemory(agentId);
+    //    Session history, artifact note/paths already loaded in parallel above.
+    const sessionHistory = sessionHistoryResult;
 
     const bootstrapContext = ''; // kept for measureRequestSize compat — pipeline handles context
     const retrievalContext = ''; // kept for measureRequestSize compat — pipeline handles context
-
-    // Inject artifact registry so the model knows what files already exist from
-    // previous sessions (e.g. a plan written in plan mode, readable in code mode).
-    const [artifactNote, registeredArtifactPaths] = await Promise.all([
-      this.loadArtifactRegistryNote(),
-      this.loadArtifactPaths(),
-    ]);
 
     // ─── Structured execution state ──────────────────────────────────────────
     // Load or create compact task state so the model has a structured summary of
@@ -779,8 +769,8 @@ export class AgentRunner {
     // instead of the separate AgentRunner.detectWorkspaceType() heuristic.
     messages.push({ role: 'system', content: this.buildWorkspaceTypeNote(detectedWorkspaceType) });
 
-    // detectedWsType is now the same as detectedWorkspaceType (unified source).
-    const detectedWsType = detectedWorkspaceType;
+    // detectedWsType alias for backward compat within the loop
+    const detectedWsType: typeof detectedWorkspaceType = detectedWorkspaceType;
 
     // V2: per-iteration tool results — reset each loop so PromptAssembler only sees
     // the CURRENT step's results, not the full replayed history.
@@ -1084,6 +1074,9 @@ export class AgentRunner {
         });
       }
     }
+
+    // Ensure MCP servers are ready before the first tool call
+    await mcpStartPromise;
 
     while (continueLoop) {
       // Phase 4: terminal state check — exit immediately if runPhase is no longer RUNNING
@@ -1985,8 +1978,8 @@ ${truncated}
               // DD1: Record meaningful progress
               stateManager.markProgress(execState);
 
-              // Verify all written files are still on disk every 5 writes
-              if (writtenPaths.size % 5 === 0) {
+              // Verify all written files are still on disk every 10 writes
+              if (writtenPaths.size % 10 === 0) {
                 const missingFiles = await this.verifyWrittenFiles(Array.from(writtenPaths));
                 if (missingFiles.length > 0) {
                   toolResultContent += `\n\n[Verification] Warning: ${missingFiles.length} file(s) appear missing from disk: ${missingFiles.join(', ')}. Investigate before continuing.`;
@@ -2042,9 +2035,9 @@ ${truncated}
                 onThought?.({ type: 'thinking', label: `[Milestone] ${milestoneDecision.reason}`, timestamp: new Date() });
               }
 
-              // Phase 7.1 — ConsistencyValidator in hot path (validatorEnforcement)
-              // Run after each write to catch critical issues immediately.
-              if (vsConfig.get<boolean>('validatorEnforcement', false) && MUTATION_TOOLS.has(event.name)) {
+              // Phase 7.1 — ConsistencyValidator (validatorEnforcement)
+              // Run every 10 writes instead of every write to reduce overhead.
+              if (vsConfig.get<boolean>('validatorEnforcement', false) && MUTATION_TOOLS.has(event.name) && writtenPaths.size % 10 === 0) {
                 stateManager.setExecutionPhase(execState, 'VALIDATING_STEP');
                 const hotValidator = new ConsistencyValidator(this.workspaceRoot);
                 const detectedLockHot = await archLock.detect();
@@ -2093,24 +2086,10 @@ ${truncated}
           calledATool = true;
           continueLoop = true;
           // ─── Phase-5: after-edit hook for file-mutation tools ──────────────
+          // Hooks run per-edit, but ValidationService is deferred to end-of-session
+          // to avoid running lint/test/tsc on every single write (major perf bottleneck).
           if (enhancedPipeline && (event.name.includes('write') || event.name.includes('edit'))) {
             await this.hookEngine.onAfterEdit([event.name], { mode });
-
-            // Post-Edit Pipeline (FR-021)
-            onThought({ type: 'thinking', label: 'Running Validation Services...', timestamp: new Date() });
-            const val = await this.validationService.run([event.name]);
-            if (!val.ok) {
-              onThought({
-                type: 'error',
-                label: `Validation Failed after edit (${val.diagnostics.length} issues)`,
-                detail: val.diagnostics[0]?.message || 'Unknown Failure',
-                timestamp: new Date()
-              });
-              // Provide context back to the agent so it can self-repair (FR-057)
-              messages.push({ role: 'user', content: `[Validation Output]\n${val.rawOutput}\nPlease fix the errors before continuing.` });
-            } else {
-              this.currentCheckpointId = null; // Prepare for next checkpoint
-            }
           }
         }
       }
@@ -2421,6 +2400,26 @@ ${truncated}
       fsmPhases: [],
     });
 
+    // ─── End-of-session validation (deferred from per-write hot path) ──────────
+    // Run lint/test/tsc once after the loop instead of after every write.
+    if (enhancedPipeline && writtenPaths.size > 0) {
+      onThought({ type: 'thinking', label: 'Running end-of-session validation...', timestamp: new Date() });
+      const val = await this.validationService.run(Array.from(writtenPaths));
+      if (!val.ok) {
+        onThought({
+          type: 'error',
+          label: `Validation found ${val.diagnostics.length} issue(s)`,
+          detail: val.diagnostics[0]?.message || 'Unknown Failure',
+          timestamp: new Date()
+        });
+        const valNote = `\n\n**Validation issues detected:** ${val.diagnostics.map(d => d.message).join('; ')}`;
+        onText(valNote);
+        fullResponse += valNote;
+      } else {
+        this.currentCheckpointId = null;
+      }
+    }
+
     // ─── Degenerate response guard ────────────────────────────────────────────
     // Gemini sometimes outputs a tool-call label as plain text instead of a proper
     // function_call. When detected, inject one final synthesis prompt (no tools) to
@@ -2460,6 +2459,98 @@ ${truncated}
           lastAssistantText = synthText;
         }
       }
+    }
+
+    // ─── Session completion report ────────────────────────────────────────────
+    // Show a report when the agent used tools or hit a non-running state.
+    // Skip for pure text-only responses (simple Q&A) to avoid noise.
+    const shouldShowReport = toolsUsed.length > 0 || (execState.runPhase ?? 'RUNNING') !== 'RUNNING';
+    if (shouldShowReport) {
+      const sessionDuration = Date.now() - sessionStartTime;
+      const durationSec = Math.round(sessionDuration / 1000);
+      const written = Array.from(writtenPaths);
+      const readCount = execState.resolvedInputs?.length ?? 0;
+      const batchPlanned = execState.plannedFileBatch ?? [];
+      const batchCompleted = execState.completedBatchFiles ?? [];
+      const batchRemaining = batchPlanned.filter((f: string) => !batchCompleted.includes(f));
+      const phase = execState.runPhase ?? 'RUNNING';
+
+      const reportLines: string[] = [];
+      reportLines.push('\n\n---');
+      reportLines.push('**Session Report**');
+
+      // What was done
+      if (written.length > 0) {
+        const fileList = written.length <= 8
+          ? written.map(f => `\`${f}\``).join(', ')
+          : written.slice(0, 6).map(f => `\`${f}\``).join(', ') + ` and ${written.length - 6} more`;
+        reportLines.push(`- **Files written/edited:** ${written.length} — ${fileList}`);
+      }
+      if (readCount > 0) {
+        reportLines.push(`- **Files read:** ${readCount}`);
+      }
+      if (toolsUsed.length > 0) {
+        // Deduplicate and count tool usage
+        const toolCounts = new Map<string, number>();
+        for (const t of toolsUsed) {
+          toolCounts.set(t, (toolCounts.get(t) ?? 0) + 1);
+        }
+        const toolSummary = Array.from(toolCounts.entries())
+          .map(([name, count]) => count > 1 ? `${name} x${count}` : name)
+          .join(', ');
+        reportLines.push(`- **Tool operations:** ${toolsUsed.length} (${toolSummary})`);
+      }
+      reportLines.push(`- **Iterations:** ${iterationCount} | **Duration:** ${durationSec}s`);
+
+      // Batch progress
+      if (batchPlanned.length > 0) {
+        reportLines.push(`- **Batch progress:** ${batchCompleted.length}/${batchPlanned.length} files completed`);
+        if (batchRemaining.length > 0) {
+          const remainList = batchRemaining.length <= 5
+            ? batchRemaining.map((f: string) => `\`${f}\``).join(', ')
+            : batchRemaining.slice(0, 4).map((f: string) => `\`${f}\``).join(', ') + ` and ${batchRemaining.length - 4} more`;
+          reportLines.push(`- **Remaining in batch:** ${remainList}`);
+        }
+      }
+
+      // What does the user need to do (if anything)?
+      if (phase === 'WAITING_FOR_USER_INPUT') {
+        const reason = execState.waitStateReason ?? '';
+        reportLines.push('');
+        reportLines.push('**Action required from you:**');
+        if (reason) {
+          reportLines.push(`> ${reason}`);
+        } else if (batchRemaining.length > 0) {
+          reportLines.push(`> The agent paused with ${batchRemaining.length} file(s) remaining. Type **continue** to resume writing the remaining files.`);
+        } else {
+          reportLines.push('> The agent is waiting for your input. Please provide instructions or feedback to continue.');
+        }
+      } else if (phase === 'BLOCKED_BY_VALIDATION') {
+        reportLines.push('');
+        reportLines.push('**Action required from you:**');
+        reportLines.push('> The agent is blocked by validation errors. Review the issues above, fix them, and retry.');
+      } else if (phase === 'RECOVERY_REQUIRED') {
+        reportLines.push('');
+        reportLines.push('**Action required from you:**');
+        reportLines.push('> The execution state is inconsistent. Run the command **Bormagi: Reset Execution State** and retry.');
+      } else if (phase === 'PARTIAL_BATCH_COMPLETE') {
+        reportLines.push('');
+        reportLines.push('**Action required from you:**');
+        reportLines.push(`> Batch phase complete (${batchCompleted.length}/${batchPlanned.length} files). Review the written files and type **continue** to proceed with the next batch.`);
+      } else if (phase === 'COMPLETED') {
+        if (written.length > 0) {
+          reportLines.push('');
+          reportLines.push('**Status:** Task completed successfully.');
+        }
+      } else if (iterationCount >= maxToolIterations) {
+        reportLines.push('');
+        reportLines.push('**Action required from you:**');
+        reportLines.push(`> The agent reached the iteration limit (${maxToolIterations}). Type **continue** to resume, or provide new instructions.`);
+      }
+
+      const report = reportLines.join('\n');
+      onText(report);
+      fullResponse += report;
     }
 
     // Final safety net: the loop produced no text at all — always show something.
