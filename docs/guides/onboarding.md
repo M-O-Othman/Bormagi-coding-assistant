@@ -21,12 +21,29 @@ This guide gets you from a fresh checkout to a fully working development environ
 
 ## 1. Prerequisites
 
+### Required
+
 | Requirement | Minimum version | Why |
 |-------------|-----------------|-----|
 | Node.js     | 18.x LTS        | Build toolchain (webpack, ts-jest) |
-| npm         | 9.x             | Dependency management |
+| npm         | 9.x             | Dependency management and post-session validation |
 | VS Code     | 1.85.0          | Extension host API surface |
-| Git         | any recent      | Source control |
+| Git         | any recent      | Source control, checkpoints, undo |
+
+### Optional (enhance agent capabilities)
+
+| Tool | Purpose | Impact if missing |
+|------|---------|-------------------|
+| Python 3 | Python project support, Python-based MCP servers | Python MCP servers and Python project validation unavailable |
+| gcloud CLI | GCP Vertex AI authentication (ADC/OAuth) | Cannot use Vertex AI auth — use API key for Gemini instead |
+| Docker | Sandbox isolation for agent file writes | Sandbox mode unavailable — agents write directly to workspace |
+
+### Platform notes
+
+- **Windows**: Bormagi normalises all file paths to forward slashes internally. Backslash paths are handled automatically. If your `PATH` exceeds ~8000 characters, some tools may fail to resolve — consider cleaning up PATH entries.
+- **macOS / Linux**: No special considerations.
+
+> **Tip:** After launching the extension, run **`Bormagi: Check Environment`** from the Command Palette to see a live report of all detected tools, their versions, and what features they enable. This report is also shown automatically at the top of **Agent Settings**.
 
 **Provider credentials (at least one):**
 
@@ -181,6 +198,20 @@ Back in the chat panel:
 ---
 
 ## 6. Verify the extension works end-to-end
+
+### Check your environment first
+
+Run **`Bormagi: Check Environment`** from the Command Palette. This scans your machine and reports:
+
+- **OS** — Platform, version, architecture
+- **Tools** — Git, npm, Node.js, Python, gcloud, Docker — each with status, version, and impact if missing
+- **Path** — Separator, Windows-specific warnings
+
+The same report appears automatically at the top of **Agent Settings**.
+
+If any required tools are missing, install them before proceeding. Optional tools can be installed later.
+
+### Verify provider connectivity
 
 After completing step 5:
 

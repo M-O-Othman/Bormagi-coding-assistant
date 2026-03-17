@@ -44,9 +44,27 @@ Agents execute all file modifications and terminal commands within an isolated "
 - You can review the agent's work and gracefully merge it into your codebase using the **`Bormagi: Apply Sandbox Changes`** command. 
 - A granular Policy Engine (`.bormagi/policies/sandbox.policy.yaml`) automatically intercepts dangerous actions (e.g., `rm -rf /`) and enforces interactive approvals for sensitive directories.
 
+## Host Environment
+
+Bormagi adapts to what's installed on your machine. Run **Bormagi: Check Environment** from the Command Palette to see a live report.
+
+| Component | Required? | What it enables | What happens without it |
+|-----------|-----------|-----------------|------------------------|
+| **VS Code 1.85+** | Yes | Extension host | Extension cannot run |
+| **Node.js 18+** | Yes | Runtime (bundled with VS Code) | Extension cannot run |
+| **LLM credential** | Yes | Agent responses | Agents cannot respond |
+| **Git** | Recommended | Checkpoints, undo, diffs | Git features disabled |
+| **npm** | Recommended | Post-session lint/test/typecheck | Validation skipped; file writes unaffected |
+| **Python 3** | Optional | Python MCP servers, Python projects | Python features unavailable |
+| **gcloud CLI** | Optional | GCP Vertex AI auth (ADC/OAuth) | Use API key for Gemini instead |
+| **Docker** | Optional | Sandbox isolation | Agents write directly to workspace |
+
+**Windows users:** Bormagi handles backslash paths automatically — no manual conversion needed.
+
 ## Getting Started
 
 1. **Install the Extension**: You can download Bormagi from the Visual Studio Code Marketplace or install it using a `.vsix` file.
 2. **Initialize Workspace**: Once installed, open Bormagi from the Command Palette and initialize your workspace.
-3. **Create Agents**: Use the dashboard to create or install agents that fit your project needs.
-4. **Start Using Agents**: Interact with your agents through the chat function, or set up workflows to make the best use of their capabilities.
+3. **Check Environment**: Run **Bormagi: Check Environment** to see what tools are available and what features are enabled.
+4. **Create Agents**: Use the dashboard to create or install agents that fit your project needs.
+5. **Start Using Agents**: Interact with your agents through the chat function, or set up workflows to make the best use of their capabilities.

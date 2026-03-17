@@ -67,9 +67,15 @@ export class GeminiProvider implements ILLMProvider {
     this.apiClient = null;
   }
 
+  /** Track consecutive gcloud failures so we can back off instead of hammering a broken gcloud. */
+  private gcloudFailCount = 0;
+  private static readonly GCLOUD_MAX_CONSECUTIVE_FAILS = 3;
+
   private tryPrintAccessToken(command: string): string | null {
     try {
-      const result = childProcess.execSync(command, { encoding: 'utf8', timeout: 5000 });
+      // Allow 10s on Windows (gcloud is a Python app — cold-start can be slow)
+      const timeout = process.platform === 'win32' ? 10_000 : 5_000;
+      const result = childProcess.execSync(command, { encoding: 'utf8', timeout });
       const token = result.trim();
       return token.length > 0 ? token : null;
     } catch {
@@ -86,10 +92,27 @@ export class GeminiProvider implements ILLMProvider {
     const token = this.fetchFreshAccessToken();
     this.cachedAccessToken = token;
     this.cachedAccessTokenExpiry = Date.now() + GeminiProvider.TOKEN_CACHE_MS;
+    this.gcloudFailCount = 0; // reset on success
     return token;
   }
 
+  /** Force-invalidate the cached token so the next call fetches a fresh one. */
+  private invalidateAccessToken(): void {
+    this.cachedAccessToken = null;
+    this.cachedAccessTokenExpiry = 0;
+  }
+
   private fetchFreshAccessToken(): string {
+    // If gcloud has failed too many times in a row, don't keep hammering it —
+    // each attempt blocks for up to 10s on Windows.
+    if (this.gcloudFailCount >= GeminiProvider.GCLOUD_MAX_CONSECUTIVE_FAILS) {
+      throw new Error(
+        'Bormagi: gcloud has failed ' + this.gcloudFailCount + ' times in a row. ' +
+        'Your credentials are likely expired.\n' +
+        'Fix: run "gcloud auth application-default login" in a terminal, then send another message.'
+      );
+    }
+
     // oauth_proxy targets the Gemini Developer API (generativelanguage.googleapis.com),
     // which requires the generative-language scope. Request it explicitly so the token
     // is not scope-limited to Cloud Platform only.
@@ -112,10 +135,12 @@ export class GeminiProvider implements ILLMProvider {
                 ?? this.tryPrintAccessToken('gcloud auth print-access-token');
       if (bare) { return bare; }
 
+      this.gcloudFailCount++;
       throw new Error(
         'Bormagi: Could not obtain a GCP access token for oauth_proxy mode.\n' +
-        'Re-authenticate with the required scope:\n' +
-        `  gcloud auth application-default login --scopes=${generativeLangScope}`
+        'Your credentials may have expired. Re-authenticate:\n' +
+        `  gcloud auth application-default login --scopes=${generativeLangScope}\n` +
+        'Then send another message — no extension reload needed.'
       );
     }
 
@@ -126,9 +151,11 @@ export class GeminiProvider implements ILLMProvider {
     const userToken = this.tryPrintAccessToken('gcloud auth print-access-token');
     if (userToken) { return userToken; }
 
+    this.gcloudFailCount++;
     throw new Error(
       'Bormagi: Could not obtain a GCP access token. ' +
-      'Run "gcloud auth application-default login" (recommended) or "gcloud auth login".'
+      'Your credentials may have expired.\n' +
+      'Fix: run "gcloud auth application-default login" in a terminal, then send another message — no extension reload needed.'
     );
   }
 
@@ -488,14 +515,29 @@ export class GeminiProvider implements ILLMProvider {
     tools: MCPToolDefinition[] | undefined,
     maxTokens: number
   ): AsyncIterable<StreamEvent> {
-    const { url, headers } = this.buildOAuthEndpointAndHeaders();
     const payload = this.buildGeminiPayload(messages, tools, maxTokens);
 
-    const response = await this.fetchWithOptionalProxy(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload)
-    });
+    // Attempt the request. On 401 (expired token), invalidate cache and retry once.
+    let response: Response;
+    let retried = false;
+
+    const doFetch = async (): Promise<Response> => {
+      const { url, headers } = this.buildOAuthEndpointAndHeaders();
+      return this.fetchWithOptionalProxy(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload)
+      });
+    };
+
+    response = await doFetch();
+
+    if (response.status === 401 && !retried) {
+      retried = true;
+      // Token expired — force refresh and retry
+      this.invalidateAccessToken();
+      response = await doFetch();
+    }
 
     const headerSnapshot = this.collectHeaders(response.headers);
     if (Object.keys(headerSnapshot).length > 0) {
@@ -504,6 +546,17 @@ export class GeminiProvider implements ILLMProvider {
 
     if (!response.ok) {
       const errBody = await response.text().catch(() => '');
+
+      // 401 after retry — the underlying credential is expired/revoked
+      if (response.status === 401) {
+        this.gcloudFailCount++;
+        throw new Error(
+          'Bormagi: GCP access token expired and could not be refreshed.\n' +
+          'Your gcloud credentials may have expired. Re-authenticate:\n' +
+          '  gcloud auth application-default login\n' +
+          'Then send another message — no extension reload needed.'
+        );
+      }
 
       // Give a clear, actionable message for the most common OAuth failure.
       if (response.status === 403 && errBody.includes('ACCESS_TOKEN_SCOPE_INSUFFICIENT')) {
@@ -687,6 +740,10 @@ export class GeminiProvider implements ILLMProvider {
       yield* this.streamViaApiKeySdk(messages, tools, maxTokens);
       return;
     }
+
+    // Reset gcloud fail counter on each new stream attempt — the user may have
+    // re-authenticated between messages, so give gcloud another chance.
+    this.gcloudFailCount = 0;
 
     yield* this.streamViaOAuthFetch(messages, tools, maxTokens);
   }

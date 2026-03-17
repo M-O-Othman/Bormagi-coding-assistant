@@ -69,11 +69,37 @@
 
 ### Requirements
 
-| Requirement | Minimum |
-|-------------|---------|
-| VS Code | 1.85.0 or later |
-| Node.js | 18.x or later (for building from source) |
-| API Key | At least one LLM provider key (or a local model via Ollama) |
+| Requirement | Minimum | Notes |
+|-------------|---------|-------|
+| VS Code | 1.85.0 or later | Extension host — required |
+| Node.js | 18.x or later | Bundled with VS Code; needed for building from source |
+| API Key | At least one LLM provider key (or a local model via Ollama) | Stored in VS Code SecretStorage |
+
+### Host Environment — What Works Without What
+
+Bormagi adapts to the tools available on your machine. Run **Bormagi: Check Environment** from the Command Palette to see a live report, or open **Agent Settings** where the environment card auto-checks on load.
+
+#### Recommended tools
+
+| Tool | Purpose | Impact if missing |
+|------|---------|-------------------|
+| **Git** | Checkpoints, undo, diff previews, commit suggestions | Git features disabled — no checkpoints, no undo, no diff preview |
+| **npm** | Post-session validation (lint, test, typecheck) | Validation skipped. **File writes still work normally.** |
+
+#### Optional tools
+
+| Tool | Purpose | Impact if missing |
+|------|---------|-------------------|
+| **Python 3** | Python project support, Python-based MCP servers | Python MCP servers unavailable |
+| **gcloud CLI** | GCP Vertex AI authentication (ADC/OAuth) | Must use API key auth for Gemini instead of Vertex AI |
+| **Docker** | Sandbox isolation for agent file writes | Sandbox mode unavailable — agents write directly to workspace |
+
+#### Platform notes
+
+- **Windows**: Bormagi normalises all paths to forward slashes internally. Backslash paths from Windows tools are handled automatically. If your PATH is very long (>8000 chars), some tools may fail to resolve.
+- **macOS / Linux**: No special considerations.
+
+> **Tip:** Bormagi checks your environment automatically on startup. If critical tools (like Git) are missing, you'll see a warning notification with a link to the full report.
 
 <!-- SCREENSHOT: VS Code extensions panel showing Bormagi installed -->
 > **[Screenshot placeholder]** — The Extensions panel after Bormagi has been installed.
@@ -697,6 +723,7 @@ Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and type "Bormagi" to 
 | **Bormagi: Apply Sandbox Changes** | Promote sandbox changes to the workspace |
 | **Bormagi: Show Audit Log** | View the audit trail |
 | **Bormagi: Verify Audit Log Integrity** | Check audit log for tampering |
+| **Bormagi: Check Environment** | Scan host machine for required/optional tools and show a detailed report |
 | **Bormagi: Show Execution State** | (Developer) View current execution state JSON |
 | **Bormagi: Reset Execution State** | (Developer) Reset the agent's execution state |
 
@@ -817,6 +844,16 @@ Enable `bormagi.developerMode` in VS Code Settings to access:
 
 - **Cause**: The agent spent 3+ turns making no progress (e.g., repeated rejected writes).
 - **Fix**: This is now mitigated by the smart artifact guard (auto-loads files on rejection). If it persists, reset execution state and retry with a more specific prompt.
+
+### Agent session works but validation fails or shows errors
+
+- **Cause**: npm is not installed, or the workspace has no `package.json` with lint/test/typecheck scripts.
+- **Fix**: This is normal and harmless. Bormagi detects missing npm and silently skips validation. File writes are not affected. Run **Bormagi: Check Environment** to confirm what's available on your machine.
+
+### Git checkpoints or undo not working
+
+- **Cause**: Git is not installed or the workspace is not a Git repository.
+- **Fix**: Install Git and initialise the repository (`git init`). Run **Bormagi: Check Environment** to verify Git is detected.
 
 ### Stale behaviour after extension update
 

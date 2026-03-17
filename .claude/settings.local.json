@@ -20,7 +20,8 @@
       "Bash(sed:*)",
       "Bash(ls:*)",
       "Bash(git apply:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(find C:UsersmothmDownloadsnew_bormagiBormagi-coding-assistant -type f \\\\\\(-name *README* -o -name *help* -o -name *onboard* -o -path */docs/* \\\\\\))"
     ]
   }
 }

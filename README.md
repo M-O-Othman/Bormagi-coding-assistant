@@ -50,6 +50,44 @@ No admin permissions are required. Install from the VS Code Marketplace or from 
 
 ---
 
+## Host Environment Requirements
+
+Bormagi runs inside VS Code and adapts to the tools available on your machine. Run **`Bormagi: Check Environment`** from the Command Palette (or open **Agent Settings**) to see a live report for your system.
+
+### Required
+
+| Component | Minimum | Purpose |
+|-----------|---------|---------|
+| **VS Code** | 1.85.0 | Extension host — Bormagi cannot run without it |
+| **Node.js** | 18.x | JavaScript runtime (bundled with VS Code) |
+| **LLM credential** | — | At least one provider API key, subscription token, or OAuth identity |
+
+### Recommended
+
+| Component | Purpose | Impact if missing |
+|-----------|---------|-------------------|
+| **Git** | Version control, checkpoints, undo, diff previews | Git-based features disabled: checkpoints, undo, diff previews, commit suggestions |
+| **npm** | Post-session validation (lint, test, typecheck) | Validation skipped after code generation. **File writes still work normally.** |
+
+### Optional
+
+| Component | Purpose | Impact if missing |
+|-----------|---------|-------------------|
+| **Python 3** | Python project support, Python-based MCP servers | Python MCP servers and Python project validation unavailable |
+| **gcloud CLI** | GCP Vertex AI authentication (ADC/OAuth) | Cannot use Vertex AI auth method — use API key auth for Gemini instead |
+| **Docker** | Sandbox isolation for agent file writes | Sandbox mode unavailable — agents write directly to workspace |
+
+### Platform notes
+
+| OS | Notes |
+|----|-------|
+| **Windows** | Bormagi normalises all file paths to forward slashes internally. Backslash paths from Windows tools are handled automatically. |
+| **macOS / Linux** | No special considerations. |
+
+> **Tip:** Bormagi checks your environment automatically on startup and shows a notification if critical tools are missing. Open **Agent Settings** to see the full environment report with install instructions.
+
+---
+
 ## Quick Start
 
 1. Open a workspace folder in VS Code.
