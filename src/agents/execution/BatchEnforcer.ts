@@ -74,8 +74,9 @@ export class BatchEnforcer {
    */
   async isBatchMandatory(): Promise<boolean> {
     const type = await this.detectWorkspaceType();
-    // docs_only workspaces don't require batch — they are transitioning to scaffolded
-    return type === 'greenfield';
+    // Both greenfield and docs_only workspaces require batch before first write,
+    // ensuring the agent declares its intent before writing into an empty workspace.
+    return type === 'greenfield' || type === 'docs_only';
   }
 
   /**
@@ -91,15 +92,15 @@ export class BatchEnforcer {
   ): string | null {
     const batch = execState.plannedFileBatch ?? [];
 
-    // Mature and docs_only workspaces: batch is advisory, never blocking
-    if (workspaceType === 'mature' || workspaceType === 'docs_only') {
+    // Mature workspaces: batch is advisory, never blocking
+    if (workspaceType === 'mature') {
       return null;
     }
 
     // No batch declared yet
     if (batch.length === 0) {
-      // If batch is mandatory (greenfield only), reject the write
-      if (workspaceType === 'greenfield') {
+      // Greenfield and docs_only require a batch before writing
+      if (workspaceType === 'greenfield' || workspaceType === 'docs_only') {
         return blockedMessage;
       }
       return null;

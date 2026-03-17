@@ -28,7 +28,8 @@
       "Bash(/dev/null -A 15)",
       "Bash(/dev/null -A 10)",
       "Bash(/dev/null -B 2 -A 5)",
-      "Bash(/dev/null -A 3)"
+      "Bash(/dev/null -A 3)",
+      "Bash(node -e \":*)"
     ]
   }
 }

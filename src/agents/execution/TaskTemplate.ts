@@ -7,6 +7,7 @@ import type { AssistantMode } from '../../context/types';
  */
 export type TaskTemplateName =
   | 'document_then_wait'
+  | 'single_file_creation'
   | 'greenfield_scaffold'
   | 'existing_project_patch'
   | 'multi_file_refactor'
@@ -34,6 +35,13 @@ export const TASK_TEMPLATES: Record<TaskTemplateName, TaskTemplate> = {
     allowDiscovery: true,
     stopAfterWrite: true,
     stopRules: ['Stop after writing deliverable document and wait for user response'],
+  },
+  single_file_creation: {
+    name: 'single_file_creation',
+    requiresBatch: false,
+    allowDiscovery: false,
+    maxWholeFileReads: 0,
+    stopRules: ['Write exactly the requested file', 'No extra files unless explicitly asked', 'No discovery — generate directly'],
   },
   greenfield_scaffold: {
     name: 'greenfield_scaffold',
@@ -74,6 +82,7 @@ export const TASK_TEMPLATES: Record<TaskTemplateName, TaskTemplate> = {
  * Skills are loaded from src/skills/<name>.md at runtime.
  */
 export const TEMPLATE_SKILL_MAP: Partial<Record<TaskTemplateName, string[]>> = {
+  single_file_creation: ['implement-feature'],
   greenfield_scaffold: ['implement-feature'],
   existing_project_patch: ['codebase-navigator', 'implement-feature'],
   multi_file_refactor: ['codebase-navigator'],

@@ -676,7 +676,13 @@ export class ExecutionStateManager {
     }
 
     // 4. Greenfield/docs_only with no batch and no artifacts → scaffold
+    //    Skip for single_file_creation template — it writes directly without batch.
     if ((workspaceType === 'greenfield' || workspaceType === 'docs_only') && planned.length === 0 && state.artifactsCreated.length === 0) {
+      if (state.taskTemplate === 'single_file_creation') {
+        return {
+          nextAction: 'Write the requested file now. Generate the full content directly — no batch needed.',
+        };
+      }
       return {
         nextAction: 'Call declare_file_batch with the project file list, then write the first implementation file',
       };

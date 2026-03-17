@@ -3483,11 +3483,22 @@ ${truncated}
       };
     }
 
+    // single_file_creation template: skip all discovery, go straight to write
+    const isSingleFile = state.taskTemplate === 'single_file_creation';
+    if (isSingleFile && state.artifactsCreated.length === 0) {
+      state.nextActions = ['Write the requested file now. Generate the full content directly.'];
+      return {
+        kind: 'mutate',
+        summary: 'single-file creation — write directly',
+        instruction: 'STEP CONTRACT (MUTATE): Write the requested file now. Generate the complete file content. Do NOT call read_file, list_files, or search tools. Allowed tools: write_file, edit_file, run_command, update_task_state.'
+      };
+    }
+
     // If inputs are resolved and at least one read has happened, transition to mutate.
     const hasResolvedInputs = (state.resolvedInputs ?? []).length > 0;
     const hasCompletedReads = (state.iterationsUsed ?? 0) >= 1 && hasResolvedInputs;
 
-    if (phase === 'WRITE_ONLY' || remaining.length > 0 || (state.blockedReadCount ?? 0) >= 1 || hasCompletedReads) {
+    if (isSingleFile || phase === 'WRITE_ONLY' || remaining.length > 0 || (state.blockedReadCount ?? 0) >= 1 || hasCompletedReads) {
       const nextFile = remaining[0];
 
       // Forcefully update nextActions and nextToolCall so the execution state

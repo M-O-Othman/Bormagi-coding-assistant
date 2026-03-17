@@ -50,14 +50,28 @@ export function classifyTask(userMessage: string, mode: AssistantMode, workspace
     return 'investigate_then_report';
   }
 
-  // Creation intent in empty/docs-only workspace → greenfield_scaffold
+  // Creation intent in empty/docs-only workspace
   if (workspaceType && (workspaceType === 'greenfield' || workspaceType === 'docs_only')) {
-    if (/\b(make|create|build|write|generate)\b/i.test(text) &&
-        /\b(app|page|file|site|website|tool|game|clock|calculator|timer|component|widget|form|dashboard)\b/i.test(text)) {
-      return 'greenfield_scaffold';
+    const hasCreationVerb = /\b(make|create|build|write|generate)\b/i.test(text);
+
+    // Count explicit filenames in the request
+    const explicitFiles = text.match(/[\w.-]+\.(?:html|js|ts|tsx|jsx|css|py|java|go|rs|json|md|txt|yaml|yml|toml|xml|sh|bat|rb|php|c|cpp|h)\b/gi);
+    const fileCount = explicitFiles ? new Set(explicitFiles.map(f => f.toLowerCase())).size : 0;
+
+    // Single explicit filename → single_file_creation (no batch, no discovery, write directly)
+    if (hasCreationVerb && fileCount === 1) {
+      return 'single_file_creation';
     }
-    // Explicit filename creation: "make X.html", "create foo.py"
-    if (/\b(make|create|build|write|generate)\b.*\.[\w]{2,5}\b/i.test(text)) {
+
+    // General creation intent (app/game/tool) with no multi-file signals → single_file_creation
+    if (hasCreationVerb && fileCount === 0 &&
+        /\b(app|page|file|site|website|tool|game|clock|calculator|timer|component|widget|form|dashboard)\b/i.test(text) &&
+        !/\b(multiple|several|separate)\s+(files?|components?|pages?)\b/i.test(text)) {
+      return 'single_file_creation';
+    }
+
+    // Multi-file creation or explicit multi-file signals → greenfield_scaffold
+    if (hasCreationVerb) {
       return 'greenfield_scaffold';
     }
   }
