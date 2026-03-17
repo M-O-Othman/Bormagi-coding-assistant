@@ -10,9 +10,10 @@ import { SkillManager } from '../skills/SkillManager';
 import { MCPHost } from '../mcp/MCPHost';
 import { AuditLogger } from '../audit/AuditLogger';
 import { ProviderFactory } from '../providers/ProviderFactory';
+import type { ILLMProvider } from '../providers/ILLMProvider';
 import { FileScanner, type ScannedFile } from '../utils/FileScanner';
 import { ConfigManager } from '../config/ConfigManager';
-import { ChatMessage, TokenUsage, MCPToolDefinition } from '../types';
+import { ChatMessage, TokenUsage, MCPToolDefinition, StreamEvent } from '../types';
 import type { AgentExecutionResult } from '../workflow/types';
 import { ExecutionOutcome } from '../workflow/enums';
 import { scanForSecrets, trimToContextLimit } from './execution/ContextWindow';
@@ -97,6 +98,36 @@ export type ContextUpdateCallback = (
   items: Array<{ id: string; itemType: string; label: string; source: string; reasonIncluded: string; estimatedTokens?: number; removable: boolean }>,
   tokenHealth: 'healthy' | 'busy' | 'near-limit',
 ) => void;
+
+// ─── Stream resilience ─────────────────────────────────────────────────────
+
+class StreamTimeoutError extends Error {
+  constructor(kind: 'first-chunk' | 'inter-chunk', timeoutMs: number) {
+    super(`LLM stream timeout (${kind}): no data received within ${Math.round(timeoutMs / 1000)}s`);
+    this.name = 'StreamTimeoutError';
+  }
+}
+
+const TRANSIENT_ERROR_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN']);
+
+function isTransientStreamError(err: unknown): boolean {
+  if (err instanceof StreamTimeoutError) return true;
+  if (err && typeof err === 'object') {
+    const code = (err as Record<string, unknown>).code;
+    if (typeof code === 'string' && TRANSIENT_ERROR_CODES.has(code)) return true;
+    const msg = (err as Record<string, unknown>).message;
+    if (typeof msg === 'string') {
+      for (const code of TRANSIENT_ERROR_CODES) {
+        if (msg.includes(code)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+const STREAM_FIRST_CHUNK_TIMEOUT_MS = 180_000; // 3 minutes for first chunk
+const STREAM_INTER_CHUNK_TIMEOUT_MS = 60_000;  // 60s between chunks
+const MAX_STREAM_RETRIES = 2;
 
 interface WorkspaceContextSnapshot {
   files: ScannedFile[];
@@ -757,7 +788,7 @@ export class AgentRunner {
     // Phase 8.3 — Classify task template once at run start
     let activeTaskTemplate = execState.taskTemplate;
     if (!activeTaskTemplate) {
-      activeTaskTemplate = classifyTask(userMessage, mode);
+      activeTaskTemplate = classifyTask(userMessage, mode, detectedWorkspaceType);
       execState.taskTemplate = activeTaskTemplate;
       stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
     }
@@ -1098,6 +1129,8 @@ export class AgentRunner {
     // Ensure MCP servers are ready before the first tool call
     await mcpStartPromise;
 
+    let streamRetryCount = 0;
+
     while (continueLoop) {
       // ── User-initiated stop ─────────────────────────────────────────────────
       if (this.abortRequested) {
@@ -1407,7 +1440,9 @@ ${truncated}
         if (shouldDirectDispatch) {
           const dd9Step = stateManager.computeDeterministicNextStep(execState, detectedWsType);
           // Only dispatch if the tool is a real MCP tool, not a virtual tool
-          if (dd9Step?.nextToolCall && !VIRTUAL_TOOLS.has(dd9Step.nextToolCall.tool)) {
+          // Guard: write_file without content is a prompt hint only, not dispatchable
+          const dd9HasContent = dd9Step?.nextToolCall?.input && 'content' in dd9Step.nextToolCall.input && dd9Step.nextToolCall.input.content;
+          if (dd9Step?.nextToolCall && !VIRTUAL_TOOLS.has(dd9Step.nextToolCall.tool) && (dd9Step.nextToolCall.tool !== 'write_file' || dd9HasContent)) {
             contextCostTracker.recordSkippedLLMCall();
             const dd9Ntc = dd9Step.nextToolCall;
             agentLog.logDeterministicDispatch(dd9Ntc.tool, (dd9Ntc.input as Record<string, unknown>).path as string | undefined, 'DD9 direct dispatch');
@@ -1524,7 +1559,8 @@ ${truncated}
       const toolsForTurn = mode === 'code'
         ? this.filterToolsByStepContract(this.filterToolsByMode(tools, mode), stepContractKind)
         : this.filterToolsByMode(tools, mode);
-      for await (const event of provider.stream(messagesForProvider, toolsForTurn, actualMaxOutputTokens)) {
+      try {
+      for await (const event of this.streamWithTimeout(provider, messagesForProvider, toolsForTurn, actualMaxOutputTokens)) {
         if (event.type === 'provider_headers') {
           const importantHeaders = this.selectImportantHeaders(event.headers);
           await this.auditLogger.logLLMResponseHeaders(
@@ -1829,6 +1865,31 @@ ${truncated}
               }`;
               agentLog.logToolResult(event.name, 'rejected: batch already active');
             } else {
+              // ── Batch validation: ensure user-requested files are included, trim over-expansion ──
+              const fileNameRegex = /[\w.-]+\.(?:html|js|ts|tsx|jsx|css|py|java|go|rs|json|md|txt|yaml|yml|toml|xml|sh|bat|rb|php|c|cpp|h)\b/gi;
+              const userRequestedFiles = [...new Set((userMessage.match(fileNameRegex) ?? []).map(f => f.toLowerCase()))];
+
+              // If user asked for 1 file but agent declared >2, trim to user's file (+ optional README)
+              if (userRequestedFiles.length === 1 && newFiles.length > 2) {
+                const requestedNorm = userRequestedFiles[0];
+                const trimmed = newFiles.filter(f =>
+                  f.toLowerCase().endsWith(requestedNorm) || f.toLowerCase() === 'readme.md'
+                );
+                if (trimmed.length > 0 && trimmed.length < newFiles.length) {
+                  const originalCount = newFiles.length;
+                  newFiles.length = 0;
+                  newFiles.push(...trimmed);
+                  onThought?.({ type: 'thinking', label: `[Batch trimmed] User requested 1 file; reduced batch from ${originalCount} to ${newFiles.length}`, timestamp: new Date() });
+                }
+              }
+
+              // Ensure user-requested files are present in the batch
+              for (const reqFile of userRequestedFiles) {
+                if (!newFiles.some(f => f.toLowerCase().endsWith(reqFile))) {
+                  newFiles.unshift(reqFile);
+                }
+              }
+
               execState.plannedFileBatch = newFiles;
               stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
               agentLog.logToolResult(event.name, `batch declared: ${newFiles.length} files`);
@@ -2119,6 +2180,30 @@ ${truncated}
             await this.hookEngine.onAfterEdit([event.name], { mode });
           }
         }
+      }
+      // Stream succeeded — reset retry counter
+      streamRetryCount = 0;
+      } catch (streamErr: unknown) {
+        // ─── Transient stream error retry ───────────────────────────────────────
+        if (isTransientStreamError(streamErr) && streamRetryCount < MAX_STREAM_RETRIES) {
+          streamRetryCount++;
+          const backoffMs = Math.pow(2, streamRetryCount) * 1000; // 2s, 4s
+          const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+          onThought?.({
+            type: 'error',
+            label: `[Stream retry ${streamRetryCount}/${MAX_STREAM_RETRIES}] ${errMsg} — retrying in ${backoffMs / 1000}s`,
+            timestamp: new Date(),
+          });
+          agentLog.logToolResult('stream_retry', `attempt=${streamRetryCount} err=${errMsg}`);
+          await new Promise(r => setTimeout(r, backoffMs));
+          continue; // retry the while-loop iteration
+        }
+        // Non-transient or retries exhausted — fail gracefully
+        const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+        onThought?.({ type: 'error', label: `[Stream failed] ${errMsg}`, timestamp: new Date() });
+        onText(`\n\n**Error**: LLM provider connection failed: ${errMsg}`);
+        continueLoop = false;
+        continue;
       }
 
       // ─── #15 Phase-level milestone stopping ──────────────────────────────────
@@ -2473,13 +2558,19 @@ ${truncated}
           { role: 'user', content: `You have completed ${toolsUsed.length} tool operations for the following request: "${userMessage}"\n\nPlease now provide your complete final answer as plain text. Do not call any tools. Summarise what you did and what the outcome was.` },
         ];
         let synthText = '';
-        for await (const synthEvent of provider.stream(synthesisMessages, [], actualMaxOutputTokens)) {
-          if (synthEvent.type === 'text') {
-            onText(synthEvent.delta);
-            synthText += synthEvent.delta;
-          } else if (synthEvent.type === 'token_usage') {
-            onTokenUsage?.(synthEvent.usage);
+        try {
+          for await (const synthEvent of this.streamWithTimeout(provider, synthesisMessages, [], actualMaxOutputTokens)) {
+            if (synthEvent.type === 'text') {
+              onText(synthEvent.delta);
+              synthText += synthEvent.delta;
+            } else if (synthEvent.type === 'token_usage') {
+              onTokenUsage?.(synthEvent.usage);
+            }
           }
+        } catch (synthErr: unknown) {
+          // Synthesis is non-critical — log and continue
+          const errMsg = synthErr instanceof Error ? synthErr.message : String(synthErr);
+          onThought?.({ type: 'error', label: `[Synthesis stream failed] ${errMsg}`, timestamp: new Date() });
         }
         if (synthText.trim()) {
           fullResponse = synthText;
@@ -3296,6 +3387,61 @@ ${truncated}
     }
     // code (default): all tools available
     return tools;
+  }
+
+  /**
+   * Wrap provider.stream() with a two-tier timeout.
+   * - firstChunkTimeoutMs: max wait for the very first event
+   * - interChunkTimeoutMs: max gap between consecutive events
+   * Throws StreamTimeoutError on timeout so the caller can retry.
+   */
+  private async *streamWithTimeout(
+    provider: ILLMProvider,
+    messages: ChatMessage[],
+    tools: MCPToolDefinition[],
+    maxTokens: number,
+    firstChunkTimeoutMs = STREAM_FIRST_CHUNK_TIMEOUT_MS,
+    interChunkTimeoutMs = STREAM_INTER_CHUNK_TIMEOUT_MS,
+  ): AsyncGenerator<StreamEvent> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let rejectTimeout: ((err: StreamTimeoutError) => void) | null = null;
+    let receivedFirstChunk = false;
+
+    const resetTimer = (ms: number, kind: 'first-chunk' | 'inter-chunk') => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        rejectTimeout?.(new StreamTimeoutError(kind, ms));
+      }, ms);
+    };
+
+    // Start with the first-chunk timeout
+    resetTimer(firstChunkTimeoutMs, 'first-chunk');
+
+    try {
+      const stream = provider.stream(messages, tools, maxTokens);
+      const iterator = stream[Symbol.asyncIterator]();
+
+      while (true) {
+        // Race between next event and timeout
+        const result = await Promise.race<IteratorResult<StreamEvent>>([
+          iterator.next(),
+          new Promise<never>((_resolve, reject) => { rejectTimeout = reject; }),
+        ]);
+
+        if (result.done) break;
+
+        if (!receivedFirstChunk) {
+          receivedFirstChunk = true;
+        }
+        // Reset to inter-chunk timeout after each event
+        resetTimer(interChunkTimeoutMs, 'inter-chunk');
+
+        yield result.value;
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+      rejectTimeout = null;
+    }
   }
 
   /**

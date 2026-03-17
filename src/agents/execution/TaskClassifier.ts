@@ -1,13 +1,14 @@
 import type { AssistantMode } from '../../context/types';
 import type { TaskTemplateName } from './TaskTemplate';
+import type { WorkspaceType } from './BatchEnforcer';
 
 /**
  * Rule-based task shape classifier (PQ-7 Option A: no LLM call).
  *
- * Classifies the task once at run start from the user message and mode.
+ * Classifies the task once at run start from the user message, mode, and workspace type.
  * Drives stop rules, batch requirements, skill loading, and milestone decisions.
  */
-export function classifyTask(userMessage: string, mode: AssistantMode): TaskTemplateName {
+export function classifyTask(userMessage: string, mode: AssistantMode, workspaceType?: WorkspaceType): TaskTemplateName {
   // plan mode always → plan_only
   if (mode === 'plan') { return 'plan_only'; }
 
@@ -47,6 +48,18 @@ export function classifyTask(userMessage: string, mode: AssistantMode): TaskTemp
     !/\b(fix|write|create|implement|add|build|generate)\b/i.test(text)
   ) {
     return 'investigate_then_report';
+  }
+
+  // Creation intent in empty/docs-only workspace → greenfield_scaffold
+  if (workspaceType && (workspaceType === 'greenfield' || workspaceType === 'docs_only')) {
+    if (/\b(make|create|build|write|generate)\b/i.test(text) &&
+        /\b(app|page|file|site|website|tool|game|clock|calculator|timer|component|widget|form|dashboard)\b/i.test(text)) {
+      return 'greenfield_scaffold';
+    }
+    // Explicit filename creation: "make X.html", "create foo.py"
+    if (/\b(make|create|build|write|generate)\b.*\.[\w]{2,5}\b/i.test(text)) {
+      return 'greenfield_scaffold';
+    }
   }
 
   // default: targeted patch to an existing project

@@ -648,17 +648,22 @@ export class ExecutionStateManager {
 
     // 2. Batch exists + files remaining → write the next one
     // NOTE: write_file requires LLM-generated content — cannot be direct-dispatched.
-    // Only set advisory nextAction text; do NOT set nextToolCall (it would lack content).
+    // nextToolCall is set as a prompt hint only (no content field = not dispatchable).
     if (remaining.length > 0) {
       const nextFile = remaining[0];
       return {
-        nextAction: `Write the next batch file now: ${nextFile}. Generate the full file content based on the project plan and existing code.`,
+        nextAction: `Write the next batch file now: ${nextFile}. Generate the full file content.`,
+        nextToolCall: {
+          tool: 'write_file',
+          input: { path: nextFile },
+          description: `Write ${nextFile} (LLM must generate content)`,
+        },
       };
     }
 
     // 3. Repeated blocked reads → force a write step
     if ((state.blockedReadCount ?? 0) >= 2) {
-      if (workspaceType === 'greenfield' && planned.length === 0 && state.artifactsCreated.length === 0) {
+      if ((workspaceType === 'greenfield' || workspaceType === 'docs_only') && planned.length === 0 && state.artifactsCreated.length === 0) {
         return {
           nextAction: 'Stop reading. Call declare_file_batch with the project file list, then write the first file',
         };
@@ -670,8 +675,8 @@ export class ExecutionStateManager {
       }
     }
 
-    // 4. Greenfield with no batch and no artifacts → scaffold
-    if (workspaceType === 'greenfield' && planned.length === 0 && state.artifactsCreated.length === 0) {
+    // 4. Greenfield/docs_only with no batch and no artifacts → scaffold
+    if ((workspaceType === 'greenfield' || workspaceType === 'docs_only') && planned.length === 0 && state.artifactsCreated.length === 0) {
       return {
         nextAction: 'Call declare_file_batch with the project file list, then write the first implementation file',
       };

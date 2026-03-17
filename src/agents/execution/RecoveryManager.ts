@@ -60,11 +60,13 @@ export class RecoveryManager {
     }
 
     // Trigger 4: nextAction is missing/empty while run is still active.
-    // Only fire after 5+ iterations so agents have room to work before being required
-    // to call update_task_state. Firing on iteration 1-4 causes unnecessary churn.
+    // Fire earlier (2 iterations) when a batch is active, since the agent should
+    // be writing files — not spinning. Otherwise wait 5+ iterations.
+    const batchActive = (this.execState.plannedFileBatch ?? []).length > 0;
+    const iterationThreshold = batchActive ? 2 : 5;
     if (
       (this.execState.runPhase ?? 'RUNNING') === 'RUNNING' &&
-      this.execState.iterationsUsed >= 5 &&
+      this.execState.iterationsUsed >= iterationThreshold &&
       (this.execState.nextActions ?? []).length === 0 &&
       !this.execState.nextToolCall &&
       this.execState.artifactsCreated.length === 0
