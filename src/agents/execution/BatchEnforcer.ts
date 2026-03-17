@@ -105,9 +105,10 @@ export class BatchEnforcer {
       return null;
     }
 
-    // Batch declared — check if this file is in it
-    const normalised = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
-    const inBatch = batch.some(p => p.replace(/\\/g, '/') === normalised);
+    // Batch declared — check if this file is in it (normalise both sides)
+    const normalise = (p: string) => p.replace(/\\/g, '/').replace(/^\/+/, '');
+    const normalised = normalise(filePath);
+    const inBatch = batch.some(p => normalise(p) === normalised);
     if (!inBatch) {
       return blockedMessage;
     }

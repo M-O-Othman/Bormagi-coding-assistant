@@ -2792,9 +2792,20 @@ ${truncated}
 
   // ─── Path utilities ───────────────────────────────────────────────────────
 
-  /** Strip leading slashes so "/foo/bar.ts" → "foo/bar.ts" (workspace-relative). */
+  /**
+   * Normalize to a canonical workspace-relative path:
+   * - Convert backslashes to forward slashes (Windows compat)
+   * - Strip absolute workspace root prefix if the model sends one
+   * - Strip leading slashes
+   */
   private normalizeWorkspacePath(input: string): string {
-    return input.replace(/^[/\\]+/, '');
+    let p = input.replace(/\\/g, '/');
+    // Strip workspace root prefix if the model sent an absolute path
+    const root = this.workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (p.startsWith(root + '/')) {
+      p = p.slice(root.length + 1);
+    }
+    return p.replace(/^\/+/, '');
   }
 
   /**

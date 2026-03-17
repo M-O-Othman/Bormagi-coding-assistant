@@ -209,13 +209,21 @@ export class ChatController {
       }
     }
 
-    const agentId = this._activeAgentId;
+    let agentId = this._activeAgentId;
     if (!agentId) {
-      this.post({
-        type: 'error',
-        message: 'No agent selected. Use @agent-name in your message or run "Bormagi: Select Active Agent".'
-      });
-      return;
+      // Auto-select advanced-coder (or first available agent) instead of showing an error
+      const preferred = this.agentManager.getAgent('advanced-coder');
+      const fallback = preferred ? 'advanced-coder' : (this.agentManager.listAgents()[0]?.id ?? undefined);
+      if (fallback) {
+        await this.setActiveAgent(fallback);
+        agentId = fallback;
+      } else {
+        this.post({
+          type: 'error',
+          message: 'No agents configured. Open Bormagi Agent Settings to create one.'
+        });
+        return;
+      }
     }
 
     const agent = this.agentManager.getAgent(agentId);
