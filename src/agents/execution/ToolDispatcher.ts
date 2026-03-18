@@ -33,7 +33,8 @@ export interface DispatchResult {
     | 'BORMAGI_PATH_BLOCKED'
     | 'MODE_DISALLOWS_MUTATION'
     | 'LOOP_DETECTED'
-    | 'WRITE_ONLY_PHASE';
+    | 'WRITE_ONLY_PHASE'
+    | 'BATCH_PREREQUISITE_MISSING';
   toolName: string;
   path?: string;
 }

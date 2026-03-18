@@ -2,6 +2,9 @@
  * Edge-case tests for BatchEnforcer.detectWorkspaceType() (DD3).
  * Verifies correct classification for doc-only repos, backend dirs,
  * and boundary source file counts.
+ *
+ * checkWritePermission tests updated to use templateRequiresBatch (boolean)
+ * instead of workspace type — enforcement is now template-driven.
  */
 import * as os from 'os';
 import * as path from 'path';
@@ -145,16 +148,16 @@ describe('BatchEnforcer.checkWritePermission — edge cases', () => {
 
   test('backslash paths normalised for batch matching', () => {
     const state = makeState(['src/index.ts']);
-    expect(enforcer.checkWritePermission('src\\index.ts', state, 'BLOCKED', 'greenfield')).toBeNull();
+    expect(enforcer.checkWritePermission('src\\index.ts', state, 'BLOCKED', true)).toBeNull();
   });
 
   test('leading slash stripped for batch matching', () => {
     const state = makeState(['src/index.ts']);
-    expect(enforcer.checkWritePermission('/src/index.ts', state, 'BLOCKED', 'greenfield')).toBeNull();
+    expect(enforcer.checkWritePermission('/src/index.ts', state, 'BLOCKED', true)).toBeNull();
   });
 
-  test('scaffolded without batch → allowed (batch only required for greenfield)', () => {
+  test('template with requiresBatch=false → always allowed regardless of batch state', () => {
     const state = makeState([]);
-    expect(enforcer.checkWritePermission('src/x.ts', state, 'BLOCKED', 'scaffolded')).toBeNull();
+    expect(enforcer.checkWritePermission('src/x.ts', state, 'BLOCKED', false)).toBeNull();
   });
 });

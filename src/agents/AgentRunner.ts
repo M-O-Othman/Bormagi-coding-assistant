@@ -1264,10 +1264,22 @@ ${truncated}
         }
 
         if (shouldForceWrite) {
-          stateManager.setExecutionPhase(execState, 'WRITE_ONLY');
-          this.toolDispatcher.setExecutionPhase('WRITE_ONLY');
-          silentExecution = true;
-          effectiveUserContent = 'WRITE_ONLY phase: generate and call write_file or edit_file now. Do not call read_file, list_files, search_files, or glob_files.';
+          // Pre-check: do not enter WRITE_ONLY if batch prerequisites are unsatisfied.
+          // WRITE_ONLY blocks discovery tools, and batch enforcement blocks writes —
+          // entering WRITE_ONLY without a batch creates an irrecoverable deadlock.
+          const tmplNeedsBatch = activeTaskTemplate ? TASK_TEMPLATES[activeTaskTemplate].requiresBatch : false;
+          const batchDeclared = (execState.plannedFileBatch ?? []).length > 0;
+
+          if (tmplNeedsBatch && !batchDeclared) {
+            // Cannot write yet — batch prerequisite missing. Instruct agent to declare batch first.
+            effectiveUserContent = 'CONTROL STEP: You must call declare_file_batch before writing any files. Provide the list of files you plan to write, then write the first file.';
+            onThought?.({ type: 'thinking', label: `[Phase guard] WRITE_ONLY blocked — batch prerequisite missing, routing to control step`, timestamp: new Date() });
+          } else {
+            stateManager.setExecutionPhase(execState, 'WRITE_ONLY');
+            this.toolDispatcher.setExecutionPhase('WRITE_ONLY');
+            silentExecution = true;
+            effectiveUserContent = 'WRITE_ONLY phase: generate and call write_file or edit_file now. Do not call read_file, list_files, search_files, or glob_files.';
+          }
         }
       }
 
@@ -1316,7 +1328,7 @@ ${truncated}
             // step instead of letting the LLM loop back into reads.
             if (trigger === 'REPEATED_BLOCKED_READS') {
               // DD9: Try deterministic next step first
-              const deterministicStep = stateManager.computeDeterministicNextStep(execState, detectedWsType);
+              const deterministicStep = stateManager.computeDeterministicNextStep(execState);
               const nextToolCall = deterministicStep?.nextToolCall ?? execState.nextToolCall;
               if (nextToolCall && !VIRTUAL_TOOLS.has(nextToolCall.tool)) {
                 // Direct dispatch — skip LLM call entirely
@@ -1340,7 +1352,7 @@ ${truncated}
                 onThought?.({ type: 'thinking', label: `[Strategy switch] Using nextAction as instruction: ${effectiveUserContent.slice(0, 100)}`, timestamp: new Date() });
               } else {
                 // Use deterministic step from DD5 or fall back to advisory computeNextStep
-                const hint = deterministicStep ?? stateManager.computeNextStep(execState, execState.lastExecutedTool ?? 'none', undefined, '', detectedWsType);
+                const hint = deterministicStep ?? stateManager.computeNextStep(execState, execState.lastExecutedTool ?? 'none', undefined, '');
                 if (hint) {
                   effectiveUserContent = hint.nextAction;
                   if (hint.nextToolCall && !VIRTUAL_TOOLS.has(hint.nextToolCall.tool)) { stateManager.setNextToolCall(execState, hint.nextToolCall.tool, hint.nextToolCall.input, hint.nextToolCall.description); }
@@ -1360,7 +1372,7 @@ ${truncated}
       // DD9: After N cached rereads, bypass LLM and force next write step.
       // Use computeDeterministicNextStep first (DD5), then fall back to stored nextToolCall.
       if ((execState.blockedReadCount ?? 0) >= 3) {
-        const deterministicBypass = stateManager.computeDeterministicNextStep(execState, detectedWsType);
+        const deterministicBypass = stateManager.computeDeterministicNextStep(execState);
         const bypassNtc = deterministicBypass?.nextToolCall ?? execState.nextToolCall;
         if (bypassNtc && !VIRTUAL_TOOLS.has(bypassNtc.tool)) {
           contextCostTracker.recordSkippedLLMCall();
@@ -1384,7 +1396,7 @@ ${truncated}
           iterationCount++; // Prevent infinite loop — count bypass dispatches
           continue;
         } else {
-          const bypassHint = deterministicBypass ?? stateManager.computeNextStep(execState, execState.lastExecutedTool ?? 'none', undefined, '', detectedWsType);
+          const bypassHint = deterministicBypass ?? stateManager.computeNextStep(execState, execState.lastExecutedTool ?? 'none', undefined, '');
           if (bypassHint) {
             effectiveUserContent = bypassHint.nextAction;
             if (bypassHint.nextToolCall && !VIRTUAL_TOOLS.has(bypassHint.nextToolCall.tool)) {
@@ -1398,7 +1410,7 @@ ${truncated}
 
       // Task 9: Detect repetitive narration and force write
       if (this.isRepetitiveNarration(messages, writtenPaths)) {
-        const narDeterministic = stateManager.computeDeterministicNextStep(execState, detectedWsType);
+        const narDeterministic = stateManager.computeDeterministicNextStep(execState);
         const narNtc = narDeterministic?.nextToolCall ?? execState.nextToolCall;
         if (narNtc && !VIRTUAL_TOOLS.has(narNtc.tool)) {
           contextCostTracker.recordSkippedLLMCall();
@@ -1438,7 +1450,7 @@ ${truncated}
         const shouldDirectDispatch = sameToolLoopCount >= 2 || isGreenfieldBootstrap || hasPlanNoBatch;
 
         if (shouldDirectDispatch) {
-          const dd9Step = stateManager.computeDeterministicNextStep(execState, detectedWsType);
+          const dd9Step = stateManager.computeDeterministicNextStep(execState);
           // Only dispatch if the tool is a real MCP tool, not a virtual tool
           // Guard: write_file without content is a prompt hint only, not dispatchable
           const dd9HasContent = dd9Step?.nextToolCall?.input && 'content' in dd9Step.nextToolCall.input && dd9Step.nextToolCall.input.content;
@@ -1718,18 +1730,42 @@ ${truncated}
             }
             const normalizedBatchPath = this.normalizeWorkspacePath(toolCallPath);
             const batchMsg = getAppData().executionMessages.toolBlocked.offBatch;
+            const tmplRequiresBatch = activeTaskTemplate ? TASK_TEMPLATES[activeTaskTemplate].requiresBatch : true;
             return batchEnforcer.checkWritePermission(
-              normalizedBatchPath, execState, batchMsg, detectedWorkspaceType
+              normalizedBatchPath, execState, batchMsg, tmplRequiresBatch
             );
           })()) {
             const normalizedBatchPath = this.normalizeWorkspacePath(toolCallPath);
             const batchMsg = getAppData().executionMessages.toolBlocked.offBatch;
+            const tmplRequiresBatch2 = activeTaskTemplate ? TASK_TEMPLATES[activeTaskTemplate].requiresBatch : true;
             const batchRejection = batchEnforcer.checkWritePermission(
-              normalizedBatchPath, execState, batchMsg, detectedWorkspaceType
+              normalizedBatchPath, execState, batchMsg, tmplRequiresBatch2
             ) ?? batchMsg;
-            agentLog.logToolResult(event.name, batchRejection);
-            toolResultContent = `<tool_result name="${event.name}" status="error">\n${batchRejection}\n</tool_result>`;
-            onThought({ type: 'error', label: `Batch violation: ${toolCallPath}`, detail: batchRejection, timestamp: new Date() });
+
+            // ─── Batch violation tracking + auto-recovery ───────────────────────
+            // Instead of letting the agent loop on rejected writes, track violations
+            // and auto-declare a batch when the prerequisite is missing.
+            execState.batchViolationCount = (execState.batchViolationCount ?? 0) + 1;
+            execState.lastBatchViolationPath = normalizedBatchPath;
+
+            if ((execState.plannedFileBatch ?? []).length === 0) {
+              // No batch declared — auto-declare one from the blocked path.
+              // This satisfies the prerequisite so the next write attempt succeeds.
+              execState.plannedFileBatch = [normalizedBatchPath];
+              execState.completedBatchFiles = [];
+              stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+              onThought?.({ type: 'thinking', label: `[Auto-batch] Declared batch [${normalizedBatchPath}] after batch violation`, timestamp: new Date() });
+              agentLog.logToolResult(event.name, `auto-declared batch: [${normalizedBatchPath}]`);
+              // Tell the agent the batch was auto-declared — retry the write
+              toolResultContent = `<tool_result name="${event.name}" status="error">\n[BATCH AUTO-DECLARED] No batch was declared. A batch containing [${normalizedBatchPath}] has been auto-declared. Retry the write_file call now.\n</tool_result>`;
+              // Set next action so the agent retries immediately
+              execState.nextActions = [`Write ${normalizedBatchPath} now. The batch has been declared.`];
+            } else {
+              // Batch exists but file not in it — standard rejection
+              agentLog.logToolResult(event.name, batchRejection);
+              toolResultContent = `<tool_result name="${event.name}" status="error">\n${batchRejection}\n</tool_result>`;
+              onThought({ type: 'error', label: `Batch violation: ${toolCallPath}`, detail: batchRejection, timestamp: new Date() });
+            }
           } else if (isFileWrite && toolCallPath && registeredArtifactPaths.has(this.normalizeWorkspacePath(toolCallPath))) {
             // ─── OPT-1+3: Smart cross-session artifact guard ─────────────────
             // File was created in a PREVIOUS session. Instead of hard-blocking
@@ -1891,6 +1927,8 @@ ${truncated}
               }
 
               execState.plannedFileBatch = newFiles;
+              execState.batchViolationCount = 0; // Reset violation counter on successful batch declaration
+              execState.lastBatchViolationPath = undefined;
               stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
               agentLog.logToolResult(event.name, `batch declared: ${newFiles.length} files`);
               toolResultContent = `[Batch declared: ${newFiles.length} file(s) — ` +
@@ -1920,28 +1958,47 @@ ${truncated}
               ['read_file', 'list_files', 'search_files', 'glob_files', 'grep_content'].includes(event.name);
             if (shouldForceWriteOnlyForLoop) {
               // FIX 3b: Hard state transition to WRITE_ONLY — no more reads allowed.
-              stateManager.setExecutionPhase(execState, 'WRITE_ONLY');
-              this.toolDispatcher.lockDiscovery();
-              this.toolDispatcher.setExecutionPhase('WRITE_ONLY');
+              // Guard: if batch is required but not declared, skip WRITE_ONLY to avoid deadlock.
+              // Instead, block the read and direct the agent to declare batch first.
+              const inlineNeedsBatch = activeTaskTemplate ? TASK_TEMPLATES[activeTaskTemplate].requiresBatch : false;
+              const inlineBatchOk = !inlineNeedsBatch || (execState.plannedFileBatch ?? []).length > 0;
 
-              // Inject the file content the model is trying to read (if stored)
-              const storedContent = (event.name === 'read_file' && toolCallPath)
-                ? execState.resolvedInputContents?.[this.normalizeWorkspacePath(toolCallPath)]
-                : undefined;
-              const contentInjection = storedContent
-                ? `\n\nHere is the content you are trying to read:\n${storedContent}`
-                : '';
+              if (inlineBatchOk) {
+                stateManager.setExecutionPhase(execState, 'WRITE_ONLY');
+                this.toolDispatcher.lockDiscovery();
+                this.toolDispatcher.setExecutionPhase('WRITE_ONLY');
 
-              toolResult = {
-                text: `[READ BLOCKED] Repeated ${event.name} call on "${loopTarget ?? event.name}". Phase is now WRITE_ONLY. All further reads will be rejected. Write the next file now.${contentInjection}`,
-                status: 'blocked',
-                reasonCode: 'WRITE_ONLY_PHASE',
-                toolName: event.name,
-                path: loopTarget,
-              };
-              onThought?.({ type: 'error', label: `Loop detected → WRITE_ONLY: ${event.name}:${loopTarget ?? ''} x${toolPathCount}`, timestamp: new Date() });
-              agentLog.logGuardActivation('WRITE_ONLY', event.name, loopTarget, iterationCount);
-              agentLog.logPhaseTransition(execState.executionPhase ?? 'DISCOVERING', 'WRITE_ONLY', `loop on ${event.name}:${loopTarget ?? ''}`);
+                // Inject the file content the model is trying to read (if stored)
+                const storedContent = (event.name === 'read_file' && toolCallPath)
+                  ? execState.resolvedInputContents?.[this.normalizeWorkspacePath(toolCallPath)]
+                  : undefined;
+                const contentInjection = storedContent
+                  ? `\n\nHere is the content you are trying to read:\n${storedContent}`
+                  : '';
+
+                toolResult = {
+                  text: `[READ BLOCKED] Repeated ${event.name} call on "${loopTarget ?? event.name}". Phase is now WRITE_ONLY. All further reads will be rejected. Write the next file now.${contentInjection}`,
+                  status: 'blocked',
+                  reasonCode: 'WRITE_ONLY_PHASE',
+                  toolName: event.name,
+                  path: loopTarget,
+                };
+                onThought?.({ type: 'error', label: `Loop detected → WRITE_ONLY: ${event.name}:${loopTarget ?? ''} x${toolPathCount}`, timestamp: new Date() });
+                agentLog.logGuardActivation('WRITE_ONLY', event.name, loopTarget, iterationCount);
+                agentLog.logPhaseTransition(execState.executionPhase ?? 'DISCOVERING', 'WRITE_ONLY', `loop on ${event.name}:${loopTarget ?? ''}`);
+              } else {
+                // Batch prerequisite missing — cannot enter WRITE_ONLY (would deadlock).
+                // Block the read and direct agent to declare batch first.
+                execState.nextActions = ['Call declare_file_batch with the list of files to write, then write the first file.'];
+                onThought?.({ type: 'thinking', label: `[Phase guard] WRITE_ONLY skipped — batch prerequisite missing, routing to batch declaration`, timestamp: new Date() });
+                toolResult = {
+                  text: `[READ BLOCKED] Repeated reads detected. You must call declare_file_batch before writing. Provide the list of files you plan to create.`,
+                  status: 'blocked',
+                  reasonCode: 'BATCH_PREREQUISITE_MISSING',
+                  toolName: event.name,
+                  path: loopTarget,
+                };
+              }
             } else {
               toolResult = await this.toolDispatcher.dispatch(
                 event, agentId, onApproval, onDiff, onThought
@@ -2012,8 +2069,8 @@ ${truncated}
                 }
 
                 // DD5: Compute deterministic next step first, fall back to advisory
-                let nextStep = stateManager.computeDeterministicNextStep(execState, detectedWsType)
-                  ?? stateManager.computeNextStep(execState, event.name, toolCallPath, toolResult.text, detectedWsType);
+                let nextStep = stateManager.computeDeterministicNextStep(execState)
+                  ?? stateManager.computeNextStep(execState, event.name, toolCallPath, toolResult.text);
                 // Auto-repair — if no step computed after read_file, force a write
                 if (!nextStep && event.name === 'read_file') {
                   nextStep = {
@@ -3475,11 +3532,33 @@ ${truncated}
     const remaining = planned.filter(f => !completed.includes(f));
     const phase = state.executionPhase ?? 'INITIALISING';
 
+    // Derive batch prerequisite status from the template — single source of truth.
+    const needsBatch = state.taskTemplate
+      ? TASK_TEMPLATES[state.taskTemplate]?.requiresBatch ?? false
+      : false;
+    const batchDeclared = planned.length > 0;
+    const batchPrereqMet = !needsBatch || batchDeclared;
+
     if (phase === 'VALIDATING_STEP') {
       return {
         kind: 'validate',
         summary: 'validate recent mutations and capture results',
         instruction: 'STEP CONTRACT (VALIDATE): Run validation/diagnostics now. Allowed tools: run_command, get_diagnostics, git_diff/git_status, update_task_state. Do not read/search unless strictly required by a failing test trace.'
+      };
+    }
+
+    // ── Batch prerequisite guard ──────────────────────────────────────────────
+    // If the template requires a batch and none is declared, the agent MUST
+    // declare one before any write. Emitting a 'mutate' contract here would
+    // contradict enforcement (writes would be rejected). Instead, emit a
+    // discover-level contract that directs the agent to declare_file_batch.
+    // This ensures the prompt and enforcement policy never disagree.
+    if (!batchPrereqMet && state.artifactsCreated.length === 0) {
+      state.nextActions = ['Call declare_file_batch with the list of files you plan to write, then write the first file.'];
+      return {
+        kind: 'discover',
+        summary: 'batch prerequisite missing — must declare batch before writing',
+        instruction: 'STEP CONTRACT (CONTROL): You must call declare_file_batch before writing any files. Provide the list of files you plan to create, then write the first one. Allowed tools: declare_file_batch, read_file, list_files, update_task_state.'
       };
     }
 

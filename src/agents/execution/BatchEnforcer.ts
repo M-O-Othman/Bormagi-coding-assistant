@@ -13,8 +13,9 @@ export interface BatchProgress {
 /**
  * Enforces declared file batches and determines workspace maturity type.
  *
- * Greenfield/scaffolded workspaces must declare a batch before the first write_file.
- * Mature workspaces (existing projects) may write without a batch declaration.
+ * Batch enforcement is driven by the active TaskTemplate's `requiresBatch` flag,
+ * NOT by workspace type. Workspace type influences template *selection* (in
+ * TaskClassifier) but has no role in runtime enforcement.
  *
  * Wired into AgentRunner's tool_use handler (Phase 4, executionEngineV2 flag).
  */
@@ -69,18 +70,18 @@ export class BatchEnforcer {
   }
 
   /**
-   * Returns true when a batch must be declared before the first write_file.
-   * Mandatory for greenfield and scaffolded workspaces (not mature ones).
-   */
-  async isBatchMandatory(): Promise<boolean> {
-    const type = await this.detectWorkspaceType();
-    // Both greenfield and docs_only workspaces require batch before first write,
-    // ensuring the agent declares its intent before writing into an empty workspace.
-    return type === 'greenfield' || type === 'docs_only';
-  }
-
-  /**
    * Check whether a write to `filePath` is permitted given the current execution state.
+   *
+   * Enforcement is driven entirely by `templateRequiresBatch` (from the active
+   * TaskTemplate). Workspace type is NOT consulted — it already influenced
+   * template selection via TaskClassifier. This prevents contradictions between
+   * the template's intent and the workspace's physical state.
+   *
+   * Logic:
+   *   - Template says requiresBatch=false → always allow (no batch needed)
+   *   - Template says requiresBatch=true, no batch declared → block
+   *   - Template says requiresBatch=true, batch declared, file in batch → allow
+   *   - Template says requiresBatch=true, batch declared, file NOT in batch → block
    *
    * Returns null if permitted, or a rejection string if blocked.
    */
@@ -88,22 +89,17 @@ export class BatchEnforcer {
     filePath: string,
     execState: ExecutionStateData,
     blockedMessage: string,
-    workspaceType: WorkspaceType
+    templateRequiresBatch: boolean
   ): string | null {
-    const batch = execState.plannedFileBatch ?? [];
-
-    // Mature workspaces: batch is advisory, never blocking
-    if (workspaceType === 'mature') {
+    // Template says batch is not required — always allow
+    if (!templateRequiresBatch) {
       return null;
     }
 
-    // No batch declared yet
+    // Template requires batch — check if one has been declared
+    const batch = execState.plannedFileBatch ?? [];
     if (batch.length === 0) {
-      // Greenfield and docs_only require a batch before writing
-      if (workspaceType === 'greenfield' || workspaceType === 'docs_only') {
-        return blockedMessage;
-      }
-      return null;
+      return blockedMessage;
     }
 
     // Batch declared — check if this file is in it (normalise both sides)

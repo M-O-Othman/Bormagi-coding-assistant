@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { ExecutionSubPhase } from './execution/ExecutionPhase';
 import type { TaskTemplateName } from './execution/TaskTemplate';
+import { TASK_TEMPLATES } from './execution/TaskTemplate';
 import { classifyUserMessage, normalizeObjective } from './execution/ObjectiveNormalizer';
 
 /**
@@ -170,6 +171,10 @@ export interface ExecutionStateData {
   lastProgressAt?: string;
   /** Tracks same-tool same-path repetition for loop breaking. V2 only. */
   sameToolLoop?: { tool: string; path?: string; count: number };
+  /** Number of consecutive batch violations this run — triggers auto-recovery. V2 only. */
+  batchViolationCount?: number;
+  /** Path of the last write blocked by batch enforcement. V2 only. */
+  lastBatchViolationPath?: string;
   /** Richer resolved input summaries with hash-based reuse. V2 only. */
   resolvedInputSummaries?: ResolvedInputSummary[];
 
@@ -184,6 +189,14 @@ export interface ExecutionStateData {
 
 export class ExecutionStateManager {
   constructor(private readonly workspaceRoot: string) {}
+
+  /** Read requiresBatch from the active template stored in execution state. */
+  private static templateRequiresBatch(state: ExecutionStateData): boolean {
+    if (state.taskTemplate && TASK_TEMPLATES[state.taskTemplate]) {
+      return TASK_TEMPLATES[state.taskTemplate].requiresBatch;
+    }
+    return true; // defensive default: require batch if template unknown
+  }
 
   private stateDir(): string {
     return path.join(this.workspaceRoot, '.bormagi');
@@ -296,26 +309,38 @@ export class ExecutionStateManager {
       state.runPhase = 'RUNNING';
       state.waitStateReason = undefined;
     } else {
-      // New task: reset everything that is task-scoped.
+      // New task: reset ALL task-scoped state.
+      // Prior resolved inputs, artifacts, batch, and plan are cleared — they belong
+      // to the previous task. Reread/dupe guards are task-local: a new task must be
+      // free to read and write any file without contamination from prior tasks.
       const normalized = normalizeObjective(userMessage);
       state.objective = normalized;
       state.primaryObjective = normalized;
       state.resumeNote = undefined;
       state.runPhase = 'RUNNING';
       state.waitStateReason = undefined;
-      // Only reset iteration counter if no active batch (prevents counter drift
-      // when user starts a genuinely new task mid-batch).
-      if ((state.plannedFileBatch ?? []).length === 0) {
-        state.iterationsUsed = 0;
-      }
+      state.iterationsUsed = 0;
       state.blockedReadCount = 0;
       state.continueCount = 0;
+      state.continueIterationSnapshot = undefined;
       state.executedTools = [];
       state.nextActions = [];
       state.nextToolCall = undefined;
       state.taskTemplate = undefined;
       state.sameToolLoop = undefined;
-      // Keep resolvedInputs + artifactsCreated so reread/dupe guards work.
+      // Task-local context — must not leak into unrelated tasks
+      state.resolvedInputs = [];
+      state.resolvedInputSummaries = undefined;
+      state.resolvedInputContents = undefined;
+      state.artifactsCreated = [];
+      state.plannedFileBatch = [];
+      state.completedBatchFiles = [];
+      state.approvedPlanPath = undefined;
+      state.artifactStatus = undefined;
+      state.contextPacket = undefined;
+      state.lastProgressAt = undefined;
+      state.batchViolationCount = 0;
+      state.lastBatchViolationPath = undefined;
     }
 
     state.updatedAt = new Date().toISOString();
@@ -549,11 +574,11 @@ export class ExecutionStateManager {
     lastToolName: string,
     lastToolPath: string | undefined,
     lastToolResult: string,
-    workspaceType: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature',
   ): { nextAction: string; nextToolCall?: NextToolCall } | null {
     const planned = state.plannedFileBatch ?? [];
     const completed = state.completedBatchFiles ?? [];
     const remaining = planned.filter(f => !completed.includes(f));
+    const needsBatch = ExecutionStateManager.templateRequiresBatch(state);
 
     // After reading a plan file in any mode → concrete write action
     if (lastToolName === 'read_file' && lastToolPath) {
@@ -561,7 +586,7 @@ export class ExecutionStateManager {
 
       // After reading a spec/requirements/plan file → write first implementation file
       if (lower.includes('spec') || lower.includes('requirement') || lower.includes('plan')) {
-        if (workspaceType === 'greenfield') {
+        if (needsBatch && planned.length === 0) {
           return {
             nextAction: 'Call declare_file_batch with the project file list, then write the first file',
           };
@@ -577,14 +602,14 @@ export class ExecutionStateManager {
       };
     }
 
-    // After list_files in greenfield → declare batch
-    if (lastToolName === 'list_files' && workspaceType === 'greenfield') {
+    // After list_files when batch is required → declare batch
+    if (lastToolName === 'list_files' && needsBatch && planned.length === 0) {
       return {
         nextAction: 'Call declare_file_batch with the project file list, then write the first implementation file',
       };
     }
 
-    // After list_files in mature → read or write
+    // After list_files otherwise → read or write
     if (lastToolName === 'list_files') {
       return {
         nextAction: 'Read the most relevant file or start writing — do not list files again',
@@ -601,8 +626,8 @@ export class ExecutionStateManager {
       };
     }
 
-    // After write_file without batch in greenfield → declare batch if not done
-    if (lastToolName === 'write_file' && workspaceType === 'greenfield' && planned.length === 0) {
+    // After write_file without batch when template requires one → declare batch
+    if (lastToolName === 'write_file' && needsBatch && planned.length === 0) {
       return {
         nextAction: 'declare_file_batch if not done, then continue writing',
       };
@@ -630,16 +655,16 @@ export class ExecutionStateManager {
    */
   computeDeterministicNextStep(
     state: ExecutionStateData,
-    workspaceType: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature',
   ): { nextAction: string; nextToolCall?: NextToolCall } | null {
     const planned = state.plannedFileBatch ?? [];
     const completed = state.completedBatchFiles ?? [];
     const remaining = planned.filter(f => !completed.includes(f));
+    const needsBatch = ExecutionStateManager.templateRequiresBatch(state);
 
-    // 1. Approved plan exists + greenfield + no batch → advise LLM to declare batch
+    // 1. Approved plan exists + template requires batch + no batch declared
     //    declare_file_batch is a virtual tool requiring LLM-supplied file list — cannot be direct-dispatched.
     if (state.approvedPlanPath && state.artifactStatus?.[state.approvedPlanPath] === 'approved') {
-      if ((workspaceType === 'greenfield' || workspaceType === 'scaffolded') && planned.length === 0) {
+      if (needsBatch && planned.length === 0) {
         return {
           nextAction: 'Call declare_file_batch with the project file list from the approved plan, then write the first scaffold file',
         };
@@ -663,9 +688,14 @@ export class ExecutionStateManager {
 
     // 3. Repeated blocked reads → force a write step
     if ((state.blockedReadCount ?? 0) >= 2) {
-      if ((workspaceType === 'greenfield' || workspaceType === 'docs_only') && planned.length === 0 && state.artifactsCreated.length === 0) {
+      if (needsBatch && planned.length === 0 && state.artifactsCreated.length === 0) {
         return {
           nextAction: 'Stop reading. Call declare_file_batch with the project file list, then write the first file',
+        };
+      }
+      if (!needsBatch && state.artifactsCreated.length === 0) {
+        return {
+          nextAction: 'Write the requested file now. Generate the full content directly — no batch needed.',
         };
       }
       if (state.artifactsCreated.length > 0) {
@@ -675,14 +705,8 @@ export class ExecutionStateManager {
       }
     }
 
-    // 4. Greenfield/docs_only with no batch and no artifacts → scaffold
-    //    Skip for single_file_creation template — it writes directly without batch.
-    if ((workspaceType === 'greenfield' || workspaceType === 'docs_only') && planned.length === 0 && state.artifactsCreated.length === 0) {
-      if (state.taskTemplate === 'single_file_creation') {
-        return {
-          nextAction: 'Write the requested file now. Generate the full content directly — no batch needed.',
-        };
-      }
+    // 4. Template requires batch, none declared, no artifacts yet → scaffold
+    if (needsBatch && planned.length === 0 && state.artifactsCreated.length === 0) {
       return {
         nextAction: 'Call declare_file_batch with the project file list, then write the first implementation file',
       };

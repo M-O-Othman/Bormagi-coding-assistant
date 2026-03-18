@@ -1,6 +1,9 @@
 /**
  * Regression tests for Phase 4: batch enforcement.
  * Verifies that BatchEnforcer rejects off-batch writes and tracks batch progress.
+ *
+ * Batch enforcement is now driven by the template's requiresBatch flag,
+ * not workspace type. Workspace type influences template selection only.
  */
 import * as os from 'os';
 import * as path from 'path';
@@ -47,26 +50,26 @@ describe('BatchEnforcer — greenfield workspace', () => {
     expect(type).toBe('greenfield');
   });
 
-  test('rejects write when no batch declared in greenfield', async () => {
+  test('rejects write when no batch declared and template requires batch', () => {
     const state = makeState([], []);
-    const result = enforcer.checkWritePermission('src/index.ts', state, '[BATCH VIOLATION]', 'greenfield');
+    const result = enforcer.checkWritePermission('src/index.ts', state, '[BATCH VIOLATION]', true);
     expect(result).toContain('[BATCH VIOLATION]');
   });
 
-  test('allows write when path is in declared batch', async () => {
+  test('allows write when path is in declared batch', () => {
     const state = makeState(['src/index.ts', 'src/utils.ts']);
-    const result = enforcer.checkWritePermission('src/index.ts', state, '[BATCH VIOLATION]', 'greenfield');
+    const result = enforcer.checkWritePermission('src/index.ts', state, '[BATCH VIOLATION]', true);
     expect(result).toBeNull();
   });
 
-  test('rejects off-batch writes', async () => {
+  test('rejects off-batch writes', () => {
     const state = makeState(['src/index.ts']);
-    const result = enforcer.checkWritePermission('src/other.ts', state, '[BATCH VIOLATION]', 'greenfield');
+    const result = enforcer.checkWritePermission('src/other.ts', state, '[BATCH VIOLATION]', true);
     expect(result).toContain('[BATCH VIOLATION]');
   });
 });
 
-describe('BatchEnforcer — mature workspace', () => {
+describe('BatchEnforcer — template does not require batch', () => {
   let tmpDir: string;
   let enforcer: BatchEnforcer;
 
@@ -91,9 +94,15 @@ describe('BatchEnforcer — mature workspace', () => {
     expect(type).toBe('mature');
   });
 
-  test('allows any write in mature workspace regardless of batch', async () => {
+  test('allows any write when template does not require batch', () => {
     const state = makeState(['src/index.ts']); // batch declared for other files
-    const result = enforcer.checkWritePermission('src/unrelated.ts', state, '[BATCH VIOLATION]', 'mature');
+    const result = enforcer.checkWritePermission('src/unrelated.ts', state, '[BATCH VIOLATION]', false);
+    expect(result).toBeNull();
+  });
+
+  test('allows write with no batch when template does not require batch', () => {
+    const state = makeState([]); // no batch
+    const result = enforcer.checkWritePermission('src/anything.ts', state, '[BATCH VIOLATION]', false);
     expect(result).toBeNull();
   });
 });

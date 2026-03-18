@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../../types';
 import { ExecutionStateManager, type ExecutionStateData } from '../ExecutionStateManager';
+import { TASK_TEMPLATES } from './TaskTemplate';
 import { sanitiseContent } from './TranscriptSanitiser';
 import { PromptAssembler, buildWorkspaceSummary } from './PromptAssembler';
 
@@ -77,6 +78,13 @@ export class RecoveryManager {
     // Trigger 5: ARTIFACT_WRITE_CONFLICT is detected inline in ToolDispatcher
     // and communicated by setting blockedReadCount; no separate check here.
 
+    // Trigger 6: repeated batch violations — the agent keeps writing without
+    // satisfying the batch prerequisite. Auto-recovery at the violation site
+    // handles the first occurrence; if it persists, force recovery.
+    if ((this.execState.batchViolationCount ?? 0) >= 2) {
+      return 'FORCED_BATCH_CONTINUATION';
+    }
+
     return null;
   }
 
@@ -108,7 +116,7 @@ export class RecoveryManager {
       let nextActionHint: string;
 
       // Compute deterministic hint for non-batch fallback paths
-      const deterministic = this.stateManager?.computeDeterministicNextStep(this.execState, this.workspaceType);
+      const deterministic = this.stateManager?.computeDeterministicNextStep(this.execState);
 
       // Batch-aware recovery: if batch is active, route directly to next batch file
       const batchPlanned = this.execState.plannedFileBatch ?? [];
@@ -129,8 +137,11 @@ export class RecoveryManager {
       } else if (deterministic?.nextAction) {
         nextActionHint = deterministic.nextAction;
       } else if (lastTool !== 'none') {
-        // Derive from workspace type + last tool executed
-        if (this.workspaceType === 'greenfield' && filesWritten.length === 0) {
+        // Derive from template requirements + last tool executed
+        const needsBatch = this.execState.taskTemplate && TASK_TEMPLATES[this.execState.taskTemplate]
+          ? TASK_TEMPLATES[this.execState.taskTemplate].requiresBatch
+          : false;
+        if (needsBatch && filesWritten.length === 0) {
           nextActionHint = 'Declare a file batch, then write the first file';
         } else if (filesWritten.length > 0) {
           nextActionHint = `Continue from last written file: ${filesWritten[filesWritten.length - 1]}`;

@@ -272,23 +272,27 @@ describe('ExecutionStateManager does not set nextToolCall for write_file', () =>
 
   test('computeNextStep for batch remaining returns advisory text, not nextToolCall', () => {
     const state = makeState({
+      taskTemplate: 'greenfield_scaffold',
       plannedFileBatch: ['a.ts', 'b.ts'],
       completedBatchFiles: ['a.ts'],
     });
-    const result = mgr.computeNextStep(state, 'write_file', 'a.ts', 'written', 'scaffolded');
+    const result = mgr.computeNextStep(state, 'write_file', 'a.ts', 'written');
     expect(result).not.toBeNull();
     expect(result!.nextToolCall).toBeUndefined();
     expect(result!.nextAction).toContain('b.ts');
   });
 
-  test('computeDeterministicNextStep for batch remaining returns advisory text, not nextToolCall', () => {
+  test('computeDeterministicNextStep for batch remaining returns advisory text with hint nextToolCall', () => {
     const state = makeState({
+      taskTemplate: 'greenfield_scaffold',
       plannedFileBatch: ['x.ts', 'y.ts', 'z.ts'],
       completedBatchFiles: ['x.ts'],
     });
-    const result = mgr.computeDeterministicNextStep(state, 'scaffolded');
+    const result = mgr.computeDeterministicNextStep(state);
     expect(result).not.toBeNull();
-    expect(result!.nextToolCall).toBeUndefined();
     expect(result!.nextAction).toContain('y.ts');
+    // nextToolCall is a prompt hint (no content = not dispatchable), guarded by DD9
+    expect(result!.nextToolCall?.tool).toBe('write_file');
+    expect(result!.nextToolCall?.input).toEqual({ path: 'y.ts' });
   });
 });
