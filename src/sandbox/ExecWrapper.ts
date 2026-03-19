@@ -1,102 +1,52 @@
-import { ExecResult, PolicyContext, ApprovalScope } from './types';
 import { PolicyEngine } from './PolicyEngine';
 import { ApprovalService } from './ApprovalService';
 
-export type PromptApprovalCallback = (
-    command: string,
-    reason: string,
-    ruleMatched?: string
-) => Promise<{ allow: boolean; scope: ApprovalScope }>;
+export type PromptApprovalCallback = (cmd: string, reason: string, rule?: string) => Promise<{ allow: boolean, scope: 'once' | 'task' | 'project' }>;
 
-export type RawExecuteCallback = (command: string) => Promise<{
+export interface ExecResult {
     stdout: string;
     stderr: string;
     exitCode: number;
     durationMs: number;
-}>;
+}
 
 export class ExecWrapper {
     constructor(
         private policyEngine: PolicyEngine,
         private approvalService: ApprovalService,
         private promptUser: PromptApprovalCallback,
-        private rawExecute: RawExecuteCallback
+        private realExec: (cmd: string) => Promise<ExecResult>
     ) { }
 
-    /** Replace the prompt callback (e.g. to route through inline chat cards instead of modal dialogs). */
-    setPromptUser(fn: PromptApprovalCallback): void {
-        this.promptUser = fn;
+    setPromptUser(promptUser: PromptApprovalCallback): void {
+        this.promptUser = promptUser;
     }
 
-    public async guardedCommand(
-        taskId: string,
-        userId: string,
-        isolationMode: string,
-        command: string,
-        reason: string,
-        secretsToRedact: string[] = []
-    ): Promise<ExecResult> {
-
-        const ctx: PolicyContext = {
+    async guardedCommand(taskId: string, userId: string, isolationMode: string, command: string, reason: string): Promise<ExecResult> {
+        const policy = await this.policyEngine.evaluate({
             taskId,
             repoId: 'local',
             isolationMode,
             userId,
             command,
             actionKind: 'exec_command'
-        };
-
-        const policy = await this.policyEngine.evaluate(ctx);
+        });
 
         if (policy.decision === 'deny') {
-            throw new Error(`Command blocked by policy: ${policy.reason} (Rule: ${policy.matchedRule})`);
+            throw new Error(`Blocked by sandbox policy: ${policy.reason}`);
         }
 
-        let approvalMode: 'auto' | 'interactive' | 'policy' = 'policy';
-
         if (policy.decision === 'ask' || policy.requiresApproval) {
-            // Check cache
-            const hasPrior = this.approvalService.checkPriorApproval('exec_command', command, taskId);
-
-            if (hasPrior) {
-                approvalMode = 'auto';
-            } else {
-                approvalMode = 'interactive';
-                const uiResponse = await this.promptUser(command, reason, policy.matchedRule);
-
-                if (!uiResponse.allow) {
-                    throw new Error(`Command execution denied by user: ${command}`);
+            const isPreApproved = await this.approvalService.checkPreApproved(taskId, 'exec_command', command);
+            if (!isPreApproved) {
+                const approved = await this.promptUser(command, reason, policy.matchedRule);
+                if (!approved.allow) {
+                    throw new Error(`User denied command execution`);
                 }
-
-                // Record long-term if not just 'once'
-                this.approvalService.recordApproval({
-                    actionKind: 'exec_command',
-                    matcher: command,
-                    scope: uiResponse.scope,
-                    allow: true,
-                    reason: taskId // Lock to task if task-scoped
-                });
+                await this.approvalService.recordApproval('exec_command', command, approved.scope, true);
             }
         }
 
-        // Execute execution
-        const rawRes = await this.rawExecute(command);
-
-        return {
-            command,
-            exitCode: rawRes.exitCode,
-            stdout: this.redactSecrets(rawRes.stdout, secretsToRedact),
-            stderr: this.redactSecrets(rawRes.stderr, secretsToRedact),
-            durationMs: rawRes.durationMs,
-            approvalMode,
-            policyRule: policy.matchedRule
-        };
-    }
-
-    private redactSecrets(text: string, secrets: string[]): string {
-        return secrets.reduce((acc, secret) => {
-            if (!secret) return acc;
-            return acc.split(secret).join('[REDACTED]');
-        }, text);
+        return this.realExec(command);
     }
 }

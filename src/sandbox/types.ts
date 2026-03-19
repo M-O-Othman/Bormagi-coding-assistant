@@ -1,45 +1,3 @@
-export type ApprovalScope = 'once' | 'task' | 'session' | 'project' | 'org-policy';
-
-export type ActionKind =
-    | 'read_file'
-    | 'write_file'
-    | 'exec_command'
-    | 'network_request'
-    | 'install_package'
-    | 'git_push'
-    | 'open_pr'
-    | 'mcp_call';
-
-export interface ApprovalDecision {
-    actionKind: ActionKind;
-    matcher: string;
-    scope: ApprovalScope;
-    allow: boolean;
-    createdAt: string;
-    createdBy: 'user' | 'admin' | 'policy';
-    expiresAt?: string;
-    reason?: string;
-}
-
-export interface PolicyContext {
-    taskId: string;
-    repoId: string;
-    isolationMode: string;
-    userId: string;
-    command?: string;
-    path?: string;
-    host?: string;
-    toolName?: string;
-    actionKind: ActionKind;
-}
-
-export interface PolicyResult {
-    decision: 'allow' | 'ask' | 'deny';
-    matchedRule?: string;
-    reason: string;
-    requiresApproval: boolean;
-}
-
 export interface SandboxCreateRequest {
     taskId: string;
     repoPathOrRemote: string;
@@ -47,7 +5,7 @@ export interface SandboxCreateRequest {
     isolationMode: string;
     policyBundleId: string;
     writable: boolean;
-    networkMode: 'deny_all' | 'localhost_only' | 'allowlist' | 'full';
+    networkMode: "deny_all" | "localhost_only" | "allowlist" | "full";
     allowedHosts?: string[];
     injectedSecrets?: string[];
 }
@@ -68,15 +26,28 @@ export interface SandboxManifest {
     workspacePath: string;
     isolationMode: string;
     policyBundleId: string;
-    status: 'running' | 'cleaning' | 'destroyed';
+    status: string;
 }
 
-export interface ExecResult {
-    command: string;
-    exitCode: number;
-    stdout: string;
-    stderr: string;
-    durationMs: number;
-    approvalMode: 'auto' | 'interactive' | 'policy';
-    policyRule?: string;
+export type ActionKind = "read_file" | "write_file" | "exec_command" | "network_request" | "install_package" | "git_push" | "open_pr" | "mcp_call";
+
+export type ApprovalScope = "once" | "task" | "session" | "project" | "org-policy";
+
+export interface PolicyContext {
+    taskId: string;
+    repoId: string;
+    isolationMode: string;
+    userId: string;
+    command?: string;
+    path?: string;
+    host?: string;
+    toolName?: string;
+    actionKind: ActionKind;
+}
+
+export interface PolicyResult {
+    decision: "allow" | "ask" | "deny";
+    matchedRule?: string;
+    reason: string;
+    requiresApproval: boolean;
 }

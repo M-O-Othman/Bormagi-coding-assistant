@@ -85,6 +85,15 @@ import { HookEngine } from '../context/HookEngine';
 import { shouldCreatePlan, createPlan } from '../context/PlanManager';
 import { StablePrefixCache } from '../context/StablePrefixCache';
 import { loadManifests, maybeLoadCapability, defaultCapabilitiesDir } from '../context/CapabilityRegistry';
+import { classifyTurnIntent } from './TurnIntentClassifier';
+import { renderStopReason } from './StopReason';
+import { buildSafeSynthesisPayload } from './SynthesisGuard';
+import { SessionLedger, collectChangedFiles } from './SessionLedger';
+import { assertSummaryConsistency } from './renderSessionSummary';
+import { ArtifactRegistry } from './execution/ArtifactRegistry';
+import { generateSessionReport } from './execution/SessionReporter';
+import { streamWithTimeout, isTransientStreamError, MAX_STREAM_RETRIES } from './execution/StreamResilience';
+import { normalizeWorkspacePath } from '../utils/PathUtils';
 
 // Re-export callback types so callers that previously imported from this module continue to work.
 export type { ApprovalCallback, DiffCallback, ThoughtCallback };
@@ -98,36 +107,6 @@ export type ContextUpdateCallback = (
   items: Array<{ id: string; itemType: string; label: string; source: string; reasonIncluded: string; estimatedTokens?: number; removable: boolean }>,
   tokenHealth: 'healthy' | 'busy' | 'near-limit',
 ) => void;
-
-// ─── Stream resilience ─────────────────────────────────────────────────────
-
-class StreamTimeoutError extends Error {
-  constructor(kind: 'first-chunk' | 'inter-chunk', timeoutMs: number) {
-    super(`LLM stream timeout (${kind}): no data received within ${Math.round(timeoutMs / 1000)}s`);
-    this.name = 'StreamTimeoutError';
-  }
-}
-
-const TRANSIENT_ERROR_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN']);
-
-function isTransientStreamError(err: unknown): boolean {
-  if (err instanceof StreamTimeoutError) return true;
-  if (err && typeof err === 'object') {
-    const code = (err as Record<string, unknown>).code;
-    if (typeof code === 'string' && TRANSIENT_ERROR_CODES.has(code)) return true;
-    const msg = (err as Record<string, unknown>).message;
-    if (typeof msg === 'string') {
-      for (const code of TRANSIENT_ERROR_CODES) {
-        if (msg.includes(code)) return true;
-      }
-    }
-  }
-  return false;
-}
-
-const STREAM_FIRST_CHUNK_TIMEOUT_MS = 180_000; // 3 minutes for first chunk
-const STREAM_INTER_CHUNK_TIMEOUT_MS = 60_000;  // 60s between chunks
-const MAX_STREAM_RETRIES = 2;
 
 interface WorkspaceContextSnapshot {
   files: ScannedFile[];
@@ -151,6 +130,7 @@ export class AgentRunner {
   private readonly validationService: ValidationService;
   private readonly commitGenerator: CommitProposalGenerator;
   private currentCheckpointId: string | null = null;
+  private readonly artifactRegistry: ArtifactRegistry;
 
   constructor(
     private readonly agentManager: AgentManager,
@@ -200,6 +180,7 @@ export class AgentRunner {
     this.toolDispatcher = new ToolDispatcher(mcpHost, undoManager, auditLogger, workspaceRoot, this.execWrapper);
     this.enhancedMemory = new EnhancedSessionMemory(workspaceRoot);
     this.hookEngine = new HookEngine(workspaceRoot);
+    this.artifactRegistry = new ArtifactRegistry(workspaceRoot);
   }
 
   get git(): GitService {
@@ -431,7 +412,14 @@ export class AgentRunner {
     const projectName = projectConfig?.project.name ?? '';
     let detectedWorkspaceType: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature' = _detectedWsType;
 
-    const mode: AssistantMode = userMode ?? modeDecision.mode;
+    let mode: AssistantMode = userMode ?? modeDecision.mode;
+
+    const turnIntent = classifyTurnIntent(userMessage);
+    if ((turnIntent === 'diagnostic_question' || turnIntent === 'status_question') && mode === 'code') {
+      mode = 'ask'; // Prevent file mutations for diagnostic queries
+      onThought({ type: 'thinking', label: `Intent classified as ${turnIntent} — safely switching to ask mode`, timestamp: new Date() });
+    }
+
     this.toolDispatcher.resetGuardState(mode, true);
     const requestId = `${agentId}-${Date.now()}`;
     const agentLog = new AgentLogger(this.workspaceRoot, agentId);
@@ -475,9 +463,9 @@ export class AgentRunner {
       // 4. Session history
       this.memoryManager.getSessionHistoryWithMemory(agentId),
       // 5. Artifact registry
-      Promise.all([this.loadArtifactRegistryNote(), this.loadArtifactPaths()]),
+      Promise.all([this.artifactRegistry.loadArtifactRegistryNote(), this.artifactRegistry.loadArtifactPaths()]),
       // 6. Audit log (fire-and-forget, non-blocking)
-      this.auditLogger.logModeClassified(requestId, mode, modeDecision.confidence, modeDecision.userOverride, modeDecision.reason).catch(() => {}),
+      this.auditLogger.logModeClassified(requestId, mode, modeDecision.confidence, modeDecision.userOverride, modeDecision.reason).catch(() => { }),
       // 7. Enhanced pipeline setup (checkpoint, hooks)
       (async () => {
         if (!enhancedPipeline) { return; }
@@ -512,7 +500,7 @@ export class AgentRunner {
 
     const candidatePaths = candidates.map(c => c.path || '').filter(Boolean);
     if (gitContext && gitContext.changedPaths) {
-      gitContext.changedPaths.forEach(cp => candidatePaths.push(cp.path));
+      gitContext.changedPaths.forEach((cp: any) => candidatePaths.push(cp.path));
     }
 
     const instructions = resolveInstructions(this.workspaceRoot, candidatePaths);
@@ -693,7 +681,7 @@ export class AgentRunner {
         execState.resolvedInputContents ??= {};
 
         for (const filePath of mentionedFiles) {
-          const normalizedPath = this.normalizeWorkspacePath(filePath);
+          const normalizedPath = normalizeWorkspacePath(filePath, this.workspaceRoot);
           // Skip files already resolved from a prior session
           if (execState.resolvedInputs.includes(normalizedPath)) { continue; }
           if (execState.resolvedInputContents[normalizedPath]) { continue; }
@@ -724,27 +712,27 @@ export class AgentRunner {
 
     // ─── DD2 + DD10: Build messages array — code mode uses execution history, not raw transcript ──
     const stateNote = stateManager.buildContextNote(execState);
-    const messages: ChatMessage[] = [
+    const auditTranscript: ChatMessage[] = [
       { role: 'system', content: fullSystem },
     ];
     if (mode === 'code') {
       // DD2: Code mode gets only structured execution state + artifact registry.
       // Zero raw previous assistant narration to prevent loop-causing patterns.
-      messages.push(...buildExecutionHistory(execState, stateNote, artifactNote || undefined));
+      auditTranscript.push(...buildExecutionHistory(execState, stateNote, artifactNote || undefined));
     } else if (mode === 'ask') {
       // Ask mode gets full conversation history for continuity.
-      messages.push(...sessionHistory);
-      if (artifactNote) { messages.push({ role: 'system', content: artifactNote }); }
+      auditTranscript.push(...sessionHistory);
+      if (artifactNote) { auditTranscript.push({ role: 'system', content: artifactNote }); }
     } else {
       // Plan/review modes get artifact note + state note but no raw history.
-      if (artifactNote) { messages.push({ role: 'system', content: artifactNote }); }
-      messages.push({ role: 'system', content: stateNote });
+      if (artifactNote) { auditTranscript.push({ role: 'system', content: artifactNote }); }
+      auditTranscript.push({ role: 'system', content: stateNote });
     }
 
     // ─── DD10: Resolve approved plan path ────────────────────────────────────
     // If user switched to code mode and we have a plan artifact, mark it approved.
     if (mode === 'code' && !execState.approvedPlanPath) {
-      const planPath = this.resolveApprovedPlanPath(execState, registeredArtifactPaths, userMessage);
+      const planPath = this.artifactRegistry.resolveApprovedPlanPath(execState, registeredArtifactPaths, userMessage);
       if (planPath) {
         // ACTION 14: Validate plan against requirements before approval
         const isValid = await this.validatePlanAgainstRequirements(planPath, execState);
@@ -818,7 +806,7 @@ export class AgentRunner {
     // model knows whether to scaffold from scratch or build on existing files.
     // Task 7: Reuse batchEnforcer.detectWorkspaceType() (computed at line 361)
     // instead of the separate AgentRunner.detectWorkspaceType() heuristic.
-    messages.push({ role: 'system', content: this.buildWorkspaceTypeNote(detectedWorkspaceType) });
+    auditTranscript.push({ role: 'system', content: this.buildWorkspaceTypeNote(detectedWorkspaceType) });
 
     // detectedWsType alias for backward compat within the loop
     const detectedWsType: typeof detectedWorkspaceType = detectedWorkspaceType;
@@ -866,7 +854,7 @@ export class AgentRunner {
           // Continue with the result as the current user content
           const toolResultMsg: ChatMessage = { role: 'tool_result', content: directResult.text, toolCallId: `resume-${Date.now()}` };
           currentStepToolResults.push(toolResultMsg);
-          messages.push(toolResultMsg);
+          auditTranscript.push(toolResultMsg);
           effectiveUserContent = `Resumed from nextToolCall: ${label}. Continue with the next step.`;
         } catch {
           // Fall back to text-based resume if direct dispatch fails
@@ -900,7 +888,7 @@ export class AgentRunner {
     }
 
     const userMsg: ChatMessage = { role: 'user', content: effectiveUserContent };
-    messages.push(userMsg);
+    auditTranscript.push(userMsg);
     // Defer adding to persistent session history until after a successful response.
     // Adding eagerly causes the message to strand in history when the session fails
     // with no output, leading to duplicate user messages on the next invocation.
@@ -909,21 +897,21 @@ export class AgentRunner {
     const tools = minifyToolDefinitions(rawTools);
 
     if (enhancedPipeline && this.currentCheckpointId) {
-      messages.push({ role: 'system', content: `[System Notice]: A Git Checkpoint was successfully created before this task began (ID: ${this.currentCheckpointId}).` });
+      auditTranscript.push({ role: 'system', content: `[System Notice]: A Git Checkpoint was successfully created before this task began (ID: ${this.currentCheckpointId}).` });
     }
 
     // Hard trim history to enforce the maxTokens rate-limit ceiling.
     // Drop oldest non-system turns until the total estimated token count fits.
     {
       const rateLimitCeiling = Math.floor(safeInputTokens * 0.85);
-      const totalEst = estimateTokens(messages.map(m => m.content).join(' '));
+      const totalEst = estimateTokens(auditTranscript.map(m => m.content).join(' '));
       if (totalEst > rateLimitCeiling) {
         let removed = 0;
         // Find first non-system message index (skip the system prompt at index 0).
         let i = 1;
-        while (i < messages.length - 1 && estimateTokens(messages.map(m => m.content).join(' ')) > rateLimitCeiling) {
-          if (messages[i].role !== 'system') {
-            messages.splice(i, 1);
+        while (i < auditTranscript.length - 1 && estimateTokens(auditTranscript.map(m => m.content).join(' ')) > rateLimitCeiling) {
+          if (auditTranscript[i].role !== 'system') {
+            auditTranscript.splice(i, 1);
             removed++;
           } else {
             i++;
@@ -940,7 +928,7 @@ export class AgentRunner {
     }
 
     // Secret scan before sending context to the model.
-    const secretHits = scanForSecrets(messages);
+    const secretHits = scanForSecrets(auditTranscript);
     if (secretHits.length > 0) {
       onThought({
         type: 'error',
@@ -951,7 +939,7 @@ export class AgentRunner {
     }
 
     // Trim context when near model limit.
-    const trim = trimToContextLimit(messages, effectiveProvider.model ?? '');
+    const trim = trimToContextLimit(auditTranscript, effectiveProvider.model ?? '');
     if (trim.didTrim) {
       onThought({
         type: 'thinking',
@@ -963,7 +951,7 @@ export class AgentRunner {
     // ─── Context compaction ───────────────────────────────────────────────────
     // Estimate history token count and compact proactively when it approaches
     // the model's soft input budget (80 % threshold, ≥ 6 messages).
-    const historyTokens = estimateTokens(sessionHistory.map(m => m.content).join(' '));
+    const historyTokens = estimateTokens(sessionHistory.map((m: any) => m.content).join(' '));
     const providerConfig = { ...agentConfig, provider: effectiveProvider };
     const provider = ProviderFactory.create(providerConfig, apiKey);
 
@@ -979,7 +967,7 @@ export class AgentRunner {
       });
 
       const compactionInput: CompactionInput = {
-        transcript: sessionHistory.map(m => ({ role: m.role as 'user' | 'assistant' | 'tool', content: m.content })),
+        transcript: sessionHistory.map((m: any) => ({ role: m.role as 'user' | 'assistant' | 'tool', content: m.content })),
         recentArtifacts: this.enhancedMemory.getState(agentId).recentEditedFiles.slice(0, 10),
         activeMode: mode,
         currentGoal: this.enhancedMemory.getState(agentId).currentGoal,
@@ -1001,7 +989,7 @@ export class AgentRunner {
         content: compactionResult.narrative,
       };
       // Rebuild messages: system + compact summary + user turn.
-      messages.splice(1, messages.length - 1, compactMsg, userMsg);
+      auditTranscript.splice(1, auditTranscript.length - 1, compactMsg, userMsg);
 
       onThought({
         type: 'thinking',
@@ -1112,7 +1100,7 @@ export class AgentRunner {
         // Ready: inject explicit confirmation so the model does not re-read
         const loadedFiles = Object.keys(execState.resolvedInputContents ?? {}).join(', ');
         if (loadedFiles) {
-          messages.push({
+          auditTranscript.push({
             role: 'system',
             content: `[READY] You have all required input files loaded: ${loadedFiles}. Begin writing immediately. Do not read any files.`,
           });
@@ -1120,7 +1108,7 @@ export class AgentRunner {
         stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
       } else {
         // Not ready — allow limited discovery then force write
-        messages.push({
+        auditTranscript.push({
           role: 'system',
           content: `[Discovery budget: 2 reads maximum. Read the most important file, then write.]`,
         });
@@ -1165,6 +1153,9 @@ export class AgentRunner {
           default:
             terminalMsg = `Session stopped (phase: ${phase}).`;
         }
+        if (execState.stopReason) {
+          terminalMsg += `\nReason: ${renderStopReason(execState.stopReason as any)}`;
+        }
         onText(`\n\n${terminalMsg}`);
         break;
       }
@@ -1179,7 +1170,7 @@ export class AgentRunner {
       // so inferStepContract sees only this turn's tools, not the full session.
       const turnToolStartIdx = toolsUsed.length;
 
-      agentLog.logApiCall(iterationCount + 1, messages);
+      agentLog.logApiCall(iterationCount + 1, auditTranscript);
       if (isFirstModelRequest) {
         const size = measureRequestSize({
           systemPrompt: fullSystem,
@@ -1253,10 +1244,11 @@ export class AgentRunner {
           if (preResult.text.length > 8000) {
             truncated = `${preResult.text.slice(0, 8000)}\n[truncated]`;
           }
-          const preMsg: ChatMessage = { role: 'tool_result', content: `<tool_result name="${preLlmNtc.tool}">
+          const preMsg: ChatMessage = {
+            role: 'tool_result', content: `<tool_result name="${preLlmNtc.tool}">
 ${truncated}
 </tool_result>` };
-          messages.push(preMsg);
+          auditTranscript.push(preMsg);
           currentStepToolResults.push(preMsg);
           calledATool = true;
           continueLoop = true;
@@ -1289,7 +1281,7 @@ ${truncated}
       // Skip if we've already exhausted recovery attempts for this run — prevents
       // infinite recovery loops where the same trigger fires every iteration.
       if (recoveryAttempts < MAX_RECOVERY_ATTEMPTS) {
-        const recoveryManager = new RecoveryManager(execState, messages, promptAssembler, fullSystem, detectedWsType, stateManager);
+        const recoveryManager = new RecoveryManager(execState, auditTranscript, promptAssembler, fullSystem, detectedWsType, stateManager);
         const trigger = recoveryManager.shouldRecover();
         if (trigger) {
           recoveryAttempts++;
@@ -1297,7 +1289,7 @@ ${truncated}
           const recovMsgs = getAppData().executionMessages.recovery ?? {};
           if (result.success && result.cleanMessages) {
             onText(`\n${recovMsgs.rebuilding ?? 'Inconsistent execution state detected — rebuilding from execution history.'}\n`);
-            messages.splice(0, messages.length, ...result.cleanMessages);
+            auditTranscript.splice(0, auditTranscript.length, ...result.cleanMessages);
             // Reset reread-prevention state so the agent can re-read files it needs
             // after the context has been rebuilt without their content.
             this.toolDispatcher.resetGuardState(mode, true);
@@ -1317,7 +1309,7 @@ ${truncated}
                 .map(([p, c]) => `[${p}]:\n${c}`)
                 .join('\n\n---\n\n');
               if (allContents) {
-                messages.push({
+                auditTranscript.push({
                   role: 'system',
                   content: `[FORCED WRITE MODE] You must write the plan now. Here are the input files you previously read:\n\n${allContents}\n\nBase your plan on THIS content, not on filenames.`,
                 });
@@ -1346,7 +1338,7 @@ ${truncated}
                 stateManager.clearNextToolCall(execState);
                 stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
                 const truncDirect = directResult.text.length > 8000 ? directResult.text.slice(0, 8000) + '\n[truncated]' : directResult.text;
-                messages.push({ role: 'tool_result', content: `<tool_result name="${ntc.tool}">\n${truncDirect}\n</tool_result>` });
+                auditTranscript.push({ role: 'tool_result', content: `<tool_result name="${ntc.tool}">\n${truncDirect}\n</tool_result>` });
                 currentStepToolResults.push({ role: 'tool_result', content: `<tool_result name="${ntc.tool}">\n${truncDirect}\n</tool_result>` });
               } else if (execState.nextActions.length > 0) {
                 // Use first nextAction as the instruction for the next LLM call
@@ -1392,7 +1384,7 @@ ${truncated}
           stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
           const truncBypass = bypassResult.text.length > 8000 ? bypassResult.text.slice(0, 8000) + '\n[truncated]' : bypassResult.text;
           const bypassMsg: ChatMessage = { role: 'tool_result', content: `<tool_result name="${bypassNtc.tool}">\n${truncBypass}\n</tool_result>` };
-          messages.push(bypassMsg);
+          auditTranscript.push(bypassMsg);
           currentStepToolResults.push(bypassMsg);
           calledATool = true;
           continueLoop = true;
@@ -1412,7 +1404,7 @@ ${truncated}
       }
 
       // Task 9: Detect repetitive narration and force write
-      if (this.isRepetitiveNarration(messages, writtenPaths)) {
+      if (this.isRepetitiveNarration(auditTranscript, writtenPaths)) {
         const narDeterministic = stateManager.computeDeterministicNextStep(execState);
         const narNtc = narDeterministic?.nextToolCall ?? execState.nextToolCall;
         if (narNtc && !VIRTUAL_TOOLS.has(narNtc.tool)) {
@@ -1428,7 +1420,7 @@ ${truncated}
           stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
           const truncNar = narBypassResult.text.length > 8000 ? narBypassResult.text.slice(0, 8000) + '\n[truncated]' : narBypassResult.text;
           const narMsg: ChatMessage = { role: 'tool_result', content: `<tool_result name="${narNtc.tool}">\n${truncNar}\n</tool_result>` };
-          messages.push(narMsg);
+          auditTranscript.push(narMsg);
           currentStepToolResults.push(narMsg);
           calledATool = true;
           continueLoop = true;
@@ -1474,15 +1466,15 @@ ${truncated}
             stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
             const truncDd9 = dd9Result.text.length > 8000 ? dd9Result.text.slice(0, 8000) + '\n[truncated]' : dd9Result.text;
             const dd9Msg: ChatMessage = { role: 'tool_result', content: `<tool_result name="${dd9Ntc.tool}">\n${truncDd9}\n</tool_result>` };
-            messages.push(dd9Msg);
+            auditTranscript.push(dd9Msg);
             currentStepToolResults.push(dd9Msg);
             if (dd9Ntc.tool === 'write_file' && dd9Result.status === 'success') {
               const dd9Path = (dd9Ntc.input as Record<string, unknown>).path as string | undefined;
               if (dd9Path) {
                 writtenPaths.add(dd9Path);
-                stateManager.markFileWritten(execState, this.normalizeWorkspacePath(dd9Path));
+                stateManager.markFileWritten(execState, normalizeWorkspacePath(dd9Path, this.workspaceRoot));
                 stateManager.markProgress(execState);
-                this.recordArtifact(agentId, dd9Path).catch(() => { /* non-fatal */ });
+                this.artifactRegistry.recordArtifact(agentId, dd9Path).catch(() => { /* non-fatal */ });
               }
             }
             calledATool = true;
@@ -1495,7 +1487,7 @@ ${truncated}
 
       // Phase 1: PromptAssembler — code mode uses compact, no-history messages per EQ-15.
       // All other modes use prepareMessagesForProvider.
-      let messagesForProvider: ChatMessage[];
+      let providerMessages: ChatMessage[];
       let stepContractKind: 'discover' | 'mutate' | 'validate' = 'discover';
       if (mode === 'code') {
         // DD7: Build compact context packet from execution state for prompt assembly.
@@ -1511,7 +1503,7 @@ ${truncated}
           ? currentStepToolResults.slice(-2)
           : [...currentStepToolResults];
 
-        messagesForProvider = promptAssembler.assembleMessages({
+        providerMessages = promptAssembler.assembleMessages({
           systemPrompt: isFirstIteration ? fullSystem : compactSystem,
           executionStateSummary: compactSummary,
           workspaceSummary: compactWorkspace,
@@ -1525,7 +1517,7 @@ ${truncated}
           // FIX 2c / FIX 9: inject resolved file contents so model never re-reads
           resolvedFileContents: contextPacket.resolvedFileContents || undefined,
         });
-        messagesForProvider.push({ role: 'system', content: stepContract.instruction });
+        providerMessages.push({ role: 'system', content: stepContract.instruction });
         agentLog.logAction('STEP_CONTRACT', `${stepContract.kind}: ${stepContract.summary}`);
         isFirstIteration = false;
 
@@ -1567,694 +1559,694 @@ ${truncated}
         currentStepToolResults.length = 0;
       } else {
         // Non-code modes: sanitise tool_result roles
-        messagesForProvider = this.prepareMessagesForProvider(messages);
+        providerMessages = this.prepareMessagesForProvider(auditTranscript);
       }
       // FIX 8: Log provider request and execution state at each iteration
-      agentLog.logProviderRequest(iterationCount, messagesForProvider, mode);
+      agentLog.logProviderRequest(iterationCount, providerMessages, mode);
       agentLog.logExecutionState(iterationCount, execState);
 
       const toolsForTurn = mode === 'code'
         ? this.filterToolsByStepContract(this.filterToolsByMode(tools, mode), stepContractKind)
         : this.filterToolsByMode(tools, mode);
       try {
-      for await (const event of this.streamWithTimeout(provider, messagesForProvider, toolsForTurn, actualMaxOutputTokens)) {
-        if (event.type === 'provider_headers') {
-          const importantHeaders = this.selectImportantHeaders(event.headers);
-          await this.auditLogger.logLLMResponseHeaders(
-            agentId,
-            effectiveProvider.type,
-            effectiveProvider.model,
-            importantHeaders
-          );
-
-          if (Object.keys(importantHeaders).length > 0) {
-            onThought({
-              type: 'thinking',
-              label: 'Provider response headers captured',
-              detail: JSON.stringify(importantHeaders, null, 2),
-              timestamp: new Date()
-            });
-          }
-        } else if (event.type === 'token_usage') {
-          onTokenUsage?.(event.usage);
-          agentLog.logTokenUsage(
-            iterationCount + 1,
-            event.usage.inputTokens,
-            event.usage.outputTokens,
-            event.usage.cacheReadInputTokens ?? 0,
-            event.usage.cacheCreationInputTokens ?? 0
-          );
-          const cacheCreation = event.usage.cacheCreationInputTokens ?? 0;
-          const cacheRead = event.usage.cacheReadInputTokens ?? 0;
-          if (cacheCreation > 0 || cacheRead > 0) {
-            onThought({
-              type: 'thinking',
-              label: `Prompt cache usage: read=${cacheRead}, create=${cacheCreation}`,
-              timestamp: new Date()
-            });
-          }
-        } else if (event.type === 'text') {
-          // Strip Gemini internal thinking-mode tokens that leak through as plain text.
-          const cleanDelta = event.delta.replace(/<｜(?:begin|end)▁of▁thinking｜>/g, '');
-
-          // Phase 5.1 — Silent execution: suppress pre-tool narration from visible stream
-          // When silentExecution is active, do NOT pass text to onText().
-          // Still accumulate for protocol-leak detection and degenerate-response guard.
-          if (silentExecution) {
-            fullResponse += cleanDelta; // internal accumulation only, no onText()
-          } else {
-            onText(cleanDelta);
-            fullResponse += cleanDelta;
-          }
-
-          // Phase 1.3: speculative text filter — if the delta looks like a tool-syntax
-          // label (model narrating its own tool calls as text), accumulate it for display
-          // but flag it so it is not included in state-mutation paths.
-          const looksLikeToolSyntax = (s: string) =>
-            /\[(write_file|edit_file|read_file|list_files|run_command):/i.test(s) ||
-            /^TOOL:/m.test(s) ||
-            /<tool_result/i.test(s);
-          if (looksLikeToolSyntax(cleanDelta)) {
-            onThought?.({
-              type: 'thinking',
-              label: 'Speculative tool text detected in assistant stream — not persisting as state',
-              detail: cleanDelta.slice(0, 120),
-              timestamp: new Date(),
-            });
-            // Do not add to turnAssistantText so it won't be pushed to messages history
-          } else {
-            turnAssistantText += cleanDelta;
-          }
-        } else if (event.type === 'tool_use') {
-          toolsUsed.push(event.name);
-          agentLog.logToolCall(event.name, event.input);
-          // Insert the assistant turn before the tool result so the model can see
-          // its own prior tool calls on the next iteration and won't rewrite files.
-          // For file-write/edit tools, include the path and content size so the model
-          // knows exactly what it wrote and does not produce a second write to the same path.
-          const toolInput = (event.input as Record<string, unknown>) ?? {};
-          const toolCallPath = toolInput.path as string | undefined;
-          const loopTarget = stateManager.buildLoopTarget(event.name, toolInput);
-          const toolCallContent = (event.input as Record<string, unknown>)?.content as string | undefined;
-          let assistantTurnLabel: string;
-          if (toolCallPath && (event.name === 'write_file' || event.name === 'edit_file')) {
-            // Use a format that does NOT match the sanitiser's [write_file: ...] pattern,
-            // which would trigger false-positive PROTOCOL_TEXT_IN_TRANSCRIPT recovery.
-            const verb = event.name === 'write_file' ? 'Wrote' : 'Edited';
-            const sizeNote = toolCallContent ? ` (${toolCallContent.length} chars)` : '';
-            assistantTurnLabel = `${verb} ${toolCallPath}${sizeNote}`;
-          } else {
-            // Encode as a null-byte-delimited marker so GeminiProvider can convert
-            // this into a native functionCall part.  The model never emits null bytes
-            // so it cannot reproduce this format as plain text output.
-            const argsJson = JSON.stringify(event.input ?? {});
-            assistantTurnLabel = `\x00TOOL:${event.name}:${argsJson}\x00`;
-          }
-          messages.push({ role: 'assistant', content: turnAssistantText || assistantTurnLabel });
-          turnAssistantText = '';
-
-          // Phase 1.2 — ExecutionSubPhase transitions (in-memory observability)
-          if (event.name === 'declare_file_batch') {
-            stateManager.setExecutionPhase(execState, 'PLANNING_BATCH');
-          } else if (MUTATION_TOOLS.has(event.name)) {
-            stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
-          } else if (DISCOVERY_TOOLS.has(event.name)) {
-            stateManager.setExecutionPhase(execState, 'DISCOVERING');
-          }
-
-          // ─── Hard-enforce write_file uniqueness ──────────────────────────────
-          // Text-based CONSTRAINT hints are ignored by Gemini after repeated exposure.
-          // Instead, intercept rewrite attempts in code and return a rejection so the
-          // model is forced to use edit_file rather than looping forever.
-          const isFileWrite = event.name === 'write_file';
-          let toolResultContent: string;
-
-          if (isFileWrite && toolCallPath && writtenPaths.has(toolCallPath)) {
-            const rewrittenContent = (event.input as Record<string, unknown>)?.content;
-            if (typeof rewrittenContent === 'string') {
-              // Preserve progress: repeated write_file attempts on the same path are
-              // auto-routed to edit_file instead of being hard-rejected.
-              const redirectedResult = await this.toolDispatcher.dispatch(
-                {
-                  id: `redirect-${Date.now()}`,
-                  name: 'edit_file',
-                  input: { path: toolCallPath, content: rewrittenContent },
-                },
-                agentId,
-                onApproval,
-                onDiff,
-                onThought,
-              );
-              const redirectNote = `[AUTO-REDIRECT] write_file→edit_file for "${toolCallPath}" because it was already written this task.`;
-              const redirectedText = `${redirectedResult.text}\n${redirectNote}`;
-              agentLog.logToolResult('edit_file', redirectedText);
-              turnMemory.addToolResult('edit_file', redirectedText);
-              toolResultContent = `<tool_result name="edit_file">\n${this.truncateToolResult(redirectedText, 'edit_file', iterationCount, toolCallPath)}\n</tool_result>`;
-              stateManager.markToolExecuted(execState, 'edit_file', toolCallPath, redirectedText.slice(0, 150));
-              stateManager.markProgress(execState);
-              if (execState.executionPhase === 'WRITE_ONLY') {
-                stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
-                this.toolDispatcher.setExecutionPhase('EXECUTING_STEP');
-              }
-            } else {
-              const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
-              const rejection = `[SYSTEM ERROR] write_file REJECTED: "${toolCallPath}" was already written this task. The file has NOT been changed. You MUST use edit_file for any corrections to existing files. Written paths: ${pathList}. Proceed with remaining tasks or summarise.`;
-              agentLog.logToolResult(event.name, rejection);
-              turnMemory.addToolResult(event.name, rejection);
-              toolResultContent = `<tool_result name="${event.name}" status="error">\n${rejection}\n</tool_result>`;
-              onThought({ type: 'error', label: `Rewrite blocked: ${toolCallPath}`, detail: rejection, timestamp: new Date() });
-            }
-          } else if (isFileWrite && toolCallPath && (() => {
-            // ─── Batch enforcement (Phase 4) ─────────────────────────────────
-            // Greenfield/scaffolded: must declare a batch before first write_file.
-            // Exempt plan mode document writes — plans are single-file documentation,
-            // not code artifacts that need batch coordination.
-            const docExt = toolCallPath.split('.').pop()?.toLowerCase() ?? '';
-            if (mode === 'plan' && ['md', 'txt', 'rst'].includes(docExt)) {
-              return null; // skip batch enforcement for plan documents
-            }
-            const normalizedBatchPath = this.normalizeWorkspacePath(toolCallPath);
-            const batchMsg = getAppData().executionMessages.toolBlocked.offBatch;
-            const tmplRequiresBatch = activeTaskTemplate ? TASK_TEMPLATES[activeTaskTemplate].requiresBatch : true;
-            return batchEnforcer.checkWritePermission(
-              normalizedBatchPath, execState, batchMsg, tmplRequiresBatch
+        for await (const event of streamWithTimeout(provider, providerMessages, toolsForTurn, actualMaxOutputTokens)) {
+          if (event.type === 'provider_headers') {
+            const importantHeaders = this.selectImportantHeaders(event.headers);
+            await this.auditLogger.logLLMResponseHeaders(
+              agentId,
+              effectiveProvider.type,
+              effectiveProvider.model,
+              importantHeaders
             );
-          })()) {
-            const normalizedBatchPath = this.normalizeWorkspacePath(toolCallPath);
-            const batchMsg = getAppData().executionMessages.toolBlocked.offBatch;
-            const tmplRequiresBatch2 = activeTaskTemplate ? TASK_TEMPLATES[activeTaskTemplate].requiresBatch : true;
-            const batchRejection = batchEnforcer.checkWritePermission(
-              normalizedBatchPath, execState, batchMsg, tmplRequiresBatch2
-            ) ?? batchMsg;
 
-            // ─── Batch violation tracking + auto-recovery ───────────────────────
-            // Instead of letting the agent loop on rejected writes, track violations
-            // and auto-declare a batch when the prerequisite is missing.
-            execState.batchViolationCount = (execState.batchViolationCount ?? 0) + 1;
-            execState.lastBatchViolationPath = normalizedBatchPath;
-
-            if ((execState.plannedFileBatch ?? []).length === 0) {
-              // No batch declared — auto-declare one from the blocked path.
-              // This satisfies the prerequisite so the next write attempt succeeds.
-              execState.plannedFileBatch = [normalizedBatchPath];
-              execState.completedBatchFiles = [];
-              stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
-              onThought?.({ type: 'thinking', label: `[Auto-batch] Declared batch [${normalizedBatchPath}] after batch violation`, timestamp: new Date() });
-              agentLog.logToolResult(event.name, `auto-declared batch: [${normalizedBatchPath}]`);
-              // Tell the agent the batch was auto-declared — retry the write
-              toolResultContent = `<tool_result name="${event.name}" status="error">\n[BATCH AUTO-DECLARED] No batch was declared. A batch containing [${normalizedBatchPath}] has been auto-declared. Retry the write_file call now.\n</tool_result>`;
-              // Set next action so the agent retries immediately
-              execState.nextActions = [`Write ${normalizedBatchPath} now. The batch has been declared.`];
-            } else {
-              // Batch exists but file not in it — standard rejection
-              agentLog.logToolResult(event.name, batchRejection);
-              toolResultContent = `<tool_result name="${event.name}" status="error">\n${batchRejection}\n</tool_result>`;
-              onThought({ type: 'error', label: `Batch violation: ${toolCallPath}`, detail: batchRejection, timestamp: new Date() });
+            if (Object.keys(importantHeaders).length > 0) {
+              onThought({
+                type: 'thinking',
+                label: 'Provider response headers captured',
+                detail: JSON.stringify(importantHeaders, null, 2),
+                timestamp: new Date()
+              });
             }
-          } else if (isFileWrite && toolCallPath && registeredArtifactPaths.has(this.normalizeWorkspacePath(toolCallPath))) {
-            // ─── OPT-1+3: Smart cross-session artifact guard ─────────────────
-            // File was created in a PREVIOUS session. Instead of hard-blocking
-            // (which causes the model to retry write_file until halted), we:
-            //   1st hit: Read the existing file, inject content, guide model to edit_file.
-            //   2nd hit: Allow the write_file through (model clearly intends a full rewrite).
-            const normalizedGuard = this.normalizeWorkspacePath(toolCallPath);
-            const hitCount = (artifactGuardHits.get(normalizedGuard) ?? 0) + 1;
-            artifactGuardHits.set(normalizedGuard, hitCount);
+          } else if (event.type === 'token_usage') {
+            onTokenUsage?.(event.usage);
+            agentLog.logTokenUsage(
+              iterationCount + 1,
+              event.usage.inputTokens,
+              event.usage.outputTokens,
+              event.usage.cacheReadInputTokens ?? 0,
+              event.usage.cacheCreationInputTokens ?? 0
+            );
+            const cacheCreation = event.usage.cacheCreationInputTokens ?? 0;
+            const cacheRead = event.usage.cacheReadInputTokens ?? 0;
+            if (cacheCreation > 0 || cacheRead > 0) {
+              onThought({
+                type: 'thinking',
+                label: `Prompt cache usage: read=${cacheRead}, create=${cacheCreation}`,
+                timestamp: new Date()
+              });
+            }
+          } else if (event.type === 'text') {
+            // Strip Gemini internal thinking-mode tokens that leak through as plain text.
+            const cleanDelta = event.delta.replace(/<｜(?:begin|end)▁of▁thinking｜>/g, '');
 
-            if (hitCount >= 2) {
-              // OPT-3: 2nd+ attempt — model clearly wants to overwrite. Allow it.
-              agentLog.logEvent('ARTIFACT_GUARD_OVERRIDE', `Allowing write_file on "${normalizedGuard}" (attempt #${hitCount})`);
-              onThought({ type: 'thinking', label: `Artifact guard: allowing rewrite of ${normalizedGuard} (attempt #${hitCount})`, timestamp: new Date() });
-              // Remove from registered set so subsequent writes in this session aren't blocked.
-              registeredArtifactPaths.delete(normalizedGuard);
-              // Fall through to normal dispatch below by NOT setting toolResultContent here.
-              // We need to re-dispatch the tool call.
-              const writeResult = await this.toolDispatcher.dispatch(
-                event, agentId, onApproval, onDiff, onThought
+            // Phase 5.1 — Silent execution: suppress pre-tool narration from visible stream
+            // When silentExecution is active, do NOT pass text to onText().
+            // Still accumulate for protocol-leak detection and degenerate-response guard.
+            if (silentExecution) {
+              fullResponse += cleanDelta; // internal accumulation only, no onText()
+            } else {
+              onText(cleanDelta);
+              fullResponse += cleanDelta;
+            }
+
+            // Phase 1.3: speculative text filter — if the delta looks like a tool-syntax
+            // label (model narrating its own tool calls as text), accumulate it for display
+            // but flag it so it is not included in state-mutation paths.
+            const looksLikeToolSyntax = (s: string) =>
+              /\[(write_file|edit_file|read_file|list_files|run_command):/i.test(s) ||
+              /^TOOL:/m.test(s) ||
+              /<tool_result/i.test(s);
+            if (looksLikeToolSyntax(cleanDelta)) {
+              onThought?.({
+                type: 'thinking',
+                label: 'Speculative tool text detected in assistant stream — not persisting as state',
+                detail: cleanDelta.slice(0, 120),
+                timestamp: new Date(),
+              });
+              // Do not add to turnAssistantText so it won't be pushed to messages history
+            } else {
+              turnAssistantText += cleanDelta;
+            }
+          } else if (event.type === 'tool_use') {
+            toolsUsed.push(event.name);
+            agentLog.logToolCall(event.name, event.input);
+            // Insert the assistant turn before the tool result so the model can see
+            // its own prior tool calls on the next iteration and won't rewrite files.
+            // For file-write/edit tools, include the path and content size so the model
+            // knows exactly what it wrote and does not produce a second write to the same path.
+            const toolInput = (event.input as Record<string, unknown>) ?? {};
+            const toolCallPath = toolInput.path as string | undefined;
+            const loopTarget = stateManager.buildLoopTarget(event.name, toolInput);
+            const toolCallContent = (event.input as Record<string, unknown>)?.content as string | undefined;
+            let assistantTurnLabel: string;
+            if (toolCallPath && (event.name === 'write_file' || event.name === 'edit_file')) {
+              // Use a format that does NOT match the sanitiser's [write_file: ...] pattern,
+              // which would trigger false-positive PROTOCOL_TEXT_IN_TRANSCRIPT recovery.
+              const verb = event.name === 'write_file' ? 'Wrote' : 'Edited';
+              const sizeNote = toolCallContent ? ` (${toolCallContent.length} chars)` : '';
+              assistantTurnLabel = `${verb} ${toolCallPath}${sizeNote}`;
+            } else {
+              // Encode as a null-byte-delimited marker so GeminiProvider can convert
+              // this into a native functionCall part.  The model never emits null bytes
+              // so it cannot reproduce this format as plain text output.
+              const argsJson = JSON.stringify(event.input ?? {});
+              assistantTurnLabel = `\x00TOOL:${event.name}:${argsJson}\x00`;
+            }
+            auditTranscript.push({ role: 'assistant', content: turnAssistantText || assistantTurnLabel });
+            turnAssistantText = '';
+
+            // Phase 1.2 — ExecutionSubPhase transitions (in-memory observability)
+            if (event.name === 'declare_file_batch') {
+              stateManager.setExecutionPhase(execState, 'PLANNING_BATCH');
+            } else if (MUTATION_TOOLS.has(event.name)) {
+              stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
+            } else if (DISCOVERY_TOOLS.has(event.name)) {
+              stateManager.setExecutionPhase(execState, 'DISCOVERING');
+            }
+
+            // ─── Hard-enforce write_file uniqueness ──────────────────────────────
+            // Text-based CONSTRAINT hints are ignored by Gemini after repeated exposure.
+            // Instead, intercept rewrite attempts in code and return a rejection so the
+            // model is forced to use edit_file rather than looping forever.
+            const isFileWrite = event.name === 'write_file';
+            let toolResultContent: string;
+
+            if (isFileWrite && toolCallPath && writtenPaths.has(toolCallPath)) {
+              const rewrittenContent = (event.input as Record<string, unknown>)?.content;
+              if (typeof rewrittenContent === 'string') {
+                // Preserve progress: repeated write_file attempts on the same path are
+                // auto-routed to edit_file instead of being hard-rejected.
+                const redirectedResult = await this.toolDispatcher.dispatch(
+                  {
+                    id: `redirect-${Date.now()}`,
+                    name: 'edit_file',
+                    input: { path: toolCallPath, content: rewrittenContent },
+                  },
+                  agentId,
+                  onApproval,
+                  onDiff,
+                  onThought,
+                );
+                const redirectNote = `[AUTO-REDIRECT] write_file→edit_file for "${toolCallPath}" because it was already written this task.`;
+                const redirectedText = `${redirectedResult.text}\n${redirectNote}`;
+                agentLog.logToolResult('edit_file', redirectedText);
+                turnMemory.addToolResult('edit_file', redirectedText);
+                toolResultContent = `<tool_result name="edit_file">\n${this.truncateToolResult(redirectedText, 'edit_file', iterationCount, toolCallPath)}\n</tool_result>`;
+                stateManager.markToolExecuted(execState, 'edit_file', toolCallPath, redirectedText.slice(0, 150));
+                stateManager.markProgress(execState);
+                if (execState.executionPhase === 'WRITE_ONLY') {
+                  stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
+                  this.toolDispatcher.setExecutionPhase('EXECUTING_STEP');
+                }
+              } else {
+                const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
+                const rejection = `[SYSTEM ERROR] write_file REJECTED: "${toolCallPath}" was already written this task. The file has NOT been changed. You MUST use edit_file for any corrections to existing files. Written paths: ${pathList}. Proceed with remaining tasks or summarise.`;
+                agentLog.logToolResult(event.name, rejection);
+                turnMemory.addToolResult(event.name, rejection);
+                toolResultContent = `<tool_result name="${event.name}" status="error">\n${rejection}\n</tool_result>`;
+                onThought({ type: 'error', label: `Rewrite blocked: ${toolCallPath}`, detail: rejection, timestamp: new Date() });
+              }
+            } else if (isFileWrite && toolCallPath && (() => {
+              // ─── Batch enforcement (Phase 4) ─────────────────────────────────
+              // Greenfield/scaffolded: must declare a batch before first write_file.
+              // Exempt plan mode document writes — plans are single-file documentation,
+              // not code artifacts that need batch coordination.
+              const docExt = toolCallPath.split('.').pop()?.toLowerCase() ?? '';
+              if (mode === 'plan' && ['md', 'txt', 'rst'].includes(docExt)) {
+                return null; // skip batch enforcement for plan documents
+              }
+              const normalizedBatchPath = normalizeWorkspacePath(toolCallPath, this.workspaceRoot);
+              const batchMsg = getAppData().executionMessages.toolBlocked.offBatch;
+              const tmplRequiresBatch = activeTaskTemplate ? TASK_TEMPLATES[activeTaskTemplate].requiresBatch : true;
+              return batchEnforcer.checkWritePermission(
+                normalizedBatchPath, execState, batchMsg, tmplRequiresBatch
               );
-              agentLog.logToolResult(event.name, writeResult.text);
-              turnMemory.addToolResult(event.name, writeResult.text);
-              toolResultContent = `<tool_result name="${event.name}">\n${writeResult.text}\n</tool_result>`;
-              if (writeResult.status === 'success' && writeResult.text.startsWith('File written')) {
+            })()) {
+              const normalizedBatchPath = normalizeWorkspacePath(toolCallPath, this.workspaceRoot);
+              const batchMsg = getAppData().executionMessages.toolBlocked.offBatch;
+              const tmplRequiresBatch2 = activeTaskTemplate ? TASK_TEMPLATES[activeTaskTemplate].requiresBatch : true;
+              const batchRejection = batchEnforcer.checkWritePermission(
+                normalizedBatchPath, execState, batchMsg, tmplRequiresBatch2
+              ) ?? batchMsg;
+
+              // ─── Batch violation tracking + auto-recovery ───────────────────────
+              // Instead of letting the agent loop on rejected writes, track violations
+              // and auto-declare a batch when the prerequisite is missing.
+              execState.batchViolationCount = (execState.batchViolationCount ?? 0) + 1;
+              execState.lastBatchViolationPath = normalizedBatchPath;
+
+              if ((execState.plannedFileBatch ?? []).length === 0) {
+                // No batch declared — auto-declare one from the blocked path.
+                // This satisfies the prerequisite so the next write attempt succeeds.
+                execState.plannedFileBatch = [normalizedBatchPath];
+                execState.completedBatchFiles = [];
+                stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+                onThought?.({ type: 'thinking', label: `[Auto-batch] Declared batch [${normalizedBatchPath}] after batch violation`, timestamp: new Date() });
+                agentLog.logToolResult(event.name, `auto-declared batch: [${normalizedBatchPath}]`);
+                // Tell the agent the batch was auto-declared — retry the write
+                toolResultContent = `<tool_result name="${event.name}" status="error">\n[BATCH AUTO-DECLARED] No batch was declared. A batch containing [${normalizedBatchPath}] has been auto-declared. Retry the write_file call now.\n</tool_result>`;
+                // Set next action so the agent retries immediately
+                execState.nextActions = [`Write ${normalizedBatchPath} now. The batch has been declared.`];
+              } else {
+                // Batch exists but file not in it — standard rejection
+                agentLog.logToolResult(event.name, batchRejection);
+                toolResultContent = `<tool_result name="${event.name}" status="error">\n${batchRejection}\n</tool_result>`;
+                onThought({ type: 'error', label: `Batch violation: ${toolCallPath}`, detail: batchRejection, timestamp: new Date() });
+              }
+            } else if (isFileWrite && toolCallPath && registeredArtifactPaths.has(normalizeWorkspacePath(toolCallPath, this.workspaceRoot))) {
+              // ─── OPT-1+3: Smart cross-session artifact guard ─────────────────
+              // File was created in a PREVIOUS session. Instead of hard-blocking
+              // (which causes the model to retry write_file until halted), we:
+              //   1st hit: Read the existing file, inject content, guide model to edit_file.
+              //   2nd hit: Allow the write_file through (model clearly intends a full rewrite).
+              const normalizedGuard = normalizeWorkspacePath(toolCallPath, this.workspaceRoot);
+              const hitCount = (artifactGuardHits.get(normalizedGuard) ?? 0) + 1;
+              artifactGuardHits.set(normalizedGuard, hitCount);
+
+              if (hitCount >= 2) {
+                // OPT-3: 2nd+ attempt — model clearly wants to overwrite. Allow it.
+                agentLog.logEvent('ARTIFACT_GUARD_OVERRIDE', `Allowing write_file on "${normalizedGuard}" (attempt #${hitCount})`);
+                onThought({ type: 'thinking', label: `Artifact guard: allowing rewrite of ${normalizedGuard} (attempt #${hitCount})`, timestamp: new Date() });
+                // Remove from registered set so subsequent writes in this session aren't blocked.
+                registeredArtifactPaths.delete(normalizedGuard);
+                // Fall through to normal dispatch below by NOT setting toolResultContent here.
+                // We need to re-dispatch the tool call.
+                const writeResult = await this.toolDispatcher.dispatch(
+                  event, agentId, onApproval, onDiff, onThought
+                );
+                agentLog.logToolResult(event.name, writeResult.text);
+                turnMemory.addToolResult(event.name, writeResult.text);
+                toolResultContent = `<tool_result name="${event.name}">\n${writeResult.text}\n</tool_result>`;
+                if (writeResult.status === 'success' && writeResult.text.startsWith('File written')) {
+                  writtenPaths.add(toolCallPath);
+                  toolPathCounts.clear();
+                  const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
+                  toolResultContent += `\n\nFiles written this task: ${pathList}. Use edit_file for any corrections to these paths.`;
+                  this.artifactRegistry.recordArtifact(agentId, toolCallPath).catch(() => { /* non-fatal */ });
+                  stateManager.markFileWritten(execState, normalizedGuard);
+                  stateManager.markProgress(execState);
+                }
+              } else {
+                // OPT-1: 1st attempt — auto-read the existing file and inject content
+                // so the model has context to use edit_file (or retry as full rewrite).
+                let existingContent = '';
+                const absPath = path.isAbsolute(toolCallPath)
+                  ? toolCallPath
+                  : path.join(this.workspaceRoot, toolCallPath);
+                try {
+                  existingContent = await fs.readFile(absPath, 'utf8');
+                } catch {
+                  existingContent = '[could not read existing file]';
+                }
+
+                // Cache the content so the model has it available
+                if (existingContent && existingContent !== '[could not read existing file]') {
+                  this.toolDispatcher.cacheReadResult(toolCallPath, existingContent);
+                  stateManager.markFileRead(execState, normalizedGuard, existingContent);
+                  // Store in resolvedInputContents for context injection
+                  const MAX_STORED_CONTENT_CHARS = 6000;
+                  execState.resolvedInputContents ??= {};
+                  execState.resolvedInputContents[normalizedGuard] =
+                    existingContent.slice(0, MAX_STORED_CONTENT_CHARS);
+                }
+
+                const contentPreview = existingContent.length > 500
+                  ? `${existingContent.slice(0, 500)}\n… [${existingContent.length} chars total]`
+                  : existingContent;
+                const guidance = `[ARTIFACT GUARD] "${normalizedGuard}" already exists (${existingContent.length} chars). ` +
+                  `The file has been auto-loaded into context. You have two options:\n` +
+                  `1. Use edit_file to modify specific parts.\n` +
+                  `2. Call write_file again with the full new content to overwrite it.\n\n` +
+                  `Current file content:\n${contentPreview}`;
+                agentLog.logToolResult(event.name, `artifact guard: auto-read ${normalizedGuard} (${existingContent.length} chars)`);
+                turnMemory.addToolResult(event.name, guidance);
+                toolResultContent = `<tool_result name="${event.name}" status="error">\n${guidance}\n</tool_result>`;
+                onThought({ type: 'thinking', label: `Artifact guard: auto-loaded ${normalizedGuard} into context`, detail: `${existingContent.length} chars`, timestamp: new Date() });
+              }
+            } else if (event.name === 'update_task_state') {
+              // ─── In-process execution state update ───────────────────────────
+              // Handled directly here so the agent can write back to the state
+              // without needing a separate MCP server.
+              const updates = event.input as {
+                completed_step?: string;
+                next_actions?: string[];
+                blockers?: string[];
+                tech_stack?: Record<string, string>;
+                // Phase 4: terminal/wait state fields
+                session_phase?: string;
+                wait_state_reason?: string;
+                // Phase 2: structured next tool call for direct dispatch on resume
+                next_tool_call?: { tool: string; input: Record<string, unknown>; description?: string };
+              };
+              if (updates.completed_step) {
+                execState.completedSteps.push(updates.completed_step);
+              }
+              if (updates.next_actions !== undefined) {
+                execState.nextActions = updates.next_actions;
+              }
+              if (updates.blockers !== undefined) {
+                execState.blockers = updates.blockers;
+              }
+              if (updates.tech_stack) {
+                execState.techStack = { ...execState.techStack, ...updates.tech_stack };
+              }
+              // Phase 4: terminal/wait state
+              if (updates.session_phase) {
+                stateManager.setRunPhase(execState, updates.session_phase as SessionPhase, updates.wait_state_reason);
+              }
+              // Phase 2: structured next tool call for direct dispatch
+              if (updates.next_tool_call) {
+                const ntc = updates.next_tool_call;
+                stateManager.setNextToolCall(execState, ntc.tool, ntc.input, ntc.description);
+              }
+              // Save immediately so the state is durable even if max-iterations hit
+              stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+              const summary = [
+                updates.completed_step ? `completed_step recorded` : '',
+                updates.next_actions !== undefined ? `next_actions: ${execState.nextActions.length}` : '',
+                updates.tech_stack ? `tech_stack: ${JSON.stringify(execState.techStack)}` : '',
+                updates.session_phase ? `session_phase: ${updates.session_phase}` : '',
+                updates.next_tool_call ? `next_tool_call: ${updates.next_tool_call.tool}` : '',
+              ].filter(Boolean).join(', ');
+              agentLog.logToolResult(event.name, summary);
+              toolResultContent = `[Task state updated — ${summary}]`;
+              // Phase 1 fix: virtual tools must also increment iterationsUsed
+              stateManager.markToolExecuted(execState, event.name, undefined, toolResultContent.slice(0, 150));
+            } else if (event.name === 'declare_file_batch') {
+              // ─── In-process write-batch declaration (#7) ──────────────────────
+              const inp = event.input as { files: string[]; rationale?: string };
+              const newFiles = (inp.files ?? []).map(f => normalizeWorkspacePath(f, this.workspaceRoot));
+
+              // Idempotency: reject empty batch declarations and duplicate batch declarations
+              if (newFiles.length === 0) {
+                toolResultContent = `[BATCH REJECTED] declare_file_batch requires a non-empty "files" array. Provide the list of files you plan to write.`;
+                agentLog.logToolResult(event.name, 'rejected: empty files array');
+              } else if (execState.plannedFileBatch.length > 0) {
+                // A batch is already active — reject the duplicate
+                toolResultContent = `[BATCH_ALREADY_ACTIVE] A batch of ${execState.plannedFileBatch.length} file(s) is already declared. Write the remaining batch files instead of re-declaring. Remaining: ${execState.plannedFileBatch.filter(f => !(execState.completedBatchFiles ?? []).includes(f)).slice(0, 5).join(', ')
+                  }`;
+                agentLog.logToolResult(event.name, 'rejected: batch already active');
+              } else {
+                // ── Batch validation: ensure user-requested files are included, trim over-expansion ──
+                const fileNameRegex = /[\w.-]+\.(?:html|js|ts|tsx|jsx|css|py|java|go|rs|json|md|txt|yaml|yml|toml|xml|sh|bat|rb|php|c|cpp|h)\b/gi;
+                const userRequestedFiles = [...new Set((userMessage.match(fileNameRegex) ?? []).map(f => f.toLowerCase()))];
+
+                // If user asked for 1 file but agent declared >2, trim to user's file (+ optional README)
+                if (userRequestedFiles.length === 1 && newFiles.length > 2) {
+                  const requestedNorm = userRequestedFiles[0];
+                  const trimmed = newFiles.filter(f =>
+                    f.toLowerCase().endsWith(requestedNorm) || f.toLowerCase() === 'readme.md'
+                  );
+                  if (trimmed.length > 0 && trimmed.length < newFiles.length) {
+                    const originalCount = newFiles.length;
+                    newFiles.length = 0;
+                    newFiles.push(...trimmed);
+                    onThought?.({ type: 'thinking', label: `[Batch trimmed] User requested 1 file; reduced batch from ${originalCount} to ${newFiles.length}`, timestamp: new Date() });
+                  }
+                }
+
+                // Ensure user-requested files are present in the batch
+                for (const reqFile of userRequestedFiles) {
+                  if (!newFiles.some(f => f.toLowerCase().endsWith(reqFile))) {
+                    newFiles.unshift(reqFile);
+                  }
+                }
+
+                execState.plannedFileBatch = newFiles;
+                execState.batchViolationCount = 0; // Reset violation counter on successful batch declaration
+                execState.lastBatchViolationPath = undefined;
+                stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+                agentLog.logToolResult(event.name, `batch declared: ${newFiles.length} files`);
+                toolResultContent = `[Batch declared: ${newFiles.length} file(s) — ` +
+                  `${inp.rationale ?? 'no rationale'}. Write all of them before this session ends.]`;
+              }
+              // Phase 1 fix: virtual tools must also increment iterationsUsed
+              stateManager.markToolExecuted(execState, event.name, undefined, (toolResultContent ?? '').slice(0, 150));
+            } else {
+              // Task 10: Same-tool same-path loop breaker
+              const toolPathKey = `${event.name}:${loopTarget ?? ''}`;
+              const toolPathCount = (toolPathCounts.get(toolPathKey) ?? 0) + 1;
+              toolPathCounts.set(toolPathKey, toolPathCount);
+
+              let toolResult: DispatchResult;
+
+              // Pre-dispatch budget guard: block the Nth consecutive read BEFORE dispatching
+              // so we don't waste an API call on a read that will just be overwritten.
+              const isPreDispatchReadBlock =
+                (execState.executionPhase ?? 'DISCOVERING') !== 'WRITE_ONLY' &&
+                ['read_file', 'list_files', 'search_files', 'glob_files', 'grep_content'].includes(event.name) &&
+                consecutiveReadCount >= 2 && writtenPaths.size === 0;
+
+              // OPT-7: Aligned tool list with isPreDispatchReadBlock (was missing glob_files, grep_content)
+              const shouldForceWriteOnlyForLoop =
+                (execState.executionPhase ?? 'DISCOVERING') !== 'WRITE_ONLY' &&
+                (toolPathCount >= 2 || isPreDispatchReadBlock) &&
+                ['read_file', 'list_files', 'search_files', 'glob_files', 'grep_content'].includes(event.name);
+              if (shouldForceWriteOnlyForLoop) {
+                // FIX 3b: Hard state transition to WRITE_ONLY — no more reads allowed.
+                // Guard: if batch is required but not declared, skip WRITE_ONLY to avoid deadlock.
+                // Instead, block the read and direct the agent to declare batch first.
+                const inlineNeedsBatch = activeTaskTemplate ? TASK_TEMPLATES[activeTaskTemplate].requiresBatch : false;
+                const inlineBatchOk = !inlineNeedsBatch || (execState.plannedFileBatch ?? []).length > 0;
+
+                if (inlineBatchOk) {
+                  stateManager.setExecutionPhase(execState, 'WRITE_ONLY');
+                  this.toolDispatcher.lockDiscovery();
+                  this.toolDispatcher.setExecutionPhase('WRITE_ONLY');
+
+                  // Inject the file content the model is trying to read (if stored)
+                  const storedContent = (event.name === 'read_file' && toolCallPath)
+                    ? execState.resolvedInputContents?.[normalizeWorkspacePath(toolCallPath, this.workspaceRoot)]
+                    : undefined;
+                  const contentInjection = storedContent
+                    ? `\n\nHere is the content you are trying to read:\n${storedContent}`
+                    : '';
+
+                  toolResult = {
+                    text: `[READ BLOCKED] Repeated ${event.name} call on "${loopTarget ?? event.name}". Phase is now WRITE_ONLY. All further reads will be rejected. Write the next file now.${contentInjection}`,
+                    status: 'blocked',
+                    reasonCode: 'WRITE_ONLY_PHASE',
+                    toolName: event.name,
+                    path: loopTarget,
+                  };
+                  onThought?.({ type: 'error', label: `Loop detected → WRITE_ONLY: ${event.name}:${loopTarget ?? ''} x${toolPathCount}`, timestamp: new Date() });
+                  agentLog.logGuardActivation('WRITE_ONLY', event.name, loopTarget, iterationCount);
+                  agentLog.logPhaseTransition(execState.executionPhase ?? 'DISCOVERING', 'WRITE_ONLY', `loop on ${event.name}:${loopTarget ?? ''}`);
+                } else {
+                  // Batch prerequisite missing — cannot enter WRITE_ONLY (would deadlock).
+                  // Block the read and direct agent to declare batch first.
+                  execState.nextActions = ['Call declare_file_batch with the list of files to write, then write the first file.'];
+                  onThought?.({ type: 'thinking', label: `[Phase guard] WRITE_ONLY skipped — batch prerequisite missing, routing to batch declaration`, timestamp: new Date() });
+                  toolResult = {
+                    text: `[READ BLOCKED] Repeated reads detected. You must call declare_file_batch before writing. Provide the list of files you plan to create.`,
+                    status: 'blocked',
+                    reasonCode: 'BATCH_PREREQUISITE_MISSING',
+                    toolName: event.name,
+                    path: loopTarget,
+                  };
+                }
+              } else {
+                toolResult = await this.toolDispatcher.dispatch(
+                  event, agentId, onApproval, onDiff, onThought
+                );
+              }
+              agentLog.logToolResult(event.name, toolResult.text);
+              turnMemory.addToolResult(event.name, toolResult.text);
+
+              // ── DD4: Structured dispatch result handling ──
+              // Use structured status instead of parsing text prefixes.
+              {
+                const isBlockedResult = toolResult.status === 'blocked' || toolResult.status === 'cached' || toolResult.status === 'budget_exhausted';
+                if (isBlockedResult) {
+                  // DD4: Track blocked/cached reads via structured reasonCode.
+                  const shouldTrackBlockedRead = (
+                    toolResult.reasonCode === 'ALREADY_READ_UNCHANGED' ||
+                    toolResult.reasonCode === 'LOOP_DETECTED' ||
+                    toolResult.reasonCode === 'WRITE_ONLY_PHASE' ||
+                    toolResult.reasonCode === 'DISCOVERY_LOCKED' ||
+                    toolResult.reasonCode === 'DISCOVERY_BUDGET_EXHAUSTED'
+                  );
+                  if (shouldTrackBlockedRead) {
+                    const normBlockedPath = normalizeWorkspacePath(toolCallPath ?? loopTarget ?? event.name, this.workspaceRoot);
+                    if (!blockedReadPaths.has(normBlockedPath)) {
+                      blockedReadPaths.add(normBlockedPath);
+                      stateManager.incrementBlockedRead(execState, normBlockedPath);
+                    }
+                    // DD4: Record tool loop for same-tool detection
+                    stateManager.recordToolLoop(execState, event.name, loopTarget);
+                  }
+                }
+                if (toolResult.status === 'success') {
+                  // Only record successful executions as ground-truth state.
+                  stateManager.markToolExecuted(execState, event.name, toolCallPath, toolResult.text.slice(0, 150));
+                  // DD4: Reset tool loop on success
+                  stateManager.resetToolLoop(execState);
+                  if (event.name === 'read_file' && toolCallPath) {
+                    // ACTION 13: Pass content so structured facts can be extracted
+                    stateManager.markFileRead(
+                      execState,
+                      normalizeWorkspacePath(toolCallPath, this.workspaceRoot),
+                      toolResult.text  // pass content for structured summary extraction
+                    );
+                    // Cache the full content so reread attempts return the content
+                    // instead of a useless BLOCKED message.
+                    this.toolDispatcher.cacheReadResult(toolCallPath, toolResult.text);
+                    // DD7: Store file summary for hash-based reuse on subsequent turns.
+                    const readSummary = fileSummaryStore.put(
+                      normalizeWorkspacePath(toolCallPath, this.workspaceRoot),
+                      toolResult.text,
+                      toolResult.text.slice(0, 500),
+                    );
+                    stateManager.upsertResolvedInputSummary(execState, readSummary);
+                    contextCostTracker.recordRawFileInjection();
+
+                    // FIX 2: Store full file content (budget-capped) so it survives
+                    // across iterations and the model never needs to re-read.
+                    const MAX_STORED_CONTENT_CHARS = 6000;
+                    const MAX_TOTAL_STORED_CHARS = 24000;
+                    execState.resolvedInputContents ??= {};
+                    const currentTotal = Object.values(execState.resolvedInputContents)
+                      .reduce((sum, c) => sum + c.length, 0);
+                    if (currentTotal + Math.min(toolResult.text.length, MAX_STORED_CONTENT_CHARS) <= MAX_TOTAL_STORED_CHARS) {
+                      const normalizedPath = normalizeWorkspacePath(toolCallPath, this.workspaceRoot);
+                      execState.resolvedInputContents[normalizedPath] =
+                        toolResult.text.slice(0, MAX_STORED_CONTENT_CHARS);
+                    }
+                  }
+
+                  // DD5: Compute deterministic next step first, fall back to advisory
+                  let nextStep = stateManager.computeDeterministicNextStep(execState)
+                    ?? stateManager.computeNextStep(execState, event.name, toolCallPath, toolResult.text);
+                  // Auto-repair — if no step computed after read_file, force a write
+                  if (!nextStep && event.name === 'read_file') {
+                    nextStep = {
+                      nextAction: 'Write the next implementation file now — do not read more files',
+                    };
+                  }
+                  if (nextStep) {
+                    stateManager.setNextAction(execState, nextStep.nextAction);
+                    if (nextStep.nextToolCall) {
+                      stateManager.setNextToolCall(execState, nextStep.nextToolCall.tool, nextStep.nextToolCall.input, nextStep.nextToolCall.description);
+                    }
+                  }
+                }
+              }
+
+              // ACTION 8: Tiered truncation — full on first read, digest on subsequent
+              const resultStr = toolResult.text;
+              const truncatedResult = this.truncateToolResult(
+                resultStr,
+                event.name,
+                iterationCount,
+                toolCallPath
+              );
+              toolResultContent = `<tool_result name="${event.name}">\n${truncatedResult}\n</tool_result>`;
+
+              // ─── OPT-7: Consolidated discovery budget counter ─────────────────
+              // Track consecutive reads/writes for the pre-dispatch guard (layer 2).
+              // The post-dispatch override (old layer 3) has been removed — the
+              // pre-dispatch guard at consecutiveReadCount >= 2 and the ToolDispatcher's
+              // WRITE_ONLY/discoveryLocked checks (layer 1) handle blocking.
+              const isReadOnlyTool = ['read_file', 'list_files', 'search_files', 'glob_files', 'grep_content'].includes(event.name);
+              const isWriteOrActionTool = ['write_file', 'edit_file', 'run_command', 'replace_range', 'multi_edit'].includes(event.name);
+              if (isReadOnlyTool) {
+                consecutiveReadCount++;
+              } else if (isWriteOrActionTool) {
+                consecutiveReadCount = 0;
+              }
+
+              if (isFileWrite && toolCallPath && toolResult.status === 'success' && toolResult.text.startsWith('File written')) {
                 writtenPaths.add(toolCallPath);
+                // Task 10: Reset tool+path loop counter on successful write
                 toolPathCounts.clear();
                 const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
                 toolResultContent += `\n\nFiles written this task: ${pathList}. Use edit_file for any corrections to these paths.`;
-                this.recordArtifact(agentId, toolCallPath).catch(() => { /* non-fatal */ });
-                stateManager.markFileWritten(execState, normalizedGuard);
+                // Record in cross-session artifact registry so future sessions know what files exist.
+                this.artifactRegistry.recordArtifact(agentId, toolCallPath).catch(() => { /* non-fatal */ });
+
+                // Single authoritative mutation method handles artifactsCreated + completedBatchFiles
+                stateManager.markFileWritten(execState, normalizeWorkspacePath(toolCallPath, this.workspaceRoot));
+                // DD1: Record meaningful progress
                 stateManager.markProgress(execState);
-              }
-            } else {
-              // OPT-1: 1st attempt — auto-read the existing file and inject content
-              // so the model has context to use edit_file (or retry as full rewrite).
-              let existingContent = '';
-              const absPath = path.isAbsolute(toolCallPath)
-                ? toolCallPath
-                : path.join(this.workspaceRoot, toolCallPath);
-              try {
-                existingContent = await fs.readFile(absPath, 'utf8');
-              } catch {
-                existingContent = '[could not read existing file]';
-              }
 
-              // Cache the content so the model has it available
-              if (existingContent && existingContent !== '[could not read existing file]') {
-                this.toolDispatcher.cacheReadResult(toolCallPath, existingContent);
-                stateManager.markFileRead(execState, normalizedGuard, existingContent);
-                // Store in resolvedInputContents for context injection
-                const MAX_STORED_CONTENT_CHARS = 6000;
-                execState.resolvedInputContents ??= {};
-                execState.resolvedInputContents[normalizedGuard] =
-                  existingContent.slice(0, MAX_STORED_CONTENT_CHARS);
-              }
+                // E1 (bug_fix_007): Lightweight completion verification for small artifacts.
+                // Check for truncation indicators and suspiciously small file size.
+                const writtenContent = ((event.input as Record<string, unknown>)?.content as string) ?? '';
+                if (writtenContent.length < 50 && !toolCallPath.endsWith('.css') && !toolCallPath.endsWith('.env')) {
+                  toolResultContent += `\n[Verification warning] File "${toolCallPath}" is very small (${writtenContent.length} chars). Check if content was truncated.`;
+                }
+                if (writtenContent.includes('// ...') || writtenContent.includes('/* ... */') || writtenContent.includes('# ...')) {
+                  toolResultContent += `\n[Verification warning] File "${toolCallPath}" contains placeholder markers ("..."). Ensure all code is fully generated.`;
+                }
 
-              const contentPreview = existingContent.length > 500
-                ? `${existingContent.slice(0, 500)}\n… [${existingContent.length} chars total]`
-                : existingContent;
-              const guidance = `[ARTIFACT GUARD] "${normalizedGuard}" already exists (${existingContent.length} chars). ` +
-                `The file has been auto-loaded into context. You have two options:\n` +
-                `1. Use edit_file to modify specific parts.\n` +
-                `2. Call write_file again with the full new content to overwrite it.\n\n` +
-                `Current file content:\n${contentPreview}`;
-              agentLog.logToolResult(event.name, `artifact guard: auto-read ${normalizedGuard} (${existingContent.length} chars)`);
-              turnMemory.addToolResult(event.name, guidance);
-              toolResultContent = `<tool_result name="${event.name}" status="error">\n${guidance}\n</tool_result>`;
-              onThought({ type: 'thinking', label: `Artifact guard: auto-loaded ${normalizedGuard} into context`, detail: `${existingContent.length} chars`, timestamp: new Date() });
-            }
-          } else if (event.name === 'update_task_state') {
-            // ─── In-process execution state update ───────────────────────────
-            // Handled directly here so the agent can write back to the state
-            // without needing a separate MCP server.
-            const updates = event.input as {
-              completed_step?: string;
-              next_actions?: string[];
-              blockers?: string[];
-              tech_stack?: Record<string, string>;
-              // Phase 4: terminal/wait state fields
-              session_phase?: string;
-              wait_state_reason?: string;
-              // Phase 2: structured next tool call for direct dispatch on resume
-              next_tool_call?: { tool: string; input: Record<string, unknown>; description?: string };
-            };
-            if (updates.completed_step) {
-              execState.completedSteps.push(updates.completed_step);
-            }
-            if (updates.next_actions !== undefined) {
-              execState.nextActions = updates.next_actions;
-            }
-            if (updates.blockers !== undefined) {
-              execState.blockers = updates.blockers;
-            }
-            if (updates.tech_stack) {
-              execState.techStack = { ...execState.techStack, ...updates.tech_stack };
-            }
-            // Phase 4: terminal/wait state
-            if (updates.session_phase) {
-              stateManager.setRunPhase(execState, updates.session_phase as SessionPhase, updates.wait_state_reason);
-            }
-            // Phase 2: structured next tool call for direct dispatch
-            if (updates.next_tool_call) {
-              const ntc = updates.next_tool_call;
-              stateManager.setNextToolCall(execState, ntc.tool, ntc.input, ntc.description);
-            }
-            // Save immediately so the state is durable even if max-iterations hit
-            stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
-            const summary = [
-              updates.completed_step ? `completed_step recorded` : '',
-              updates.next_actions !== undefined ? `next_actions: ${execState.nextActions.length}` : '',
-              updates.tech_stack ? `tech_stack: ${JSON.stringify(execState.techStack)}` : '',
-              updates.session_phase ? `session_phase: ${updates.session_phase}` : '',
-              updates.next_tool_call ? `next_tool_call: ${updates.next_tool_call.tool}` : '',
-            ].filter(Boolean).join(', ');
-            agentLog.logToolResult(event.name, summary);
-            toolResultContent = `[Task state updated — ${summary}]`;
-            // Phase 1 fix: virtual tools must also increment iterationsUsed
-            stateManager.markToolExecuted(execState, event.name, undefined, toolResultContent.slice(0, 150));
-          } else if (event.name === 'declare_file_batch') {
-            // ─── In-process write-batch declaration (#7) ──────────────────────
-            const inp = event.input as { files: string[]; rationale?: string };
-            const newFiles = (inp.files ?? []).map(f => this.normalizeWorkspacePath(f));
-
-            // Idempotency: reject empty batch declarations and duplicate batch declarations
-            if (newFiles.length === 0) {
-              toolResultContent = `[BATCH REJECTED] declare_file_batch requires a non-empty "files" array. Provide the list of files you plan to write.`;
-              agentLog.logToolResult(event.name, 'rejected: empty files array');
-            } else if (execState.plannedFileBatch.length > 0) {
-              // A batch is already active — reject the duplicate
-              toolResultContent = `[BATCH_ALREADY_ACTIVE] A batch of ${execState.plannedFileBatch.length} file(s) is already declared. Write the remaining batch files instead of re-declaring. Remaining: ${
-                execState.plannedFileBatch.filter(f => !(execState.completedBatchFiles ?? []).includes(f)).slice(0, 5).join(', ')
-              }`;
-              agentLog.logToolResult(event.name, 'rejected: batch already active');
-            } else {
-              // ── Batch validation: ensure user-requested files are included, trim over-expansion ──
-              const fileNameRegex = /[\w.-]+\.(?:html|js|ts|tsx|jsx|css|py|java|go|rs|json|md|txt|yaml|yml|toml|xml|sh|bat|rb|php|c|cpp|h)\b/gi;
-              const userRequestedFiles = [...new Set((userMessage.match(fileNameRegex) ?? []).map(f => f.toLowerCase()))];
-
-              // If user asked for 1 file but agent declared >2, trim to user's file (+ optional README)
-              if (userRequestedFiles.length === 1 && newFiles.length > 2) {
-                const requestedNorm = userRequestedFiles[0];
-                const trimmed = newFiles.filter(f =>
-                  f.toLowerCase().endsWith(requestedNorm) || f.toLowerCase() === 'readme.md'
-                );
-                if (trimmed.length > 0 && trimmed.length < newFiles.length) {
-                  const originalCount = newFiles.length;
-                  newFiles.length = 0;
-                  newFiles.push(...trimmed);
-                  onThought?.({ type: 'thinking', label: `[Batch trimmed] User requested 1 file; reduced batch from ${originalCount} to ${newFiles.length}`, timestamp: new Date() });
+                // Verify all written files are still on disk every 10 writes
+                if (writtenPaths.size % 10 === 0) {
+                  const missingFiles = await this.verifyWrittenFiles(Array.from(writtenPaths));
+                  if (missingFiles.length > 0) {
+                    toolResultContent += `\n\n[Verification] Warning: ${missingFiles.length} file(s) appear missing from disk: ${missingFiles.join(', ')}. Investigate before continuing.`;
+                  }
+                }
+                // ─── #7 Batch progress ───────────────────────────────────────────
+                const plannedBatch = execState.plannedFileBatch ?? [];
+                if (plannedBatch.length > 0) {
+                  const completedBatch = execState.completedBatchFiles ?? execState.artifactsCreated;
+                  const remaining = plannedBatch.filter(p => !completedBatch.includes(p));
+                  const batchNote = remaining.length === 0
+                    ? `[Batch complete: all ${plannedBatch.length} planned files written.]`
+                    : `[Batch: ${completedBatch.length}/${plannedBatch.length} done. Remaining: ${remaining.slice(0, 4).join(', ')}${remaining.length > 4 ? ` +${remaining.length - 4} more` : ''}]`;
+                  toolResultContent += `\n${batchNote}`;
                 }
               }
 
-              // Ensure user-requested files are present in the batch
-              for (const reqFile of userRequestedFiles) {
-                if (!newFiles.some(f => f.toLowerCase().endsWith(reqFile))) {
-                  newFiles.unshift(reqFile);
+              // FIX 5: After plan-mode write, validate that the plan references the objective.
+              if (mode === 'plan' && event.name === 'write_file' && toolResult.status === 'success') {
+                const writtenContent = ((event.input as Record<string, unknown>)?.content as string) ?? '';
+                const objective = execState.primaryObjective ?? execState.objective;
+                const objectiveWords = objective.toLowerCase().split(/\s+/).filter(w => w.length > 4);
+                const planLower = writtenContent.toLowerCase();
+                const matches = objectiveWords.filter(w => planLower.includes(w));
+                const overlapRatio = matches.length / Math.max(objectiveWords.length, 1);
+                if (overlapRatio < 0.2 && objectiveWords.length > 2) {
+                  toolResultContent += `\n\n[WARNING] The plan you wrote has low overlap with the primary objective: "${objective.slice(0, 200)}". Review and revise the plan to match the actual requirements.`;
+                  if (toolCallPath) {
+                    stateManager.setArtifactStatus(execState, normalizeWorkspacePath(toolCallPath, this.workspaceRoot), 'drafted');
+                  }
                 }
               }
 
-              execState.plannedFileBatch = newFiles;
-              execState.batchViolationCount = 0; // Reset violation counter on successful batch declaration
-              execState.lastBatchViolationPath = undefined;
+              // Save state after each tool dispatch to ensure durability
               stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
-              agentLog.logToolResult(event.name, `batch declared: ${newFiles.length} files`);
-              toolResultContent = `[Batch declared: ${newFiles.length} file(s) — ` +
-                `${inp.rationale ?? 'no rationale'}. Write all of them before this session ends.]`;
-            }
-            // Phase 1 fix: virtual tools must also increment iterationsUsed
-            stateManager.markToolExecuted(execState, event.name, undefined, (toolResultContent ?? '').slice(0, 150));
-          } else {
-            // Task 10: Same-tool same-path loop breaker
-            const toolPathKey = `${event.name}:${loopTarget ?? ''}`;
-            const toolPathCount = (toolPathCounts.get(toolPathKey) ?? 0) + 1;
-            toolPathCounts.set(toolPathKey, toolPathCount);
 
-            let toolResult: DispatchResult;
-
-            // Pre-dispatch budget guard: block the Nth consecutive read BEFORE dispatching
-            // so we don't waste an API call on a read that will just be overwritten.
-            const isPreDispatchReadBlock =
-              (execState.executionPhase ?? 'DISCOVERING') !== 'WRITE_ONLY' &&
-              ['read_file', 'list_files', 'search_files', 'glob_files', 'grep_content'].includes(event.name) &&
-              consecutiveReadCount >= 2 && writtenPaths.size === 0;
-
-            // OPT-7: Aligned tool list with isPreDispatchReadBlock (was missing glob_files, grep_content)
-            const shouldForceWriteOnlyForLoop =
-              (execState.executionPhase ?? 'DISCOVERING') !== 'WRITE_ONLY' &&
-              (toolPathCount >= 2 || isPreDispatchReadBlock) &&
-              ['read_file', 'list_files', 'search_files', 'glob_files', 'grep_content'].includes(event.name);
-            if (shouldForceWriteOnlyForLoop) {
-              // FIX 3b: Hard state transition to WRITE_ONLY — no more reads allowed.
-              // Guard: if batch is required but not declared, skip WRITE_ONLY to avoid deadlock.
-              // Instead, block the read and direct the agent to declare batch first.
-              const inlineNeedsBatch = activeTaskTemplate ? TASK_TEMPLATES[activeTaskTemplate].requiresBatch : false;
-              const inlineBatchOk = !inlineNeedsBatch || (execState.plannedFileBatch ?? []).length > 0;
-
-              if (inlineBatchOk) {
-                stateManager.setExecutionPhase(execState, 'WRITE_ONLY');
-                this.toolDispatcher.lockDiscovery();
-                this.toolDispatcher.setExecutionPhase('WRITE_ONLY');
-
-                // Inject the file content the model is trying to read (if stored)
-                const storedContent = (event.name === 'read_file' && toolCallPath)
-                  ? execState.resolvedInputContents?.[this.normalizeWorkspacePath(toolCallPath)]
-                  : undefined;
-                const contentInjection = storedContent
-                  ? `\n\nHere is the content you are trying to read:\n${storedContent}`
-                  : '';
-
-                toolResult = {
-                  text: `[READ BLOCKED] Repeated ${event.name} call on "${loopTarget ?? event.name}". Phase is now WRITE_ONLY. All further reads will be rejected. Write the next file now.${contentInjection}`,
-                  status: 'blocked',
-                  reasonCode: 'WRITE_ONLY_PHASE',
-                  toolName: event.name,
-                  path: loopTarget,
-                };
-                onThought?.({ type: 'error', label: `Loop detected → WRITE_ONLY: ${event.name}:${loopTarget ?? ''} x${toolPathCount}`, timestamp: new Date() });
-                agentLog.logGuardActivation('WRITE_ONLY', event.name, loopTarget, iterationCount);
-                agentLog.logPhaseTransition(execState.executionPhase ?? 'DISCOVERING', 'WRITE_ONLY', `loop on ${event.name}:${loopTarget ?? ''}`);
-              } else {
-                // Batch prerequisite missing — cannot enter WRITE_ONLY (would deadlock).
-                // Block the read and direct agent to declare batch first.
-                execState.nextActions = ['Call declare_file_batch with the list of files to write, then write the first file.'];
-                onThought?.({ type: 'thinking', label: `[Phase guard] WRITE_ONLY skipped — batch prerequisite missing, routing to batch declaration`, timestamp: new Date() });
-                toolResult = {
-                  text: `[READ BLOCKED] Repeated reads detected. You must call declare_file_batch before writing. Provide the list of files you plan to create.`,
-                  status: 'blocked',
-                  reasonCode: 'BATCH_PREREQUISITE_MISSING',
-                  toolName: event.name,
-                  path: loopTarget,
-                };
-              }
-            } else {
-              toolResult = await this.toolDispatcher.dispatch(
-                event, agentId, onApproval, onDiff, onThought
-              );
-            }
-            agentLog.logToolResult(event.name, toolResult.text);
-            turnMemory.addToolResult(event.name, toolResult.text);
-
-            // ── DD4: Structured dispatch result handling ──
-            // Use structured status instead of parsing text prefixes.
-            {
-              const isBlockedResult = toolResult.status === 'blocked' || toolResult.status === 'cached' || toolResult.status === 'budget_exhausted';
-              if (isBlockedResult) {
-                // DD4: Track blocked/cached reads via structured reasonCode.
-                const shouldTrackBlockedRead = (
-                  toolResult.reasonCode === 'ALREADY_READ_UNCHANGED' ||
-                  toolResult.reasonCode === 'LOOP_DETECTED' ||
-                  toolResult.reasonCode === 'WRITE_ONLY_PHASE' ||
-                  toolResult.reasonCode === 'DISCOVERY_LOCKED' ||
-                  toolResult.reasonCode === 'DISCOVERY_BUDGET_EXHAUSTED'
-                );
-                if (shouldTrackBlockedRead) {
-                  const normBlockedPath = this.normalizeWorkspacePath(toolCallPath ?? loopTarget ?? event.name);
-                  if (!blockedReadPaths.has(normBlockedPath)) {
-                    blockedReadPaths.add(normBlockedPath);
-                    stateManager.incrementBlockedRead(execState, normBlockedPath);
-                  }
-                  // DD4: Record tool loop for same-tool detection
-                  stateManager.recordToolLoop(execState, event.name, loopTarget);
-                }
-              }
-              if (toolResult.status === 'success') {
-                // Only record successful executions as ground-truth state.
-                stateManager.markToolExecuted(execState, event.name, toolCallPath, toolResult.text.slice(0, 150));
-                // DD4: Reset tool loop on success
-                stateManager.resetToolLoop(execState);
-                if (event.name === 'read_file' && toolCallPath) {
-                  // ACTION 13: Pass content so structured facts can be extracted
-                  stateManager.markFileRead(
-                    execState,
-                    this.normalizeWorkspacePath(toolCallPath),
-                    toolResult.text  // pass content for structured summary extraction
-                  );
-                  // Cache the full content so reread attempts return the content
-                  // instead of a useless BLOCKED message.
-                  this.toolDispatcher.cacheReadResult(toolCallPath, toolResult.text);
-                  // DD7: Store file summary for hash-based reuse on subsequent turns.
-                  const readSummary = fileSummaryStore.put(
-                    this.normalizeWorkspacePath(toolCallPath),
-                    toolResult.text,
-                    toolResult.text.slice(0, 500),
-                  );
-                  stateManager.upsertResolvedInputSummary(execState, readSummary);
-                  contextCostTracker.recordRawFileInjection();
-
-                  // FIX 2: Store full file content (budget-capped) so it survives
-                  // across iterations and the model never needs to re-read.
-                  const MAX_STORED_CONTENT_CHARS = 6000;
-                  const MAX_TOTAL_STORED_CHARS = 24000;
-                  execState.resolvedInputContents ??= {};
-                  const currentTotal = Object.values(execState.resolvedInputContents)
-                    .reduce((sum, c) => sum + c.length, 0);
-                  if (currentTotal + Math.min(toolResult.text.length, MAX_STORED_CONTENT_CHARS) <= MAX_TOTAL_STORED_CHARS) {
-                    const normalizedPath = this.normalizeWorkspacePath(toolCallPath);
-                    execState.resolvedInputContents[normalizedPath] =
-                      toolResult.text.slice(0, MAX_STORED_CONTENT_CHARS);
-                  }
-                }
-
-                // DD5: Compute deterministic next step first, fall back to advisory
-                let nextStep = stateManager.computeDeterministicNextStep(execState)
-                  ?? stateManager.computeNextStep(execState, event.name, toolCallPath, toolResult.text);
-                // Auto-repair — if no step computed after read_file, force a write
-                if (!nextStep && event.name === 'read_file') {
-                  nextStep = {
-                    nextAction: 'Write the next implementation file now — do not read more files',
-                  };
-                }
-                if (nextStep) {
-                  stateManager.setNextAction(execState, nextStep.nextAction);
-                  if (nextStep.nextToolCall) {
-                    stateManager.setNextToolCall(execState, nextStep.nextToolCall.tool, nextStep.nextToolCall.input, nextStep.nextToolCall.description);
-                  }
-                }
-              }
-            }
-
-            // ACTION 8: Tiered truncation — full on first read, digest on subsequent
-            const resultStr = toolResult.text;
-            const truncatedResult = this.truncateToolResult(
-              resultStr,
-              event.name,
-              iterationCount,
-              toolCallPath
-            );
-            toolResultContent = `<tool_result name="${event.name}">\n${truncatedResult}\n</tool_result>`;
-
-            // ─── OPT-7: Consolidated discovery budget counter ─────────────────
-            // Track consecutive reads/writes for the pre-dispatch guard (layer 2).
-            // The post-dispatch override (old layer 3) has been removed — the
-            // pre-dispatch guard at consecutiveReadCount >= 2 and the ToolDispatcher's
-            // WRITE_ONLY/discoveryLocked checks (layer 1) handle blocking.
-            const isReadOnlyTool = ['read_file', 'list_files', 'search_files', 'glob_files', 'grep_content'].includes(event.name);
-            const isWriteOrActionTool = ['write_file', 'edit_file', 'run_command', 'replace_range', 'multi_edit'].includes(event.name);
-            if (isReadOnlyTool) {
-              consecutiveReadCount++;
-            } else if (isWriteOrActionTool) {
-              consecutiveReadCount = 0;
-            }
-
-            if (isFileWrite && toolCallPath && toolResult.status === 'success' && toolResult.text.startsWith('File written')) {
-              writtenPaths.add(toolCallPath);
-              // Task 10: Reset tool+path loop counter on successful write
-              toolPathCounts.clear();
-              const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
-              toolResultContent += `\n\nFiles written this task: ${pathList}. Use edit_file for any corrections to these paths.`;
-              // Record in cross-session artifact registry so future sessions know what files exist.
-              this.recordArtifact(agentId, toolCallPath).catch(() => { /* non-fatal */ });
-
-              // Single authoritative mutation method handles artifactsCreated + completedBatchFiles
-              stateManager.markFileWritten(execState, this.normalizeWorkspacePath(toolCallPath));
-              // DD1: Record meaningful progress
-              stateManager.markProgress(execState);
-
-              // E1 (bug_fix_007): Lightweight completion verification for small artifacts.
-              // Check for truncation indicators and suspiciously small file size.
-              const writtenContent = ((event.input as Record<string, unknown>)?.content as string) ?? '';
-              if (writtenContent.length < 50 && !toolCallPath.endsWith('.css') && !toolCallPath.endsWith('.env')) {
-                toolResultContent += `\n[Verification warning] File "${toolCallPath}" is very small (${writtenContent.length} chars). Check if content was truncated.`;
-              }
-              if (writtenContent.includes('// ...') || writtenContent.includes('/* ... */') || writtenContent.includes('# ...')) {
-                toolResultContent += `\n[Verification warning] File "${toolCallPath}" contains placeholder markers ("..."). Ensure all code is fully generated.`;
-              }
-
-              // Verify all written files are still on disk every 10 writes
-              if (writtenPaths.size % 10 === 0) {
-                const missingFiles = await this.verifyWrittenFiles(Array.from(writtenPaths));
-                if (missingFiles.length > 0) {
-                  toolResultContent += `\n\n[Verification] Warning: ${missingFiles.length} file(s) appear missing from disk: ${missingFiles.join(', ')}. Investigate before continuing.`;
-                }
-              }
-              // ─── #7 Batch progress ───────────────────────────────────────────
-              const plannedBatch = execState.plannedFileBatch ?? [];
-              if (plannedBatch.length > 0) {
-                const completedBatch = execState.completedBatchFiles ?? execState.artifactsCreated;
-                const remaining = plannedBatch.filter(p => !completedBatch.includes(p));
-                const batchNote = remaining.length === 0
-                  ? `[Batch complete: all ${plannedBatch.length} planned files written.]`
-                  : `[Batch: ${completedBatch.length}/${plannedBatch.length} done. Remaining: ${remaining.slice(0, 4).join(', ')}${remaining.length > 4 ? ` +${remaining.length - 4} more` : ''}]`;
-                toolResultContent += `\n${batchNote}`;
-              }
-            }
-
-            // FIX 5: After plan-mode write, validate that the plan references the objective.
-            if (mode === 'plan' && event.name === 'write_file' && toolResult.status === 'success') {
-              const writtenContent = ((event.input as Record<string, unknown>)?.content as string) ?? '';
-              const objective = execState.primaryObjective ?? execState.objective;
-              const objectiveWords = objective.toLowerCase().split(/\s+/).filter(w => w.length > 4);
-              const planLower = writtenContent.toLowerCase();
-              const matches = objectiveWords.filter(w => planLower.includes(w));
-              const overlapRatio = matches.length / Math.max(objectiveWords.length, 1);
-              if (overlapRatio < 0.2 && objectiveWords.length > 2) {
-                toolResultContent += `\n\n[WARNING] The plan you wrote has low overlap with the primary objective: "${objective.slice(0, 200)}". Review and revise the plan to match the actual requirements.`;
-                stateManager.setArtifactStatus(execState,
-                  this.normalizeWorkspacePath(toolCallPath!), 'drafted');
-              }
-            }
-
-            // Save state after each tool dispatch to ensure durability
-            stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
-
-            // Phase 4 — MilestoneFinalizer: check if we should stop/wait after this write
-            if (event.name === 'write_file' || event.name === 'edit_file') {
-              const milestoneContract = inferStepContract([], '', execState.runPhase ?? 'RUNNING');
-              const milestoneDecision = milestoneFinalizer.decide(execState, milestoneContract, event.name, toolCallPath);
-              if (milestoneDecision.action === 'WAIT') {
-                stateManager.setRunPhase(execState, 'WAITING_FOR_USER_INPUT', milestoneDecision.message);
-                stateManager.setExecutionPhase(execState, 'INITIALISING');
-                stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
-                const tsMsgs = getAppData().executionMessages.terminalStates ?? {} as Record<string, string>;
-                onText(`\n${(tsMsgs.waitingForUserInput ?? 'Paused — waiting for your input. {reason}').replace('{reason}', milestoneDecision.message)}`);
-                continueLoop = false;
-              } else if (milestoneDecision.action === 'COMPLETE') {
-                stateManager.setRunPhase(execState, 'COMPLETED');
-                stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
-                continueLoop = false;
-              } else if (milestoneDecision.action === 'VALIDATE') {
-                stateManager.setExecutionPhase(execState, 'VALIDATING_STEP');
-                onThought?.({ type: 'thinking', label: `[Milestone] ${milestoneDecision.reason}`, timestamp: new Date() });
-              }
-
-              // Phase 7.1 — ConsistencyValidator (validatorEnforcement)
-              // Run every 10 writes instead of every write to reduce overhead.
-              if (vsConfig.get<boolean>('validatorEnforcement', false) && MUTATION_TOOLS.has(event.name) && writtenPaths.size % 10 === 0) {
-                stateManager.setExecutionPhase(execState, 'VALIDATING_STEP');
-                const hotValidator = new ConsistencyValidator(this.workspaceRoot);
-                const detectedLockHot = await archLock.detect();
-                const hotIssues = await hotValidator.validate(
-                  Array.from(writtenPaths),
-                  execState,
-                  detectedLockHot ?? undefined
-                );
-                const criticals = hotIssues.filter(i => i.severity === 'critical');
-                const warnings = hotIssues.filter(i => i.severity !== 'critical' && i.severity !== undefined);
-                if (warnings.length > 0) {
-                  onThought?.({
-                    type: 'thinking',
-                    label: `[Validator] ${warnings.length} warning(s)`,
-                    detail: warnings.map(w => `${w.path}: ${w.issue}`).join('\n'),
-                    timestamp: new Date(),
-                  });
-                }
-                if (criticals.length > 0) {
-                  const tsMsgs = getAppData().executionMessages.terminalStates ?? {} as Record<string, string>;
-                  stateManager.setRunPhase(execState, 'BLOCKED_BY_VALIDATION');
+              // Phase 4 — MilestoneFinalizer: check if we should stop/wait after this write
+              if (event.name === 'write_file' || event.name === 'edit_file') {
+                const milestoneContract = inferStepContract([], '', execState.runPhase ?? 'RUNNING');
+                const milestoneDecision = milestoneFinalizer.decide(execState, milestoneContract, event.name, toolCallPath);
+                if (milestoneDecision.action === 'WAIT') {
+                  stateManager.setRunPhase(execState, 'WAITING_FOR_USER_INPUT', milestoneDecision.message);
+                  stateManager.setExecutionPhase(execState, 'INITIALISING');
                   stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
-                  onText(`\n${tsMsgs.blockedByValidation ?? 'Blocked — validation issues must be resolved before continuing.'}`);
-                  onThought?.({
-                    type: 'error',
-                    label: `[Validator] ${criticals.length} critical issue(s) — blocking run`,
-                    detail: criticals.map(c => `${c.path}: ${c.issue}`).join('\n'),
-                    timestamp: new Date(),
-                  });
+                  const tsMsgs = getAppData().executionMessages.terminalStates ?? {} as Record<string, string>;
+                  onText(`\n${(tsMsgs.waitingForUserInput ?? 'Paused — waiting for your input. {reason}').replace('{reason}', milestoneDecision.message)}`);
                   continueLoop = false;
-                } else {
-                  stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
+                } else if (milestoneDecision.action === 'COMPLETE') {
+                  stateManager.setRunPhase(execState, 'COMPLETED');
+                  stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+                  continueLoop = false;
+                } else if (milestoneDecision.action === 'VALIDATE') {
+                  stateManager.setExecutionPhase(execState, 'VALIDATING_STEP');
+                  onThought?.({ type: 'thinking', label: `[Milestone] ${milestoneDecision.reason}`, timestamp: new Date() });
+                }
+
+                // Phase 7.1 — ConsistencyValidator (validatorEnforcement)
+                // Run every 10 writes instead of every write to reduce overhead.
+                if (vsConfig.get<boolean>('validatorEnforcement', false) && MUTATION_TOOLS.has(event.name) && writtenPaths.size % 10 === 0) {
+                  stateManager.setExecutionPhase(execState, 'VALIDATING_STEP');
+                  const hotValidator = new ConsistencyValidator(this.workspaceRoot);
+                  const detectedLockHot = await archLock.detect();
+                  const hotIssues = await hotValidator.validate(
+                    Array.from(writtenPaths),
+                    execState,
+                    detectedLockHot ?? undefined
+                  );
+                  const criticals = hotIssues.filter(i => i.severity === 'critical');
+                  const warnings = hotIssues.filter(i => i.severity !== 'critical' && i.severity !== undefined);
+                  if (warnings.length > 0) {
+                    onThought?.({
+                      type: 'thinking',
+                      label: `[Validator] ${warnings.length} warning(s)`,
+                      detail: warnings.map(w => `${w.path}: ${w.issue}`).join('\n'),
+                      timestamp: new Date(),
+                    });
+                  }
+                  if (criticals.length > 0) {
+                    const tsMsgs = getAppData().executionMessages.terminalStates ?? {} as Record<string, string>;
+                    stateManager.setRunPhase(execState, 'BLOCKED_BY_VALIDATION');
+                    stateManager.save(agentId, execState).catch(() => { /* non-fatal */ });
+                    onText(`\n${tsMsgs.blockedByValidation ?? 'Blocked — validation issues must be resolved before continuing.'}`);
+                    onThought?.({
+                      type: 'error',
+                      label: `[Validator] ${criticals.length} critical issue(s) — blocking run`,
+                      detail: criticals.map(c => `${c.path}: ${c.issue}`).join('\n'),
+                      timestamp: new Date(),
+                    });
+                    continueLoop = false;
+                  } else {
+                    stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
+                  }
                 }
               }
             }
-          }
-          // Push as 'tool_result' role so it is distinguishable from genuine user
-          // messages.  prepareMessagesForProvider() converts it back to 'user' (stripping
-          // the XML wrapper) just before the next provider.stream() call.
-          // Also accumulate in currentStepToolResults for PromptAssembler (Phase 1).
-          {
-            const toolResultMsg: ChatMessage = { role: 'tool_result', content: toolResultContent, toolCallId: event.id };
-            messages.push(toolResultMsg);
-            currentStepToolResults.push(toolResultMsg);
-          }
-          calledATool = true;
-          continueLoop = true;
-          // ─── Phase-5: after-edit hook for file-mutation tools ──────────────
-          // Hooks run per-edit, but ValidationService is deferred to end-of-session
-          // to avoid running lint/test/tsc on every single write (major perf bottleneck).
-          if (enhancedPipeline && (event.name.includes('write') || event.name.includes('edit'))) {
-            await this.hookEngine.onAfterEdit([event.name], { mode });
+            // Push as 'tool_result' role so it is distinguishable from genuine user
+            // messages.  prepareMessagesForProvider() converts it back to 'user' (stripping
+            // the XML wrapper) just before the next provider.stream() call.
+            // Also accumulate in currentStepToolResults for PromptAssembler (Phase 1).
+            {
+              const toolResultMsg: ChatMessage = { role: 'tool_result', content: toolResultContent, toolCallId: event.id };
+              auditTranscript.push(toolResultMsg);
+              currentStepToolResults.push(toolResultMsg);
+            }
+            calledATool = true;
+            continueLoop = true;
+            // ─── Phase-5: after-edit hook for file-mutation tools ──────────────
+            // Hooks run per-edit, but ValidationService is deferred to end-of-session
+            // to avoid running lint/test/tsc on every single write (major perf bottleneck).
+            if (enhancedPipeline && (event.name.includes('write') || event.name.includes('edit'))) {
+              await this.hookEngine.onAfterEdit([event.name], { mode });
+            }
           }
         }
-      }
-      // Stream succeeded — reset retry counter
-      streamRetryCount = 0;
+        // Stream succeeded — reset retry counter
+        streamRetryCount = 0;
       } catch (streamErr: unknown) {
         // ─── Transient stream error retry ───────────────────────────────────────
         if (isTransientStreamError(streamErr) && streamRetryCount < MAX_STREAM_RETRIES) {
@@ -2308,10 +2300,10 @@ ${truncated}
       // DD8: Cap audit transcript in code mode to prevent unbounded growth.
       // Provider calls are built fresh by PromptAssembler, so messages only serves
       // recovery/narration detection. Keep system prompt + last N entries.
-      if (mode === 'code' && messages.length > AUDIT_TRANSCRIPT_MAX + 1) {
-        const systemMsg = messages[0]; // preserve system prompt
-        const recentEntries = messages.slice(-(AUDIT_TRANSCRIPT_MAX));
-        messages.splice(0, messages.length, systemMsg, ...recentEntries);
+      if (mode === 'code' && auditTranscript.length > AUDIT_TRANSCRIPT_MAX + 1) {
+        const systemMsg = auditTranscript[0]; // preserve system prompt
+        const recentEntries = auditTranscript.slice(-(AUDIT_TRANSCRIPT_MAX));
+        auditTranscript.splice(0, auditTranscript.length, systemMsg, ...recentEntries);
       }
 
       // ACTION 15: Structured turn logging
@@ -2351,10 +2343,10 @@ ${truncated}
               timestamp: new Date(),
             });
             stateManager.setRunPhase(execState, 'BLOCKED_BY_VALIDATION');
-            stateManager.save(agentId, execState).catch(() => {});
+            stateManager.save(agentId, execState).catch(() => { });
             onText(
               '\n\nSession halted: token efficiency below 2% for 3 consecutive turns with no files written. ' +
-                'This indicates the agent is stuck. Review the execution state or provide more specific instructions.'
+              'This indicates the agent is stuck. Review the execution state or provide more specific instructions.'
             );
             continueLoop = false;
           }
@@ -2363,6 +2355,7 @@ ${truncated}
 
       iterationCount++;
       if (iterationCount >= maxToolIterations) {
+        execState.stopReason = 'step_budget_reached';
         onThought({
           type: 'error',
           label: `Max tool iterations reached (${maxToolIterations})`,
@@ -2390,7 +2383,7 @@ ${truncated}
           turnAssistantText,
           agentId,
           writtenPaths,
-          messages,
+          auditTranscript,
           currentStepToolResults,
           execState,
           stateManager,
@@ -2436,11 +2429,11 @@ ${truncated}
               timestamp: new Date(),
             });
             if (turnAssistantText) {
-              messages.push({ role: 'assistant', content: turnAssistantText });
+              auditTranscript.push({ role: 'assistant', content: turnAssistantText });
               turnAssistantText = '';
             }
             // Use system message for harder constraint
-            messages.push({ role: 'system', content: 'Call the next tool now. Do not narrate — execute immediately.' });
+            auditTranscript.push({ role: 'system', content: 'Call the next tool now. Do not narrate — execute immediately.' });
             nudgeRetryCount++;
             continueLoop = true;
           } else if (isNarratingNextCall && nudgeRetryCount >= MAX_NUDGE_RETRIES) {
@@ -2517,7 +2510,7 @@ ${truncated}
           if (silentRepromptCount < MAX_SILENT_REPROMPTS) {
             silentRepromptCount++;
             onThought?.({ type: 'thinking', label: `Silent reprompt #${silentRepromptCount}`, timestamp: new Date() });
-            messages.push({ role: 'system', content: 'TOOL ONLY — call the next tool immediately, no text.' });
+            auditTranscript.push({ role: 'system', content: 'TOOL ONLY — call the next tool immediately, no text.' });
             continueLoop = true;
           } else {
             // Max reprompts exceeded — treat as blocked
@@ -2530,11 +2523,14 @@ ${truncated}
           if (contract.kind !== 'tool' && !calledATool) {
             if (contract.kind === 'complete') {
               stateManager.setRunPhase(execState, 'COMPLETED');
+              execState.stopReason = 'completed';
               continueLoop = false;
             } else if (contract.kind === 'blocked') {
               stateManager.setRunPhase(execState, contract.recoverable ? 'BLOCKED_BY_VALIDATION' : 'RECOVERY_REQUIRED');
+              execState.stopReason = 'blocked';
               continueLoop = false;
             } else if (contract.kind === 'pause') {
+              execState.stopReason = 'awaiting_user_decision';
               continueLoop = false;
             }
           }
@@ -2642,12 +2638,12 @@ ${truncated}
         // Use a lean context for synthesis — the full messages array may be too large
         // after many tool iterations, causing the model to return 0 tokens again.
         const synthesisMessages: ChatMessage[] = [
-          messages[0], // system prompt only
+          auditTranscript[0], // system prompt only
           { role: 'user', content: `You have completed ${toolsUsed.length} tool operations for the following request: "${userMessage}"\n\nPlease now provide your complete final answer as plain text. Do not call any tools. Summarise what you did and what the outcome was.` },
         ];
         let synthText = '';
         try {
-          for await (const synthEvent of this.streamWithTimeout(provider, synthesisMessages, [], actualMaxOutputTokens)) {
+          for await (const synthEvent of streamWithTimeout(provider, synthesisMessages, [], actualMaxOutputTokens)) {
             if (synthEvent.type === 'text') {
               onText(synthEvent.delta);
               synthText += synthEvent.delta;
@@ -2672,89 +2668,15 @@ ${truncated}
     // Skip for pure text-only responses (simple Q&A) to avoid noise.
     const shouldShowReport = toolsUsed.length > 0 || (execState.runPhase ?? 'RUNNING') !== 'RUNNING';
     if (shouldShowReport) {
-      const sessionDuration = Date.now() - sessionStartTime;
-      const durationSec = Math.round(sessionDuration / 1000);
-      const written = Array.from(writtenPaths);
-      const readCount = execState.resolvedInputs?.length ?? 0;
-      const batchPlanned = execState.plannedFileBatch ?? [];
-      const batchCompleted = execState.completedBatchFiles ?? [];
-      const batchRemaining = batchPlanned.filter((f: string) => !batchCompleted.includes(f));
-      const phase = execState.runPhase ?? 'RUNNING';
-
-      const reportLines: string[] = [];
-      reportLines.push('\n\n---');
-      reportLines.push('**Session Report**');
-
-      // What was done
-      if (written.length > 0) {
-        const fileList = written.length <= 8
-          ? written.map(f => `\`${f}\``).join(', ')
-          : written.slice(0, 6).map(f => `\`${f}\``).join(', ') + ` and ${written.length - 6} more`;
-        reportLines.push(`- **Files written/edited:** ${written.length} — ${fileList}`);
-      }
-      if (readCount > 0) {
-        reportLines.push(`- **Files read:** ${readCount}`);
-      }
-      if (toolsUsed.length > 0) {
-        // Deduplicate and count tool usage
-        const toolCounts = new Map<string, number>();
-        for (const t of toolsUsed) {
-          toolCounts.set(t, (toolCounts.get(t) ?? 0) + 1);
-        }
-        const toolSummary = Array.from(toolCounts.entries())
-          .map(([name, count]) => count > 1 ? `${name} x${count}` : name)
-          .join(', ');
-        reportLines.push(`- **Tool operations:** ${toolsUsed.length} (${toolSummary})`);
-      }
-      reportLines.push(`- **Iterations:** ${iterationCount} | **Duration:** ${durationSec}s`);
-
-      // Batch progress
-      if (batchPlanned.length > 0) {
-        reportLines.push(`- **Batch progress:** ${batchCompleted.length}/${batchPlanned.length} files completed`);
-        if (batchRemaining.length > 0) {
-          const remainList = batchRemaining.length <= 5
-            ? batchRemaining.map((f: string) => `\`${f}\``).join(', ')
-            : batchRemaining.slice(0, 4).map((f: string) => `\`${f}\``).join(', ') + ` and ${batchRemaining.length - 4} more`;
-          reportLines.push(`- **Remaining in batch:** ${remainList}`);
-        }
-      }
-
-      // What does the user need to do (if anything)?
-      if (phase === 'WAITING_FOR_USER_INPUT') {
-        const reason = execState.waitStateReason ?? '';
-        reportLines.push('');
-        reportLines.push('**Action required from you:**');
-        if (reason) {
-          reportLines.push(`> ${reason}`);
-        } else if (batchRemaining.length > 0) {
-          reportLines.push(`> The agent paused with ${batchRemaining.length} file(s) remaining. Type **continue** to resume writing the remaining files.`);
-        } else {
-          reportLines.push('> The agent is waiting for your input. Please provide instructions or feedback to continue.');
-        }
-      } else if (phase === 'BLOCKED_BY_VALIDATION') {
-        reportLines.push('');
-        reportLines.push('**Action required from you:**');
-        reportLines.push('> The agent is blocked by validation errors. Review the issues above, fix them, and retry.');
-      } else if (phase === 'RECOVERY_REQUIRED') {
-        reportLines.push('');
-        reportLines.push('**Action required from you:**');
-        reportLines.push('> The execution state is inconsistent. Run the command **Bormagi: Reset Execution State** and retry.');
-      } else if (phase === 'PARTIAL_BATCH_COMPLETE') {
-        reportLines.push('');
-        reportLines.push('**Action required from you:**');
-        reportLines.push(`> Batch phase complete (${batchCompleted.length}/${batchPlanned.length} files). Review the written files and type **continue** to proceed with the next batch.`);
-      } else if (phase === 'COMPLETED') {
-        if (written.length > 0) {
-          reportLines.push('');
-          reportLines.push('**Status:** Task completed successfully.');
-        }
-      } else if (iterationCount >= maxToolIterations) {
-        reportLines.push('');
-        reportLines.push('**Action required from you:**');
-        reportLines.push(`> The agent reached the iteration limit (${maxToolIterations}). Type **continue** to resume, or provide new instructions.`);
-      }
-
-      const report = reportLines.join('\n');
+      const report = generateSessionReport({
+        sessionDurationMs: Date.now() - sessionStartTime,
+        writtenPaths: Array.from(writtenPaths),
+        readCount: execState.resolvedInputs?.length ?? 0,
+        toolsUsed,
+        iterationCount,
+        maxToolIterations,
+        execState
+      });
       onText(report);
       fullResponse += report;
     }
@@ -2907,14 +2829,14 @@ ${truncated}
     // ─── #18 Post-run health score ────────────────────────────────────────────
     {
       const totalCalls = toolsUsed.length;
-      const readCalls  = toolsUsed.filter(t => ['read_file', 'list_files', 'search_files'].includes(t)).length;
+      const readCalls = toolsUsed.filter(t => ['read_file', 'list_files', 'search_files'].includes(t)).length;
       const writeCalls = toolsUsed.filter(t => ['write_file', 'edit_file'].includes(t)).length;
       // DD12: Include context cost summary in health telemetry.
       const costSummary = contextCostTracker.getSummary();
       const health = {
         iterationLoad: Math.round((iterationCount / maxToolIterations) * 100),
-        readRatio:     totalCalls > 0 ? Math.round((readCalls / totalCalls) * 100) : 0,
-        writeCount:    writeCalls,
+        readRatio: totalCalls > 0 ? Math.round((readCalls / totalCalls) * 100) : 0,
+        writeCount: writeCalls,
         discoveryBudgetTriggered: consecutiveReadCount >= 3,
         verificationPerformed: writtenPaths.size >= 5,
         contextCost: {
@@ -2972,6 +2894,32 @@ ${truncated}
 
     if (parsed) {
       const { result: sanitised, injectionFields } = sanitiseExecutionResult(parsed);
+
+      const stateManager = new ExecutionStateManager(this.workspaceRoot);
+      const execState = await stateManager.load(agentId);
+      if (execState && sanitised.producedArtifactIds.length > 0) {
+        const ledger: SessionLedger = {
+          entries: (execState.executedTools ?? []).map((t, idx) => ({
+            turn: idx + 1,
+            tool: t.name,
+            path: t.inputPath,
+            status: 'success',
+            summary: t.outputSummary ?? ''
+          }))
+        };
+        try {
+          assertSummaryConsistency(ledger, sanitised.producedArtifactIds);
+        } catch (err: any) {
+          onThought({
+            type: 'error',
+            label: `Artifact Validation Warning`,
+            detail: err.message + '. Removing hallucinated artifacts from payload.',
+            timestamp: new Date()
+          });
+          const actual = new Set(collectChangedFiles(ledger.entries));
+          sanitised.producedArtifactIds = sanitised.producedArtifactIds.filter(id => actual.has(id));
+        }
+      }
 
       if (injectionFields.length > 0) {
         await this.auditLogger.logPromptInjectionAttempt(agentId, injectionFields);
@@ -3089,21 +3037,6 @@ ${truncated}
 
   // ─── Path utilities ───────────────────────────────────────────────────────
 
-  /**
-   * Normalize to a canonical workspace-relative path:
-   * - Convert backslashes to forward slashes (Windows compat)
-   * - Strip absolute workspace root prefix if the model sends one
-   * - Strip leading slashes
-   */
-  private normalizeWorkspacePath(input: string): string {
-    let p = input.replace(/\\/g, '/');
-    // Strip workspace root prefix if the model sent an absolute path
-    const root = this.workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
-    if (p.startsWith(root + '/')) {
-      p = p.slice(root.length + 1);
-    }
-    return p.replace(/^\/+/, '');
-  }
 
   /**
    * Tiered tool result truncation.
@@ -3158,93 +3091,6 @@ ${truncated}
       }
     }
     return missing;
-  }
-
-  // ─── Artifact registry ────────────────────────────────────────────────────
-  // Tracks files created across sessions so mode transitions (plan → code) can
-  // inject a "files already created" note into the next session's context.
-
-  private artifactRegistryPath(): string {
-    return path.join(this.workspaceRoot, '.bormagi', 'artifact-registry.json');
-  }
-
-  private async recordArtifact(agentId: string, filePath: string): Promise<void> {
-    const normalizedPath = this.normalizeWorkspacePath(filePath);
-    const registryPath = this.artifactRegistryPath();
-    let entries: Array<{ agentId: string; path: string; timestamp: string }> = [];
-    try {
-      const raw = await fs.readFile(registryPath, 'utf8');
-      entries = JSON.parse(raw);
-    } catch { /* first run or corrupt — start fresh */ }
-    // Avoid duplicate entries for the same path
-    if (!entries.some(e => e.path === normalizedPath)) {
-      entries.push({ agentId, path: normalizedPath, timestamp: new Date().toISOString() });
-      await fs.mkdir(path.dirname(registryPath), { recursive: true });
-      await fs.writeFile(registryPath, JSON.stringify(entries, null, 2), 'utf8');
-    }
-  }
-
-  /** Returns the set of normalized paths stored in the artifact registry. */
-  async loadArtifactPaths(): Promise<Set<string>> {
-    try {
-      const raw = await fs.readFile(this.artifactRegistryPath(), 'utf8');
-      const entries: Array<{ path: string }> = JSON.parse(raw);
-      return new Set(entries.map(e => this.normalizeWorkspacePath(e.path)));
-    } catch {
-      return new Set();
-    }
-  }
-
-  async loadArtifactRegistryNote(): Promise<string> {
-    try {
-      const raw = await fs.readFile(this.artifactRegistryPath(), 'utf8');
-      const entries: Array<{ agentId: string; path: string; timestamp: string }> = JSON.parse(raw);
-      // Task 9: Filter out .bormagi/ internal paths so the model does not see
-      // framework state files (e.g. .bormagi/plans/...) as continuation targets.
-      const visibleEntries = entries.filter(e => !e.path.replace(/\\/g, '/').startsWith('.bormagi/'));
-      if (visibleEntries.length === 0) { return ''; }
-      const lines = visibleEntries.map(e => `- ${e.path} (created by ${e.agentId})`).join('\n');
-      return `[Artifact Registry — files created in previous sessions]\n${lines}\n\nBefore writing any file, check if it already exists at one of these paths.`;
-    } catch {
-      return '';
-    }
-  }
-
-  // ─── DD10: Plan approval resolution ──────────────────────────────────────
-
-  /**
-   * Resolve the approved plan path from the artifact registry.
-   * Looks for plan files (.md) under .bormagi/plans/ or in the artifact registry.
-   * Returns the path if found, null otherwise.
-   */
-  private resolveApprovedPlanPath(
-    execState: ExecutionStateData,
-    registeredArtifactPaths: Set<string>,
-    userMessage: string,
-  ): string | null {
-    // Check if user explicitly references a plan path
-    const planPathMatch = userMessage.match(/(?:plan|spec)\s+(?:at\s+)?["']?([^\s"']+\.md)["']?/i);
-    if (planPathMatch) {
-      return this.normalizeWorkspacePath(planPathMatch[1]);
-    }
-
-    // Look for plan files in the artifact registry
-    for (const artifactPath of registeredArtifactPaths) {
-      const norm = artifactPath.replace(/\\/g, '/');
-      if (norm.includes('plan') && norm.endsWith('.md')) {
-        return norm;
-      }
-    }
-
-    // Look for plan files in resolvedInputs
-    for (const inputPath of execState.resolvedInputs) {
-      const norm = inputPath.replace(/\\/g, '/').toLowerCase();
-      if ((norm.includes('plan') || norm.includes('.bormagi/plans/')) && norm.endsWith('.md')) {
-        return inputPath;
-      }
-    }
-
-    return null;
   }
 
   /**
@@ -3302,7 +3148,7 @@ ${truncated}
     assistantText: string,
     agentId: string,
     writtenPaths: Set<string>,
-    messages: ChatMessage[],
+    auditTranscript: ChatMessage[],
     currentStepToolResults: ChatMessage[],
     execState: ExecutionStateData,
     stateManager: ExecutionStateManager,
@@ -3318,7 +3164,7 @@ ${truncated}
 
     let persisted = 0;
     for (const file of extracted) {
-      const normalizedPath = this.normalizeWorkspacePath(file.path);
+      const normalizedPath = normalizeWorkspacePath(file.path, this.workspaceRoot);
       if (!normalizedPath || normalizedPath.startsWith('.bormagi/')) {
         continue;
       }
@@ -3340,7 +3186,7 @@ ${truncated}
         role: 'tool_result',
         content: `<tool_result name="${toolName}">\n${dispatchResult.text}\n</tool_result>`,
       };
-      messages.push(toolMsg);
+      auditTranscript.push(toolMsg);
       currentStepToolResults.push(toolMsg);
       toolsUsed.push(toolName);
 
@@ -3396,9 +3242,9 @@ ${truncated}
    * Detect if the last 2-3 assistant messages are repetitive narration with no writes.
    * Used to bypass the LLM call and force a write step instead.
    */
-  private isRepetitiveNarration(messages: ChatMessage[], writtenPaths: Set<string>): boolean {
+  private isRepetitiveNarration(auditTranscript: ChatMessage[], writtenPaths: Set<string>): boolean {
     if (writtenPaths.size > 0) return false;
-    const recentAssistant = messages
+    const recentAssistant = auditTranscript
       .filter(m => m.role === 'assistant')
       .slice(-3)
       .map(m => m.content.toLowerCase());
@@ -3478,61 +3324,6 @@ ${truncated}
   }
 
   /**
-   * Wrap provider.stream() with a two-tier timeout.
-   * - firstChunkTimeoutMs: max wait for the very first event
-   * - interChunkTimeoutMs: max gap between consecutive events
-   * Throws StreamTimeoutError on timeout so the caller can retry.
-   */
-  private async *streamWithTimeout(
-    provider: ILLMProvider,
-    messages: ChatMessage[],
-    tools: MCPToolDefinition[],
-    maxTokens: number,
-    firstChunkTimeoutMs = STREAM_FIRST_CHUNK_TIMEOUT_MS,
-    interChunkTimeoutMs = STREAM_INTER_CHUNK_TIMEOUT_MS,
-  ): AsyncGenerator<StreamEvent> {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let rejectTimeout: ((err: StreamTimeoutError) => void) | null = null;
-    let receivedFirstChunk = false;
-
-    const resetTimer = (ms: number, kind: 'first-chunk' | 'inter-chunk') => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        rejectTimeout?.(new StreamTimeoutError(kind, ms));
-      }, ms);
-    };
-
-    // Start with the first-chunk timeout
-    resetTimer(firstChunkTimeoutMs, 'first-chunk');
-
-    try {
-      const stream = provider.stream(messages, tools, maxTokens);
-      const iterator = stream[Symbol.asyncIterator]();
-
-      while (true) {
-        // Race between next event and timeout
-        const result = await Promise.race<IteratorResult<StreamEvent>>([
-          iterator.next(),
-          new Promise<never>((_resolve, reject) => { rejectTimeout = reject; }),
-        ]);
-
-        if (result.done) break;
-
-        if (!receivedFirstChunk) {
-          receivedFirstChunk = true;
-        }
-        // Reset to inter-chunk timeout after each event
-        resetTimer(interChunkTimeoutMs, 'inter-chunk');
-
-        yield result.value;
-      }
-    } finally {
-      if (timer) clearTimeout(timer);
-      rejectTimeout = null;
-    }
-  }
-
-  /**
    * Apply step-contract tool narrowing inside code mode.
    * This reduces read/write oscillation by constraining the tool surface per step.
    */
@@ -3569,6 +3360,15 @@ ${truncated}
       : false;
     const batchDeclared = planned.length > 0;
     const batchPrereqMet = !needsBatch || batchDeclared;
+
+    // Unconditional discovery block if preconditions are met and ready to write
+    if (state.readyToWrite || (state.resolvedInputContents && Object.keys(state.resolvedInputContents).length > 0 && state.preconditionsSatisfied)) {
+      return {
+        kind: 'mutate',
+        summary: 'Ready to write — bypassing discovery',
+        instruction: 'Perform a file mutation now. Do not call read/list/search tools. Allowed tools: write_file, edit_file, replace_range, multi_edit, update_task_state.'
+      };
+    }
 
     if (phase === 'VALIDATING_STEP') {
       return {
@@ -3675,8 +3475,8 @@ ${truncated}
    * and strip any residual control-plane patterns from all messages.
    * Called on every provider.stream() invocation for non-code modes.
    */
-  private prepareMessagesForProvider(messages: ChatMessage[]): ChatMessage[] {
-    return messages.map(msg => {
+  private prepareMessagesForProvider(auditTranscript: ChatMessage[]): ChatMessage[] {
+    return auditTranscript.map(msg => {
       if (msg.role === 'tool_result') {
         // Strip the <tool_result ...> XML wrapper — the model needs the inner content
         // (file contents, command output, notes) but not the XML namespace.

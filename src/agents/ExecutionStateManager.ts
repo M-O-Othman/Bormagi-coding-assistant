@@ -192,6 +192,12 @@ export interface ExecutionStateData {
    * requests can reference them without rediscovery. V2 only (bug_fix_007 E3).
    */
   previousTaskArtifacts?: string[];
+
+  /** Bug-fix 008: Structured stop reason and control plane flags */
+  stopReason?: string;
+  blockerReason?: string;
+  readyToWrite?: boolean;
+  preconditionsSatisfied?: boolean;
 }
 
 export class ExecutionStateManager {
@@ -533,6 +539,22 @@ export class ExecutionStateManager {
   clearNextToolCall(state: ExecutionStateData): void {
     state.nextToolCall = undefined;
     state.updatedAt = new Date().toISOString();
+  }
+
+  /**
+   * Advance the implementation queue to the next pending artifact.
+   * Populates the nextToolCall for deterministic dispatch.
+   */
+  advanceImplementationQueue(state: ExecutionStateData): void {
+    const planned = state.plannedFileBatch ?? [];
+    const completed = state.completedBatchFiles ?? [];
+    const remaining = planned.filter(f => !completed.includes(f));
+    if (remaining.length > 0) {
+      const next = remaining[0];
+      this.setNextToolCall(state, 'write_file', { path: next }, `Write ${next}`);
+    } else {
+      this.clearNextToolCall(state);
+    }
   }
 
   /**

@@ -1,67 +1,41 @@
-import * as path from 'path';
-import * as fs from 'fs';
-import { ApprovalDecision, ActionKind, ApprovalScope } from './types';
-import { getAppData } from '../data/DataStore';
+import { ActionKind, ApprovalScope } from './types';
+
+interface ApprovalDecision {
+    actionKind: ActionKind;
+    matcher: string;
+    scope: ApprovalScope;
+    allow: boolean;
+    createdAt: string;
+    expiresAt?: string;
+}
 
 export class ApprovalService {
-    private readonly workspaceRoot: string;
-    private readonly cachePath: string;
-    private scopedApprovals: ApprovalDecision[] = [];
+    private savedApprovals: ApprovalDecision[] = [];
 
-    constructor(workspaceRoot: string) {
-        this.workspaceRoot = workspaceRoot;
-        this.cachePath = path.join(this.workspaceRoot, '.bormagi', 'approvals.json');
-        this.loadApprovals();
+    constructor() { }
+
+    async checkPreApproved(taskId: string, kind: ActionKind, matcher: string): Promise<boolean> {
+        const now = new Date();
+        const approval = this.savedApprovals.find(a =>
+            a.actionKind === kind &&
+            a.matcher === matcher &&
+            a.allow === true &&
+            (!a.expiresAt || new Date(a.expiresAt) > now)
+        );
+        return !!approval;
     }
 
-    private loadApprovals() {
-        if (fs.existsSync(this.cachePath)) {
-            try {
-                this.scopedApprovals = JSON.parse(fs.readFileSync(this.cachePath, 'utf-8'));
-                // Evict expired
-                this.scopedApprovals = this.scopedApprovals.filter(a => {
-                    if (a.expiresAt && new Date(a.expiresAt) < new Date()) return false;
-                    return true;
-                });
-                this.saveApprovals(); // Save clean list
-            } catch {
-                this.scopedApprovals = [];
-            }
-        }
-    }
+    async recordApproval(kind: ActionKind, matcher: string, scope: ApprovalScope, allow: boolean): Promise<void> {
+        if (scope === 'once') return; // Do not persist transient approvals
 
-    private saveApprovals() {
-        try {
-            const dir = path.dirname(this.cachePath);
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(this.cachePath, JSON.stringify(this.scopedApprovals, null, 2));
-        } catch (err) {
-            console.error('Failed to save approvals cache', err);
-        }
-    }
-
-    public checkPriorApproval(actionKind: ActionKind, matcher: string, taskId?: string): boolean {
-        return this.scopedApprovals.some(approval => {
-            if (!approval.allow) return false;
-            if (approval.actionKind !== actionKind) return false;
-            if (approval.matcher !== matcher && approval.matcher !== '*') return false;
-
-            // If scoped to a task, only works if this is the task
-            if (approval.scope === 'task' && approval.reason !== taskId) return false;
-
-            return true;
-        });
-    }
-
-    public recordApproval(decision: Omit<ApprovalDecision, 'createdAt' | 'createdBy'>) {
-        if (decision.scope === 'once') return; // Do not record 1-time throwaways
-
-        this.scopedApprovals.push({
-            ...decision,
+        this.savedApprovals.push({
+            actionKind: kind,
+            matcher,
+            scope,
+            allow,
             createdAt: new Date().toISOString(),
-            createdBy: 'user'
+            // Auto-expire task-scoped approvals after 24 hours
+            expiresAt: scope === 'task' ? new Date(Date.now() + 86400000).toISOString() : undefined
         });
-
-        this.saveApprovals();
     }
 }
