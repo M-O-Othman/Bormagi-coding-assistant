@@ -185,6 +185,13 @@ export interface ExecutionStateData {
    * never needs to re-read them. V2 only.
    */
   resolvedInputContents?: Record<string, string>;
+
+  /**
+   * Artifact bundle from the previous task — survives across follow-up turns.
+   * Contains the list of files created in the prior task so that refactor
+   * requests can reference them without rediscovery. V2 only (bug_fix_007 E3).
+   */
+  previousTaskArtifacts?: string[];
 }
 
 export class ExecutionStateManager {
@@ -313,6 +320,13 @@ export class ExecutionStateManager {
       // Prior resolved inputs, artifacts, batch, and plan are cleared — they belong
       // to the previous task. Reread/dupe guards are task-local: a new task must be
       // free to read and write any file without contamination from prior tasks.
+
+      // E3 (bug_fix_007): Preserve artifact bundle from prior task so follow-up
+      // refactor requests can reference existing files without rediscovery.
+      if (state.artifactsCreated.length > 0) {
+        state.previousTaskArtifacts = [...state.artifactsCreated];
+      }
+
       const normalized = normalizeObjective(userMessage);
       state.objective = normalized;
       state.primaryObjective = normalized;
@@ -402,6 +416,7 @@ export class ExecutionStateManager {
   /**
    * Record a file that was successfully written.
    * Updates both artifactsCreated and completedBatchFiles.
+   * For stopAfterWrite templates, clears stale mutation nextActions (bug_fix_007).
    */
   markFileWritten(state: ExecutionStateData, filePath: string): void {
     if (!state.artifactsCreated.includes(filePath)) {
@@ -410,6 +425,16 @@ export class ExecutionStateManager {
     }
     // Also mark as completed in the batch if it was declared
     this.completeBatchFile(state, filePath);
+
+    // bug_fix_007: For stopAfterWrite templates (single_file_creation, etc.),
+    // clear mutation-oriented nextActions after the file is written.
+    // This prevents resumed sessions from carrying forward "Write the requested file now"
+    // instructions after the file has already been created.
+    const template = state.taskTemplate ? TASK_TEMPLATES[state.taskTemplate] : undefined;
+    if (template?.stopAfterWrite) {
+      state.nextActions = [];
+      state.nextToolCall = undefined;
+    }
   }
 
   /**
@@ -609,11 +634,32 @@ export class ExecutionStateManager {
       };
     }
 
-    // After list_files otherwise → read or write
+    // After list_files otherwise → prefer direct read of known artifact over re-listing
     if (lastToolName === 'list_files') {
+      // If artifact registry already has the likely target, skip list_files and read directly
+      if (state.artifactsCreated.length > 0) {
+        const likelyTarget = state.artifactsCreated[state.artifactsCreated.length - 1];
+        return {
+          nextAction: `Read "${likelyTarget}" directly (already known from artifact registry) or start writing — do not list files again`,
+        };
+      }
       return {
         nextAction: 'Read the most relevant file or start writing — do not list files again',
       };
+    }
+
+    // After write_file in stopAfterWrite templates (single_file_creation, etc.):
+    // The task is complete — clear mutation agenda and signal completion.
+    if (lastToolName === 'write_file' || lastToolName === 'edit_file') {
+      const template = state.taskTemplate ? TASK_TEMPLATES[state.taskTemplate] : undefined;
+      if (template?.stopAfterWrite && state.artifactsCreated.length > 0) {
+        // Clear stale mutation nextActions — file is already written
+        state.nextActions = [];
+        state.nextToolCall = undefined;
+        return {
+          nextAction: 'Task complete. File written successfully. Do not write or read any more files.',
+        };
+      }
     }
 
     // After write_file with batch remaining → write the next batch file
@@ -709,6 +755,29 @@ export class ExecutionStateManager {
     if (needsBatch && planned.length === 0 && state.artifactsCreated.length === 0) {
       return {
         nextAction: 'Call declare_file_batch with the project file list, then write the first implementation file',
+      };
+    }
+
+    // 5. single_file_creation with no artifacts yet → write immediately
+    //    Set advisory nextToolCall (content must be LLM-generated).
+    const template = state.taskTemplate ? TASK_TEMPLATES[state.taskTemplate] : undefined;
+    if (template?.name === 'single_file_creation' && state.artifactsCreated.length === 0) {
+      return {
+        nextAction: 'Write the requested file now. Generate the full content directly — no discovery, no batch.',
+        nextToolCall: {
+          tool: 'write_file',
+          input: {},
+          description: 'Write the single requested file (LLM must generate path and content)',
+        },
+      };
+    }
+
+    // 6. stopAfterWrite template already has artifacts → task is complete
+    if (template?.stopAfterWrite && state.artifactsCreated.length > 0) {
+      state.nextActions = [];
+      state.nextToolCall = undefined;
+      return {
+        nextAction: 'Task complete. File written successfully. Do not write or read any more files.',
       };
     }
 
@@ -899,6 +968,13 @@ export class ExecutionStateManager {
       } else {
         lines.push(`Batch: all ${planned.length} files written.`);
       }
+    }
+
+    // E3 (bug_fix_007): Show previous task artifacts for follow-up context
+    if ((state.previousTaskArtifacts ?? []).length > 0 && state.artifactsCreated.length === 0) {
+      lines.push(
+        `Previous task artifacts (available for reference/refactoring): ${state.previousTaskArtifacts!.join(', ')}`
+      );
     }
 
     // Next action — imperative

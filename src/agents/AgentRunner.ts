@@ -1045,6 +1045,7 @@ export class AgentRunner {
     // Phase 5 — Recovery: limit how many times recovery can fire per run.
     // Without a cap, recovery → same trigger → recovery creates an infinite loop.
     let recoveryAttempts = 0;
+    let deterministicDispatchCount = 0;
     const MAX_RECOVERY_ATTEMPTS = 2;
     const sessionStartTime = Date.now();
     const maxToolIterations = vsConfig.get<number>('agent.maxToolIterations', 20);
@@ -1334,6 +1335,7 @@ ${truncated}
                 // Direct dispatch — skip LLM call entirely
                 contextCostTracker.recordSkippedLLMCall();
                 const ntc = nextToolCall;
+                deterministicDispatchCount++;
                 agentLog.logDeterministicDispatch(ntc.tool, (ntc.input as Record<string, unknown>).path as string | undefined, 'strategy-switch after recovery');
                 onThought?.({ type: 'thinking', label: `[Strategy switch] Dispatching deterministic nextToolCall: ${ntc.tool}`, timestamp: new Date() });
                 const directResult = await this.toolDispatcher.dispatch(
@@ -1376,6 +1378,7 @@ ${truncated}
         const bypassNtc = deterministicBypass?.nextToolCall ?? execState.nextToolCall;
         if (bypassNtc && !VIRTUAL_TOOLS.has(bypassNtc.tool)) {
           contextCostTracker.recordSkippedLLMCall();
+          deterministicDispatchCount++;
           agentLog.logDeterministicDispatch(bypassNtc.tool, (bypassNtc.input as Record<string, unknown>).path as string | undefined, 'blocked-read bypass');
           onThought?.({ type: 'thinking', label: `[Blocked-read bypass] Dispatching: ${bypassNtc.tool}`, timestamp: new Date() });
           const bypassResult = await this.toolDispatcher.dispatch(
@@ -1414,6 +1417,7 @@ ${truncated}
         const narNtc = narDeterministic?.nextToolCall ?? execState.nextToolCall;
         if (narNtc && !VIRTUAL_TOOLS.has(narNtc.tool)) {
           contextCostTracker.recordSkippedLLMCall();
+          deterministicDispatchCount++;
           onThought?.({ type: 'thinking', label: `[Narration bypass] Dispatching: ${narNtc.tool}`, timestamp: new Date() });
           const narBypassResult = await this.toolDispatcher.dispatch(
             { id: `narbypass-${Date.now()}`, name: narNtc.tool, input: narNtc.input as Record<string, unknown> },
@@ -1457,6 +1461,7 @@ ${truncated}
           if (dd9Step?.nextToolCall && !VIRTUAL_TOOLS.has(dd9Step.nextToolCall.tool) && (dd9Step.nextToolCall.tool !== 'write_file' || dd9HasContent)) {
             contextCostTracker.recordSkippedLLMCall();
             const dd9Ntc = dd9Step.nextToolCall;
+            deterministicDispatchCount++;
             agentLog.logDeterministicDispatch(dd9Ntc.tool, (dd9Ntc.input as Record<string, unknown>).path as string | undefined, 'DD9 direct dispatch');
             onThought?.({ type: 'thinking', label: `[DD9 direct dispatch] ${dd9Ntc.tool}: ${dd9Ntc.description ?? ''}`, timestamp: new Date() });
             const dd9Result = await this.toolDispatcher.dispatch(
@@ -2123,6 +2128,16 @@ ${truncated}
               // DD1: Record meaningful progress
               stateManager.markProgress(execState);
 
+              // E1 (bug_fix_007): Lightweight completion verification for small artifacts.
+              // Check for truncation indicators and suspiciously small file size.
+              const writtenContent = ((event.input as Record<string, unknown>)?.content as string) ?? '';
+              if (writtenContent.length < 50 && !toolCallPath.endsWith('.css') && !toolCallPath.endsWith('.env')) {
+                toolResultContent += `\n[Verification warning] File "${toolCallPath}" is very small (${writtenContent.length} chars). Check if content was truncated.`;
+              }
+              if (writtenContent.includes('// ...') || writtenContent.includes('/* ... */') || writtenContent.includes('# ...')) {
+                toolResultContent += `\n[Verification warning] File "${toolCallPath}" contains placeholder markers ("..."). Ensure all code is fully generated.`;
+              }
+
               // Verify all written files are still on disk every 10 writes
               if (writtenPaths.size % 10 === 0) {
                 const missingFiles = await this.verifyWrittenFiles(Array.from(writtenPaths));
@@ -2468,7 +2483,11 @@ ${truncated}
         const lastToolUsed = toolsUsed.length > 0 ? toolsUsed[toolsUsed.length - 1] : undefined;
         const lastToolStatus = calledATool ? 'success' : undefined; // simplified — blocked tools don't set calledATool
         const hadTextOnly = !calledATool && !!(turnAssistantText || lastAssistantText);
-        const progressVerdict = progressGuard.evaluate(calledATool, lastToolUsed, lastToolStatus, hadTextOnly);
+        // bug_fix_007: detect repeated same-file rewrites and unavailable-tool cycles
+        const loop = execState.sameToolLoop;
+        const sameFileMutation = !!(loop && loop.count >= 2 && ['write_file', 'edit_file', 'multi_edit'].includes(loop.tool));
+        const unavailableTool = !!(lastToolUsed && !calledATool && toolsUsed.length > 0);
+        const progressVerdict = progressGuard.evaluate(calledATool, lastToolUsed, lastToolStatus, hadTextOnly, sameFileMutation, unavailableTool);
         if (progressVerdict === 'RECOVERY_REQUIRED') {
           onThought?.({
             type: 'thinking',
@@ -2553,6 +2572,17 @@ ${truncated}
     }
 
     // ACTION 15: Session summary
+    // E4 (bug_fix_007): Compute session health score (0–100).
+    // Deductions: repeated rewrites, recovery attempts, loop detections,
+    // blocked reads, excessive turns without writes.
+    const healthDeductions =
+      (recoveryAttempts * 15) +
+      ((execState.blockedReadCount ?? 0) * 5) +
+      ((execState.sameToolLoop?.count ?? 0) >= 2 ? 20 : 0) +
+      (iterationCount > 0 && writtenPaths.size === 0 ? 25 : 0) +
+      (progressGuard.getState().nonProgressCount * 5);
+    const sessionHealth = Math.max(0, 100 - healthDeductions);
+
     agentLog.logSessionSummary({
       totalInputTokens: 0,
       totalOutputTokens: 0,
@@ -2563,10 +2593,11 @@ ${truncated}
       discoveryBudgetExceeded: 0,
       recoveryAttempts,
       llmCallsSkipped: contextCostTracker.getSkippedCount(),
-      deterministicDispatches: 0,
+      deterministicDispatches: deterministicDispatchCount,
       durationMs: Date.now() - sessionStartTime,
       tokenEfficiency: 0,
       fsmPhases: [],
+      sessionHealth,
     });
 
     // ─── End-of-session validation (deferred from per-write hot path) ──────────

@@ -4,14 +4,15 @@ import { TASK_TEMPLATES } from './TaskTemplate';
 import { sanitiseContent } from './TranscriptSanitiser';
 import { PromptAssembler, buildWorkspaceSummary } from './PromptAssembler';
 
-/** All five recovery triggers from EQ-18. */
+/** All recovery triggers from EQ-18 + bug_fix_007. */
 export type RecoveryTrigger =
   | 'REPEATED_BLOCKED_READS'
   | 'REPEATED_CONTINUE_NO_PROGRESS'
   | 'ARTIFACT_WRITE_CONFLICT'
   | 'PROTOCOL_TEXT_IN_TRANSCRIPT'
   | 'MISSING_NEXT_ACTION'
-  | 'FORCED_BATCH_CONTINUATION';
+  | 'FORCED_BATCH_CONTINUATION'
+  | 'REPEATED_SAME_TARGET_MUTATION';
 
 export interface RecoveryResult {
   success: boolean;
@@ -83,6 +84,17 @@ export class RecoveryManager {
     // handles the first occurrence; if it persists, force recovery.
     if ((this.execState.batchViolationCount ?? 0) >= 2) {
       return 'FORCED_BATCH_CONTINUATION';
+    }
+
+    // Trigger 7 (bug_fix_007): repeated same-target mutation with no progress.
+    // Fires when the same write/edit tool targets the same file >= 2 consecutive
+    // times without creating new files, performing verification, or changing phase.
+    const loop = this.execState.sameToolLoop;
+    if (loop && loop.count >= 2) {
+      const MUTATION_FAMILY = new Set(['write_file', 'edit_file', 'replace_range', 'multi_edit']);
+      if (MUTATION_FAMILY.has(loop.tool)) {
+        return 'REPEATED_SAME_TARGET_MUTATION';
+      }
     }
 
     return null;
@@ -157,6 +169,32 @@ export class RecoveryManager {
 
       if (trigger === 'REPEATED_BLOCKED_READS') {
         this.execState.nextActions = [nextActionHint];
+      }
+
+      // REPEATED_SAME_TARGET_MUTATION: the file is already written.
+      // Either report completion or force verification.
+      if (trigger === 'REPEATED_SAME_TARGET_MUTATION') {
+        const loop = this.execState.sameToolLoop;
+        const targetFile = loop?.path;
+        const alreadyWritten = targetFile && this.execState.artifactsCreated.includes(targetFile);
+
+        // Check if template says stop after write
+        const template = this.execState.taskTemplate && TASK_TEMPLATES[this.execState.taskTemplate];
+        if (template && template.stopAfterWrite && alreadyWritten) {
+          // Task should have ended after first write — force completion
+          this.execState.runPhase = 'COMPLETED';
+          this.execState.nextActions = [];
+          this.execState.nextToolCall = undefined;
+          nextActionHint = 'Task already complete. The requested file was written successfully. Stop.';
+        } else if (alreadyWritten) {
+          nextActionHint = `File "${targetFile}" has already been written. Do not rewrite it. Move on to the next file or verify the result.`;
+          this.execState.nextActions = [nextActionHint];
+        } else {
+          nextActionHint = 'Repeated mutation detected with no progress. Write a different file or verify existing work.';
+          this.execState.nextActions = [nextActionHint];
+        }
+        // Reset loop counter so recovery doesn't fire again immediately
+        this.execState.sameToolLoop = undefined;
       }
 
       const lastToolEntry = executedTools[executedTools.length - 1];

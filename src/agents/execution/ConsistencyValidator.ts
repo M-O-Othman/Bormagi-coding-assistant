@@ -35,8 +35,16 @@ export class ConsistencyValidator {
     const normalize = (p: string) => p.replace(/^\.\//, '');
 
     // Check 1: .ts/.js files were written → package.json should exist
-    const hasCode = writtenPaths.some(p => /\.[jt]sx?$/.test(p));
-    if (hasCode && !await exists('package.json')) {
+    // EXCEPTION (bug_fix_007): Static web assets (index.html + .css + plain .js)
+    // do NOT require package.json. Only flag when Node/npm-style tooling is implied:
+    // TypeScript files, JSX/TSX, or imports that suggest a build pipeline.
+    const jsFiles = writtenPaths.filter(p => /\.[jt]sx?$/.test(p));
+    const hasCode = jsFiles.length > 0;
+    const hasHtmlFile = writtenPaths.some(p => /\.html?$/i.test(p));
+    const hasTypeScript = jsFiles.some(p => /\.tsx?$/.test(p));
+    const isStaticWebBundle = hasHtmlFile && !hasTypeScript && jsFiles.every(p => /\.js$/.test(p));
+
+    if (hasCode && !isStaticWebBundle && !await exists('package.json')) {
       issues.push({
         path: 'package.json',
         issue: 'TypeScript/JavaScript files were written but no package.json exists in the workspace root.',

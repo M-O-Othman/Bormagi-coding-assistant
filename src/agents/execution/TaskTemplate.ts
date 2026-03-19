@@ -41,7 +41,8 @@ export const TASK_TEMPLATES: Record<TaskTemplateName, TaskTemplate> = {
     requiresBatch: false,
     allowDiscovery: false,
     maxWholeFileReads: 0,
-    stopRules: ['Write exactly the requested file', 'No extra files unless explicitly asked', 'No discovery — generate directly'],
+    stopAfterWrite: true,
+    stopRules: ['Write exactly the requested file', 'No extra files unless explicitly asked', 'No discovery — generate directly', 'Complete immediately after successful write'],
   },
   greenfield_scaffold: {
     name: 'greenfield_scaffold',

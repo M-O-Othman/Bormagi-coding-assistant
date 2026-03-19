@@ -1,5 +1,6 @@
 import type { ExecutionStateData } from '../ExecutionStateManager';
 import type { StepContract } from './StepContract';
+import { TASK_TEMPLATES } from './TaskTemplate';
 
 /**
  * Deterministic per-step decision after a tool execution.
@@ -99,12 +100,20 @@ export class MilestoneFinalizer {
     const isWriteTool = lastToolName === 'write_file' || lastToolName === 'edit_file';
 
     if (isWriteTool) {
-      // 3. Full batch written → validate then complete
+      // 3. stopAfterWrite templates (single_file_creation, document_then_wait, etc.):
+      //    Complete immediately after the first successful write.
+      //    This prevents resumed runs from re-writing the same file.
+      const template = state.taskTemplate ? TASK_TEMPLATES[state.taskTemplate] : undefined;
+      if (template?.stopAfterWrite && state.artifactsCreated.length > 0) {
+        return { action: 'COMPLETE', message: 'File written successfully. Task complete.' };
+      }
+
+      // 4. Full batch written → validate then complete
       if (planned.length > 0 && batchRemaining.length === 0) {
         return { action: 'VALIDATE', reason: this.messages.batchComplete };
       }
 
-      // 4. Wait-keyword file detection
+      // 5. Wait-keyword file detection
       if (lastToolPath) {
         const fileName = lastToolPath.replace(/\\/g, '/').split('/').pop() ?? '';
         const isWaitFile = WAIT_FILENAME_PATTERNS.some(p => p.test(fileName));

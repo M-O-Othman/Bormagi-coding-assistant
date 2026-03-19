@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.\\(ts|js\\)$\")",
+      "Bash(npx tsc:*)",
+      "Bash(node_modules/.bin/tsc --noEmit)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(find /c/Users/mothm/Downloads/new_bormagi/Bormagi-coding-assistant/src -name *ProgressGuard* -o -name *progress*guard*)"
+    ]
+  }
+}

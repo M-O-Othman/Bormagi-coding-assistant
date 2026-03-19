@@ -44,28 +44,43 @@ export class ProgressGuard {
   /**
    * Evaluate whether the last turn made progress.
    *
-   * @param calledATool  Whether a tool was called this turn.
-   * @param toolName     Name of the tool called (if any).
-   * @param toolStatus   Status from ToolDispatcher ('success', 'blocked', 'cached', etc.).
-   * @param hadTextOnly  Whether the LLM produced only narration text.
+   * @param calledATool    Whether a tool was called this turn.
+   * @param toolName       Name of the tool called (if any).
+   * @param toolStatus     Status from ToolDispatcher ('success', 'blocked', 'cached', etc.).
+   * @param hadTextOnly    Whether the LLM produced only narration text.
+   * @param sameFileMutation  True when a write/edit targeted the same file as the previous write/edit.
+   * @param unavailableTool   True when a tool was not found in MCP runtime.
    */
   evaluate(
     calledATool: boolean,
     toolName?: string,
     toolStatus?: string,
     hadTextOnly?: boolean,
+    sameFileMutation?: boolean,
+    unavailableTool?: boolean,
   ): ProgressVerdict {
-    // Successful mutation tool = progress
+    // Successful mutation tool = progress, UNLESS it's a repeated same-file rewrite
+    // (bug_fix_007: repeated rewrites with no net change are non-progress)
     if (calledATool && toolName && PROGRESS_TOOLS.has(toolName) && toolStatus === 'success') {
+      if (sameFileMutation) {
+        this.state.nonProgressCount++;
+        this.state.lastNonProgressReason = `repeated_same_file_${toolName}`;
+        if (this.state.nonProgressCount >= MAX_NON_PROGRESS) {
+          return 'RECOVERY_REQUIRED';
+        }
+        return 'NON_PROGRESS';
+      }
       this.state.nonProgressCount = 0;
       this.state.lastProgressAt = new Date().toISOString();
       this.state.lastNonProgressReason = undefined;
       return 'PROGRESS';
     }
 
-    // Blocked/cached reads, narration-only turns = non-progress
+    // Blocked/cached reads, narration-only turns, unavailable tools = non-progress
     let reason: string;
-    if (hadTextOnly && !calledATool) {
+    if (unavailableTool) {
+      reason = `unavailable_tool_${toolName ?? 'unknown'}`;
+    } else if (hadTextOnly && !calledATool) {
       reason = 'narration_only';
     } else if (toolStatus === 'blocked') {
       reason = `blocked_${toolName ?? 'unknown'}`;

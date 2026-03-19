@@ -360,4 +360,6 @@ export interface SessionSummary {
   durationMs: number;
   tokenEfficiency: number;
   fsmPhases: string[];
+  /** E4 (bug_fix_007): Session health score (0–100). Penalized by loops, unavailable tools, etc. */
+  sessionHealth?: number;
 }

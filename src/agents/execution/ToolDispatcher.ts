@@ -362,6 +362,42 @@ export class ToolDispatcher {
       }
     }
 
+    // ─── V2: Block unnecessary shell inspection when execution state is sufficient ──
+    // If the agent already knows a file exists (via artifact registry / resolvedInputs),
+    // reject shell inspection commands like `ls`, `dir`, `stat`, `cat`, `type` that
+    // just check file existence or content. Also reject Unix commands on Windows hosts.
+    if (this._guardState.useV2 && toolEvent.name === 'run_command') {
+      const inp = toolEvent.input as { command: string };
+      const cmd = (inp.command ?? '').trim();
+
+      // Block Unix-only commands on Windows (platform awareness)
+      const isWindows = process.platform === 'win32';
+      const UNIX_ONLY_INSPECTION = /^(ls|cat|head|tail|stat|file|wc)\b/;
+      if (isWindows && UNIX_ONLY_INSPECTION.test(cmd)) {
+        return {
+          text: `[BLOCKED] Command "${cmd.split(/\s/)[0]}" is not available on this Windows host. Use the artifact registry and execution state instead of shell inspection.`,
+          status: 'blocked',
+          reasonCode: 'WRITE_ONLY_PHASE',
+          toolName: 'run_command',
+        };
+      }
+
+      // Block file-inspection commands when execution state already has the answer
+      const INSPECTION_PATTERNS = /^(ls|dir|cat|type|head|tail|stat|file|wc)\s/;
+      if (this._execState && INSPECTION_PATTERNS.test(cmd)) {
+        const hasArtifacts = this._execState.artifactsCreated.length > 0;
+        const hasInputs = this._execState.resolvedInputs.length > 0;
+        if (hasArtifacts || hasInputs) {
+          return {
+            text: `[BLOCKED] Shell inspection is unnecessary — the execution state already tracks file existence. Known artifacts: [${this._execState.artifactsCreated.join(', ')}]. Write or edit a file instead.`,
+            status: 'blocked',
+            reasonCode: 'WRITE_ONLY_PHASE',
+            toolName: 'run_command',
+          };
+        }
+      }
+    }
+
     // Approval gate for sensitive tools
     const { approvalTools, toolServerMap } = getAppData();
     let approved = true;
@@ -446,8 +482,14 @@ export class ToolDispatcher {
               // edit_file call failed — fall through to normal write_file
             }
           }
-          // edit_file not available or failed — fall through to normal write_file.
-          // Log a thought so the user sees the redirect was skipped.
+          // edit_file not available or failed — fall through to normal write_file
+          // with controller-approved overwrite. Set execution state to reflect
+          // that this is a deliberate overwrite, not free-form planning.
+          if (this._execState) {
+            // Normalize mutation: write_file overwrite is the concrete fallback
+            this._execState.nextActions = [`Overwrite "${inp.path}" via write_file (edit_file unavailable)`];
+            this._execState.nextToolCall = undefined; // clear stale edit_file hints
+          }
           onThought({
             type: 'thinking',
             label: `[Redirect skipped] edit_file unavailable — writing "${inp.path}" via write_file`,
