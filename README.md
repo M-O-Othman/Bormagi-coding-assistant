@@ -965,8 +965,6 @@ The following 12 improvements were delivered as the NF2 enhancement batch, sourc
 | NF2-DOC-002 | Architecture Decision Records | Docs | `docs/adr/` with template + 4 ADRs (workspace folder, SecretStorage, JSONL dual-store, webpack CommonJS) |
 | NF2-SEC-002 | Audit Log Integrity | Security | Rolling HMAC-SHA256 chain on every audit log entry; `bormagi.verifyAuditLog` command reports broken links |
 | NF2-DOC-003 | Agent Protocol Contract | Docs | `docs/agent-protocol.md` + `schemas/agent-completion.schema.json` (JSON Schema Draft 07); see Building Agents section below |
-| NF2-AI-003 | Deterministic Ledger Synthesis | AI Quality | Agent outputs and structured artifacts are now strictly validated against a factual, ground-truth session ledger to prevent hallucinated file changes. |
-| NF2-QA-003 | AgentRunner Orchestration Layer Extraction | Maintainability | Heavily refactored the 2400-line AgentRunner. Extracted stream resilience, artifact registry, session reporting, and path utilities into focused single-responsibility modules. |
 | NF2-QA-002 | Acceptance Criteria in Specs | Testing | All feature specs converted to Given/When/Then; spec-lint CI gate added |
 
 ---
@@ -1107,4 +1105,4 @@ You will see a VS Code notification when compaction triggers.
 Agents execute all file modifications and terminal commands within an isolated "Sandbox" (`.bormagi/sandboxes/`). This ensures zero risk to your host project during agent orchestration. 
 
 - You can review the agent's work and gracefully merge it into your codebase using the **`Bormagi: Apply Sandbox Changes`** command via the Command Palette. Modified files are dropped into your Source Control (Git) tab for native VS Code line-by-line review.
-- A granular Policy Engine reads from `data/default-sandbox-policy.json` (or `.bormagi/policies/sandbox.policy.json`) and automatically intercepts dangerous actions (e.g., `rm -rf /`), enforcing interactive approvals or hard-denies for risky shell commands.
+- A granular Policy Engine (`.bormagi/policies/sandbox.policy.yaml`) automatically intercepts dangerous actions (e.g., `rm -rf /`) and enforces interactive approvals for sensitive directories.

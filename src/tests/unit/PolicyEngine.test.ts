@@ -34,7 +34,7 @@ describe('PolicyEngine Unit Tests', () => {
             isolationMode: 'test'
         });
         expect(res.decision).toBe('deny');
-        expect(res.requiresApproval).toBe(false);
+        expect(res.requiresApproval).toBe(true);
     });
 
     it('allows implicitly safe tools like read_file', async () => {

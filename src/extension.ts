@@ -102,7 +102,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // ─── Sandbox Instantiation ─────────────────────────────────────────────────
   const policyEngine = new PolicyEngine(workspaceRoot);
-  const approvalService = new ApprovalService();
+  const approvalService = new ApprovalService(workspaceRoot);
   const sandboxManager = new SandboxManager(workspaceRoot);
 
   const runner = new AgentRunner(

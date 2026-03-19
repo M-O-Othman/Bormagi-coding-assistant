@@ -490,7 +490,7 @@ export class ChatController {
   private async handleResumeCommand(): Promise<void> {
     try {
       const root = this.configManager.rootDir;
-      const { listPlans, loadPlan } = await import('../context/PlanManager');
+      const { listPlans, loadPlan } = await import('../context/PlanManager.js');
       const planIds = listPlans(root);
       if (planIds.length === 0) {
         this.post({ type: 'wf_command_result', message: 'No saved plans found. Start a new task by asking a question or using /plan.' });

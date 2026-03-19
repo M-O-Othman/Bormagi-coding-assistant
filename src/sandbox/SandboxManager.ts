@@ -1,11 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as fsPromises from 'fs/promises';
-import { execFile } from 'child_process';
+import { exec } from 'child_process';
 import { promisify } from 'util';
 import { SandboxCreateRequest, SandboxHandle, SandboxManifest } from './types';
 
-const execFileAsync = promisify(execFile);
+const execAsync = promisify(exec);
 
 export class SandboxManager {
     private readonly sandboxRoot: string;
@@ -39,20 +38,20 @@ export class SandboxManager {
                 // Determine base ref if not provided
                 let base = req.baseRef;
                 if (!base) {
-                    const { stdout: currentBranch } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: this.workspaceRoot });
+                    const { stdout: currentBranch } = await execAsync(`git rev-parse --abbrev-ref HEAD`, { cwd: this.workspaceRoot });
                     base = currentBranch.trim();
                 }
 
                 // Create branch if not exists
                 try {
-                    await execFileAsync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`], { cwd: this.workspaceRoot });
+                    await execAsync(`git show-ref --verify --quiet refs/heads/${branchName}`, { cwd: this.workspaceRoot });
                 } catch {
                     // Create unlinked branch
-                    await execFileAsync('git', ['branch', branchName, base], { cwd: this.workspaceRoot });
+                    await execAsync(`git branch ${branchName} ${base}`, { cwd: this.workspaceRoot });
                 }
 
                 // Create worktree
-                await execFileAsync('git', ['worktree', 'add', workspacePath, branchName], { cwd: this.workspaceRoot });
+                await execAsync(`git worktree add ${workspacePath} ${branchName}`, { cwd: this.workspaceRoot });
 
             } catch (err: any) {
                 console.warn(`Git worktree creation failed. Falling back to copy. Reason: ${err.message}`);
@@ -90,18 +89,18 @@ export class SandboxManager {
         const excludes = ['.git', 'node_modules', '.bormagi'];
 
         if (!fs.existsSync(destPath)) {
-            await fsPromises.mkdir(destPath, { recursive: true });
+            fs.mkdirSync(destPath, { recursive: true });
         }
 
-        const items = await fsPromises.readdir(this.workspaceRoot);
+        const items = fs.readdirSync(this.workspaceRoot);
         for (const item of items) {
             if (excludes.includes(item)) continue;
 
             const src = path.join(this.workspaceRoot, item);
             const dest = path.join(destPath, item);
 
-            // Asynchronous recursive copy using cross-platform Node.js API
-            await fsPromises.cp(src, dest, { recursive: true });
+            // Simple recursive copy using cross-platform Node.js API
+            fs.cpSync(src, dest, { recursive: true });
         }
     }
 
@@ -120,14 +119,14 @@ export class SandboxManager {
         if (fs.existsSync(path.join(workspacePath, '.git'))) {
             // It's a worktree
             try {
-                await execFileAsync('git', ['worktree', 'remove', '--force', workspacePath], { cwd: this.workspaceRoot });
+                await execAsync(`git worktree remove --force ${workspacePath}`, { cwd: this.workspaceRoot });
             } catch (err) {
                 console.error(`Failed to remove worktree: ${err}`);
             }
         }
 
-        // Wipe directory
-        await fsPromises.rm(sandboxDir, { recursive: true, force: true });
+        // Wipe director
+        fs.rmSync(sandboxDir, { recursive: true, force: true });
     }
 
     public async promote(sandboxId: string): Promise<void> {
@@ -138,7 +137,7 @@ export class SandboxManager {
         if (!fs.existsSync(workspacePath)) throw new Error('Sandbox workspace missing');
 
         const excludes = ['.git', 'node_modules', '.bormagi'];
-        const items = await fsPromises.readdir(workspacePath);
+        const items = fs.readdirSync(workspacePath);
         for (const item of items) {
             if (excludes.includes(item)) continue;
 
@@ -147,7 +146,7 @@ export class SandboxManager {
 
             // Promote back to host by overwriting files
             // This leaves the changes unstaged in the host's Git SCM for the user to review natively.
-            await fsPromises.cp(src, dest, { recursive: true, force: true });
+            fs.cpSync(src, dest, { recursive: true, force: true });
         }
     }
 }
