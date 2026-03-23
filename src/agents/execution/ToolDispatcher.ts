@@ -11,6 +11,7 @@ import { DiscoveryBudget, toolCategory } from './DiscoveryBudget';
 import { ExecWrapper } from '../../sandbox/ExecWrapper';
 import { SandboxHandle } from '../../sandbox/types';
 import type { ExecutionStateData } from '../ExecutionStateManager';
+import { SemanticGateway } from './SemanticGateway.js';
 
 export type ApprovalCallback = (prompt: string) => Promise<boolean>;
 export type DiffCallback = (filePath: string, originalContent: string, newContent: string) => Promise<boolean>;
@@ -66,6 +67,7 @@ export class ToolDispatcher {
   };
   private _budget: DiscoveryBudget = new DiscoveryBudget();
   private _execState: ExecutionStateData | null = null;
+  private semanticGateway: SemanticGateway;
 
   constructor(
     private readonly mcpHost: MCPHost,
@@ -73,7 +75,9 @@ export class ToolDispatcher {
     private readonly auditLogger: AuditLogger,
     private readonly workspaceRoot: string,
     private readonly execWrapper?: ExecWrapper | null
-  ) { }
+  ) { 
+    this.semanticGateway = new SemanticGateway(workspaceRoot);
+  }
 
   public set activeSandbox(sandbox: SandboxHandle | null) {
     this._activeSandbox = sandbox;
@@ -425,14 +429,13 @@ export class ToolDispatcher {
       if (trimmedCmd.startsWith('mkdir')) {
         const dirs = trimmedCmd.replace(/mkdir\s+-p?\s+/i, '').split(/\s+/);
         try {
-          const { FsOps } = await import('../../utils/fsOps.js');
           await Promise.all(dirs.map(d => {
             const target = this._activeSandbox 
               ? path.join(this._activeSandbox.workspacePath, d)
               : path.join(this.workspaceRoot, d);
-            return FsOps.ensureDir(target);
+            return this.semanticGateway.ensureDir(target);
           }));
-          result = `Exit Code: 0\nSTDOUT:\nDirectories created via FsOps.\nSTDERR:\n`;
+          result = `Exit Code: 0\nSTDOUT:\nDirectories created via SemanticGateway.\nSTDERR:\n`;
         } catch (err: any) {
           result = `Command failed: ${err.message}`;
         }
@@ -442,14 +445,15 @@ export class ToolDispatcher {
           cmd = `cd ${sandboxRel} && ${cmd}`;
         }
         try {
-          const res = await this.execWrapper.guardedCommand(
-            'current-task',
-            'local-user',
-            this._activeSandbox ? 'local_worktree_sandbox' : 'host',
-            cmd,
-            'Requested by agent'
-          );
-          result = `Exit Code: ${res.exitCode}\nSTDOUT:\n${res.stdout}\nSTDERR:\n${res.stderr}`;
+          result = await this.semanticGateway.safeExec(cmd, async (c) => {
+            return await this.execWrapper!.guardedCommand(
+              'current-task',
+              'local-user',
+              this._activeSandbox ? 'local_worktree_sandbox' : 'host',
+              c,
+              'Requested by agent'
+            );
+          });
         } catch (err: any) {
           result = `Command failed: ${err.message}`;
         }
@@ -495,22 +499,19 @@ export class ToolDispatcher {
               });
               return { text: result, status: 'success', toolName: 'edit_file', path: inp.path };
             } catch {
-              // edit_file call failed — fall through to normal write_file
+              // edit_file call failed — fall through to SemanticGateway fallback
             }
           }
-          // edit_file not available or failed — fall through to normal write_file
-          // with controller-approved overwrite. Set execution state to reflect
-          // that this is a deliberate overwrite, not free-form planning.
-          if (this._execState) {
-            // Normalize mutation: write_file overwrite is the concrete fallback
-            this._execState.nextActions = [`Overwrite "${inp.path}" via write_file (edit_file unavailable)`];
-            this._execState.nextToolCall = undefined; // clear stale edit_file hints
+          
+          // Fall back to SemanticGateway patching if edit_file is missing or errors out
+          try {
+              result = await this.semanticGateway.writeOrPatch(inp.path, inp.content);
+              await this.auditLogger.logFileWrite(path.join(this.workspaceRoot, inp.path), agentId);
+              return { text: result, status: 'success', toolName: 'write_file', path: inp.path };
+          } catch(e: any) {
+              result = `Write failed: ${e.message}`;
+              return { text: result, status: 'blocked', toolName: 'write_file', path: inp.path };
           }
-          onThought({
-            type: 'thinking',
-            label: `[Redirect skipped] edit_file unavailable — writing "${inp.path}" via write_file`,
-            timestamp: new Date(),
-          });
         }
       }
 

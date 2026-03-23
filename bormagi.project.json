@@ -1,0 +1,11 @@
+{
+  "directories": ["backend", "frontend", "sourcedocs", "destination"],
+  "entrypoints": {
+    "backend": "backend/app.py",
+    "frontend": "frontend/src/App.tsx"
+  },
+  "dependencies": {
+    "python": ["fastapi", "pdfplumber"],
+    "node": ["react", "axios"]
+  }
+}

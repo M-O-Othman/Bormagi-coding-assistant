@@ -1,26 +1,38 @@
+export enum ErrKind {
+    Env = 'Env',
+    Contract = 'Contract',
+    Duplicate = 'Duplicate',
+    Unknown = 'Unknown'
+}
+
+export function classifyError(dispatchResultText: string): ErrKind {
+    if (dispatchResultText.includes('File already exists') || dispatchResultText.includes('already written')) return ErrKind.Duplicate;
+    if (dispatchResultText.includes('not available on this Windows host') || dispatchResultText.includes('Unix command syntax')) return ErrKind.Env;
+    if (dispatchResultText.includes('Missing project spec') || dispatchResultText.includes('Contract')) return ErrKind.Contract;
+    return ErrKind.Unknown;
+}
+
 export function classifyAndAdaptError(toolName: string, input: Record<string, unknown>, dispatchResultText: string, execState?: Record<string, any>): string {
-    // 1. Contract-violation / Duplicate Edit
-    // If the agent aggressively tries to recreate a file that already exists and gets a block, redirect it.
-    if (dispatchResultText.includes('File already exists') || dispatchResultText.includes('already written') || dispatchResultText.includes('ALREADY READ')) {
+    const kind = classifyError(dispatchResultText);
+
+    if (kind === ErrKind.Duplicate) {
         if (execState) {
              const path = String(input.path || '');
              execState.nextActions = [`Use edit_file or replace_range for ${path}`];
         }
-        return `${dispatchResultText}\n\n[REMEDIATION] You are trying to overwrite/reread a file that already exists or was already addressed. Do not retry write_file or read_file for this path. Use \`edit_file\` or \`replace_range\` to modify the existing file.`;
+        return `${dispatchResultText}\n\n[REMEDIATION] Duplicate detected. Auto-converting to patch operation. Request edit_file to proceed.`;
     }
 
-    // 2. Environment / OS Syntax issues
-    // For Windows 'mkdir -p' or generic blocked commands
-    if (toolName === 'run_command') {
+    if (kind === ErrKind.Env) {
         const cmd = String(input.command || '');
-        if (dispatchResultText.includes('not available on this Windows host') || dispatchResultText.includes('Unix command syntax')) {
-            if (cmd.includes('mkdir')) {
-                if (execState) execState.nextActions = ['Use FsOps.ensureDir or standard Windows cmd for directory creation'];
-                return `${dispatchResultText}\n\n[REMEDIATION] Syntax error or blocked. Do not retry \`mkdir -p\`. Use the built-in file writing tools (which auto-create directories) or use standard Windows cmd syntax (e.g., \`mkdir\` without \`-p\`).`;
-            }
-            if (execState) execState.nextActions = [`Use equivalent Windows command for ${cmd}`];
-            return `${dispatchResultText}\n\n[REMEDIATION] You attempted a Unix command on a Windows host. Do not retry this command. Use the relevant Windows cmd equivalent.`;
-        }
+        if (cmd.includes('mkdir') && execState) execState.nextActions = ['Use FsOps.ensureDir or standard Windows cmd for directory creation'];
+        if (execState && !cmd.includes('mkdir')) execState.nextActions = [`Use equivalent Windows command for ${cmd}`];
+        return `${dispatchResultText}\n\n[REMEDIATION] Env mismatch. Route through SemanticGateway safeExec or ensureDir fallback.`;
+    }
+
+    if (kind === ErrKind.Contract) {
+         if (execState) execState.nextActions = ['Halt. Missing project contract.'];
+         return `${dispatchResultText}\n\n[FATAL] Missing bormagi.project.json contract. Execution halted.`;
     }
 
     // 3. Logic / WRITE_ONLY constraints

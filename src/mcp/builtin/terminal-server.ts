@@ -111,19 +111,9 @@ function runCommand(args: { command: string; cwd?: string }): string {
   }
 }
 
-const TOOLS = [
-  {
-    name: 'run_command',
-    description: 'Execute a shell command in the workspace directory. Requires user approval before execution (enforced by the extension). NOTE: You do NOT need to run mkdir before write_file — write_file creates parent directories automatically.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        command: { type: 'string', description: 'The shell command to execute.' },
-        cwd: { type: 'string', description: 'Working directory. Defaults to workspace root.' }
-      },
-      required: ['command']
-    }
-  }
+const TOOLS: any[] = [
+  // Deprecated: `run_command` has been removed from public skills 
+  // to force the LLM to use the SemanticGateway (bug-fixes-12).
 ];
 
 const rl = readline.createInterface({ input: process.stdin });
