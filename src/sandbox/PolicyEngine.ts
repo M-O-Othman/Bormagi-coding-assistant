@@ -53,7 +53,12 @@ const DEFAULT_POLICY: SandboxPolicy = {
             "pytest *",
             "ruff check *",
             "eslint *",
-            "npm run *"
+            "npm run *",
+            "mkdir *",
+            "md *",
+            "New-Item *",
+            "dir",
+            "dir *"
         ],
         ask: [
             "npm install *",

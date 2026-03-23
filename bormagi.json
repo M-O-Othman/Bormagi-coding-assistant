@@ -1,0 +1,13 @@
+{
+  "packages": {
+    "bormagi-extension": {
+      "entry": "src/extension.ts",
+      "language": "ts"
+    }
+  },
+  "requiredDirs": [
+    "src",
+    "test",
+    "docs"
+  ]
+}

@@ -62,7 +62,7 @@ describe('ContextPacketBuilder', () => {
 
   test('build() returns workspace summary for greenfield (empty)', () => {
     const result = builder.build(makeState({ artifactsCreated: [] }), 'greenfield');
-    expect(result.workspaceSummary.toLowerCase()).toContain('empty');
+    expect(result.workspaceSummary.toLowerCase()).toContain('greenfield');
   });
 
   test('build() returns workspace summary for mature', () => {

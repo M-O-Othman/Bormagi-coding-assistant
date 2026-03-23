@@ -218,14 +218,14 @@ export function buildWorkspaceSummary(
   type: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature',
   keyFiles: string[]
 ): string {
-  const files = keyFiles.slice(0, 5).join(', ');
+  const files = keyFiles.slice(0, 40).join(', ');
   switch (type) {
     case 'greenfield':
-      return `[Workspace: empty] No project files or documentation present.`;
+      return `[Workspace: greenfield] No prior project files. Files: ${files || 'none'}.`;
     case 'docs_only':
-      return `[Workspace: docs_only] Documentation and plan files present. No project manifest or source code yet. Files: ${files || 'none'}.`;
+      return `[Workspace: docs_only] Documentation and plan files present. Files: ${files || 'none'}.`;
     case 'scaffolded':
-      return `[Workspace: scaffolded] Early-stage project with fewer than 5 source files. Files: ${files || 'none'}.`;
+      return `[Workspace: scaffolded] Early-stage project files present. Files: ${files || 'none'}.`;
     case 'mature':
       return `[Workspace: mature] Established codebase. Files: ${files || 'none'}.`;
   }

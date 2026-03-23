@@ -662,11 +662,14 @@
     "pretest": "npm run lint",
     "lint": "eslint src",
     "test": "npx jest",
+    "bormagi-check": "node scripts/bormagi-check.js",
+    "bormagi-dryrun": "node scripts/bormagi-dryrun.js",
     "vsce:package": "npx @vscode/vsce package",
     "vsce:publish": "npx @vscode/vsce publish",
     "generate-icon": "node scripts/generate-icon.js"
   },
   "devDependencies": {
+    "@types/diff": "^7.0.2",
     "@types/jest": "^30.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "20.x",
@@ -687,11 +690,15 @@
     "@anthropic-ai/sdk": "^0.30.1",
     "@google/generative-ai": "^0.21.0",
     "chokidar": "^5.0.0",
+    "diff": "^8.0.4",
     "docx": "^8.5.0",
+    "exceljs": "^4.4.0",
     "https-proxy-agent": "^7.0.6",
     "js-yaml": "^4.1.1",
+    "mammoth": "^1.12.0",
     "marked": "^17.0.3",
     "openai": "^4.67.3",
+    "pdf-parse": "^2.4.5",
     "pptxgenjs": "^3.12.0"
   },
   "overrides": {

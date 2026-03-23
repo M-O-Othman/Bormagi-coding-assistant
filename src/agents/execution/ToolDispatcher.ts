@@ -372,10 +372,10 @@ export class ToolDispatcher {
 
       // Block Unix-only commands on Windows (platform awareness)
       const isWindows = process.platform === 'win32';
-      const UNIX_ONLY_INSPECTION = /^(ls|cat|head|tail|stat|file|wc)\b/;
+      const UNIX_ONLY_INSPECTION = /^(ls|cat|head|tail|stat|file|wc|rm|cp|mv|touch|find|grep)\b|^mkdir\s+-p\b/;
       if (isWindows && UNIX_ONLY_INSPECTION.test(cmd)) {
         return {
-          text: `[BLOCKED] Command "${cmd.split(/\s/)[0]}" is not available on this Windows host. Use the artifact registry and execution state instead of shell inspection.`,
+          text: `[BLOCKED] Unix command syntax "${cmd.split(/\s/)[0]}" is not available on this Windows host. Use Windows cmd.exe equivalents (e.g. drop '-p' from mkdir, use 'del'/'rmdir' instead of 'rm').`,
           status: 'blocked',
           reasonCode: 'WRITE_ONLY_PHASE',
           toolName: 'run_command',
@@ -383,7 +383,7 @@ export class ToolDispatcher {
       }
 
       // Block file-inspection commands when execution state already has the answer
-      const INSPECTION_PATTERNS = /^(ls|dir|cat|type|head|tail|stat|file|wc)\s/;
+      const INSPECTION_PATTERNS = /^(ls|dir|cat|type|head|tail|stat|file|wc)(\s|$)/;
       if (this._execState && INSPECTION_PATTERNS.test(cmd)) {
         const hasArtifacts = this._execState.artifactsCreated.length > 0;
         const hasInputs = this._execState.resolvedInputs.length > 0;
@@ -419,21 +419,40 @@ export class ToolDispatcher {
       const inp = toolEvent.input as { command: string; cwd?: string };
       // Override cwd if sandboxed
       let cmd = inp.command;
-      if (this._activeSandbox) {
-        const sandboxRel = path.relative(this.workspaceRoot, this._activeSandbox.workspacePath);
-        cmd = `cd ${sandboxRel} && ${cmd}`;
-      }
-      try {
-        const res = await this.execWrapper.guardedCommand(
-          'current-task',
-          'local-user',
-          this._activeSandbox ? 'local_worktree_sandbox' : 'host',
-          cmd,
-          'Requested by agent'
-        );
-        result = `Exit Code: ${res.exitCode}\nSTDOUT:\n${res.stdout}\nSTDERR:\n${res.stderr}`;
-      } catch (err: any) {
-        result = `Command failed: ${err.message}`;
+      
+      // Bug-Fix 11: Intercept mkdir to use FsOps.ensureDir
+      const trimmedCmd = cmd.trim();
+      if (trimmedCmd.startsWith('mkdir')) {
+        const dirs = trimmedCmd.replace(/mkdir\s+-p?\s+/i, '').split(/\s+/);
+        try {
+          const { FsOps } = await import('../../utils/fsOps.js');
+          await Promise.all(dirs.map(d => {
+            const target = this._activeSandbox 
+              ? path.join(this._activeSandbox.workspacePath, d)
+              : path.join(this.workspaceRoot, d);
+            return FsOps.ensureDir(target);
+          }));
+          result = `Exit Code: 0\nSTDOUT:\nDirectories created via FsOps.\nSTDERR:\n`;
+        } catch (err: any) {
+          result = `Command failed: ${err.message}`;
+        }
+      } else {
+        if (this._activeSandbox) {
+          const sandboxRel = path.relative(this.workspaceRoot, this._activeSandbox.workspacePath);
+          cmd = `cd ${sandboxRel} && ${cmd}`;
+        }
+        try {
+          const res = await this.execWrapper.guardedCommand(
+            'current-task',
+            'local-user',
+            this._activeSandbox ? 'local_worktree_sandbox' : 'host',
+            cmd,
+            'Requested by agent'
+          );
+          result = `Exit Code: ${res.exitCode}\nSTDOUT:\n${res.stdout}\nSTDERR:\n${res.stderr}`;
+        } catch (err: any) {
+          result = `Command failed: ${err.message}`;
+        }
       }
     } else if (toolEvent.name === 'write_file') {
       const inp = toolEvent.input as { path: string; content: string };
@@ -466,14 +485,11 @@ export class ToolDispatcher {
                 input: { path: inp.path, content: inp.content },
               });
               await this.auditLogger.logFileWrite(path.join(this.workspaceRoot, inp.path), agentId);
-              const msgs = getAppData().executionMessages as any;
-              const redirectMsg = (msgs.artifactRedirect?.redirectedWriteToEdit ?? 'Redirected write_file to edit_file for existing file: {path}')
-                .replace('{path}', inp.path);
               const innerResult = mcpResult.content.map((c: any) => c.text).join('\n');
-              result = `${innerResult}\n[redirected: write_file → edit_file | ${redirectMsg}]`;
+              result = innerResult; // SILENT patch
               onThought({
                 type: 'tool_result',
-                label: `Result: write_file (redirected to edit_file)`,
+                label: `Result: write_file (silently patched via edit_file)`,
                 detail: result.slice(0, 500),
                 timestamp: new Date(),
               });

@@ -138,11 +138,6 @@
     "git_create_pr",
     "gcp_deploy",
     "create_document",
-    "create_presentation",
-    "replace_range",
-    "multi_edit",
-    "replace_symbol_block",
-    "insert_before_symbol",
-    "insert_after_symbol"
+    "create_presentation"
   ]
 }

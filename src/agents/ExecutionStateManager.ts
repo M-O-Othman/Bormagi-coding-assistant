@@ -75,6 +75,52 @@ export interface ContextPacket {
  * Version 2: adds authoritative mutation methods and additional runtime fields.
  *            All v2 fields are optional so v1 data migrates cleanly.
  */
+// ─── bug-fix-008/009 types ──────────────────────────────────────────────────
+
+/**
+ * A single artifact in the controller-owned implementation queue.
+ * Drives deterministic multi-file continuation without free-form model choice.
+ */
+export interface PlannedArtifact {
+  path: string;
+  purpose: string;
+  status: 'pending' | 'in_progress' | 'done' | 'blocked';
+  /** Which requirement / spec item triggered this artifact. */
+  sourceRequirement?: string;
+}
+
+/**
+ * Structured stop reason for the current run.
+ * Replaces the vague "Paused — waiting for your input" fallback.
+ */
+export type StopReason =
+  | 'completed'
+  | 'step_budget_reached'
+  | 'blocked'
+  | 'awaiting_user_decision'
+  | 'user_interrupted'
+  | 'diagnostic_answer_only';
+
+/** Render a human-readable stop reason message. */
+export function renderStopReason(reason: StopReason): string {
+  switch (reason) {
+    case 'completed':
+      return 'Completed — all planned implementation artifacts are done.';
+    case 'step_budget_reached':
+      return 'Paused — autonomous step budget reached. Say “continue” to proceed.';
+    case 'blocked':
+      return 'Paused — blocked by a missing dependency, input, or tool capability.';
+    case 'awaiting_user_decision':
+      return 'Paused — waiting for your decision on scope or direction.';
+    case 'user_interrupted':
+      return 'Paused — user interrupted the run.';
+    case 'diagnostic_answer_only':
+      return 'Answered your question. No files were modified.';
+    default:
+      return 'Paused.';
+  }
+}
+
 export interface ExecutionStateData {
   version: 1 | 2;
   agentId: string;
@@ -192,6 +238,47 @@ export interface ExecutionStateData {
    * requests can reference them without rediscovery. V2 only (bug_fix_007 E3).
    */
   previousTaskArtifacts?: string[];
+
+  // ── V3 fields (bug-fix-008 / bug-fix-009) ───────────────────────────────
+
+  /**
+   * Controller-owned implementation queue for multi-file tasks.
+   * Populated from the resolved requirements/spec document.
+   * Drives deterministic nextToolCall computation. V3 only.
+   */
+  remainingArtifacts?: PlannedArtifact[];
+  /** Artifacts successfully written this session. V3 only. */
+  completedArtifacts?: PlannedArtifact[];
+  /** The artifact currently being written. V3 only. */
+  currentArtifact?: PlannedArtifact;
+  /** High-level phase of the implementation (e.g. 'backend', 'frontend'). V3 only. */
+  implementationPhase?: string;
+  /**
+   * Opaque ID for the controller-owned artifact plan.
+   * When set, all writes must target planned artifacts (ArtifactPlanValidator). V3 only.
+   */
+  currentPlanId?: string;
+  /**
+   * Structured stop reason for the current run.
+   * Replaces the vague "Paused — waiting for your input" fallback. V3 only.
+   */
+  stopReason?: StopReason;
+  /**
+   * Per-turn intent classified from the latest user message.
+   * 'diagnostic_question' and 'status_question' suppress file mutations. V3 only.
+   */
+  activeUserTurnIntent?: 'continue_task' | 'diagnostic_question' | 'status_question' | 'modify_scope' | 'new_task';
+  /**
+   * Last answer sent to the user on a diagnostic/status turn.
+   * Preserved so a subsequent 'continue' can reference it. V3 only.
+   */
+  lastNonMutatingAnswer?: string;
+  /**
+   * True when resolved inputs satisfy preconditions and the controller
+   * has declared the agent ready to write. Blocks discovery in the same turn.
+   * V3 only.
+   */
+  readyToWrite?: boolean;
 }
 
 export class ExecutionStateManager {
@@ -277,6 +364,16 @@ export class ExecutionStateManager {
       lastProgressAt: undefined,
       sameToolLoop: undefined,
       resolvedInputSummaries: [],
+      // v3 fields (bug-fix-008/009)
+      remainingArtifacts: [],
+      completedArtifacts: [],
+      currentArtifact: undefined,
+      implementationPhase: undefined,
+      currentPlanId: undefined,
+      stopReason: undefined,
+      activeUserTurnIntent: undefined,
+      lastNonMutatingAnswer: undefined,
+      readyToWrite: false,
     };
   }
 
@@ -581,7 +678,81 @@ export class ExecutionStateManager {
       }
     }
 
+    // V3: show artifact queue progress
+    const remainingArtifacts = state.remainingArtifacts ?? [];
+    const completedArtifacts = state.completedArtifacts ?? [];
+    if (remainingArtifacts.length > 0 || completedArtifacts.length > 0) {
+      lines.push(
+        `Artifact queue: ${completedArtifacts.length} done, ` +
+        `${remainingArtifacts.length} remaining` +
+        (remainingArtifacts.length > 0
+          ? ` (next: ${remainingArtifacts[0].path})`
+          : ''),
+      );
+    }
+
+    if (state.stopReason) {
+      lines.push(`Stop reason: ${state.stopReason}`);
+    }
+
     return lines.join('\n');
+  }
+
+  // ── Implementation queue (bug-fix-008 Fix 3) ──────────────────────────────
+
+  /**
+   * Advance the implementation queue after a successful write.
+   *
+   * Marks the current artifact as done, moves it to completedArtifacts,
+   * and sets nextToolCall to the next pending artifact so that the controller
+   * can resume deterministically without a free-form LLM choice.
+   *
+   * Returns the next artifact, or null when the queue is empty.
+   */
+  advanceImplementationQueue(
+    state: ExecutionStateData,
+    completedPath?: string,
+  ): PlannedArtifact | null {
+    state.remainingArtifacts ??= [];
+    state.completedArtifacts ??= [];
+
+    // Mark the completed artifact as done
+    if (completedPath) {
+      const normalised = completedPath.replace(/\\/g, '/');
+      const idx = state.remainingArtifacts.findIndex(
+        a => a.path.replace(/\\/g, '/') === normalised,
+      );
+      if (idx !== -1) {
+        const [done] = state.remainingArtifacts.splice(idx, 1);
+        state.completedArtifacts.push({ ...done, status: 'done' });
+      }
+    }
+
+    // Find next pending artifact
+    const next = state.remainingArtifacts.find(a => a.status === 'pending') ?? null;
+    state.currentArtifact = next ?? undefined;
+
+    if (next) {
+      // Set advisory nextToolCall — AgentRunner uses this to prime its prompt.
+      // Content must be LLM-generated, so we do not set actual file bytes here.
+      state.nextToolCall = {
+        tool: 'write_file',
+        input: { path: next.path },
+        description: `Write ${next.path} — ${next.purpose}`,
+      };
+      if (!state.nextActions[0]?.includes(next.path)) {
+        state.nextActions = [
+          `Write the next planned artifact: ${next.path} (${next.purpose})`,
+          ...state.nextActions.slice(1),
+        ];
+      }
+    } else {
+      // Queue exhausted
+      state.nextToolCall = undefined;
+    }
+
+    state.updatedAt = new Date().toISOString();
+    return next;
   }
 
   // ── Next-step synthesis (Task 5) ─────────────────────────────────────────

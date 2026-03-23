@@ -107,50 +107,12 @@ describe('ObjectiveNormalizer', () => {
 describe('MilestoneFinalizer batch heartbeat', () => {
   const finalizer = makeFinalizer();
 
-  test('active batch + pause contract → CONTINUE (override)', () => {
-    const state = makeState({
-      plannedFileBatch: ['a.ts', 'b.ts', 'c.ts'],
-      completedBatchFiles: ['a.ts'],
-    });
-    const contract: StepContract = { kind: 'pause', pauseMessage: 'Model paused' };
-    const result = finalizer.decide(state, contract, 'write_file', 'a.ts');
-    expect(result.action).toBe('CONTINUE');
-  });
-
-  test('active batch + complete contract → CONTINUE (override)', () => {
-    const state = makeState({
-      plannedFileBatch: ['a.ts', 'b.ts', 'c.ts'],
-      completedBatchFiles: ['a.ts'],
-    });
-    const contract: StepContract = { kind: 'complete', completionMessage: 'Done' };
-    const result = finalizer.decide(state, contract, 'write_file', 'a.ts');
-    expect(result.action).toBe('CONTINUE');
-  });
-
-  test('active batch + blocked contract → BLOCK (not overridden)', () => {
-    const state = makeState({
-      plannedFileBatch: ['a.ts', 'b.ts', 'c.ts'],
-      completedBatchFiles: ['a.ts'],
-    });
-    const contract: StepContract = { kind: 'blocked', blockedReason: 'Validation failed' };
-    const result = finalizer.decide(state, contract, 'write_file', 'a.ts');
-    expect(result.action).toBe('BLOCK');
-  });
-
-  test('no active batch + pause contract → WAIT (normal)', () => {
-    const state = makeState({ plannedFileBatch: [], completedBatchFiles: [] });
-    const contract: StepContract = { kind: 'pause', pauseMessage: 'Pausing' };
-    const result = finalizer.decide(state, contract, 'read_file');
-    expect(result.action).toBe('WAIT');
-  });
-
   test('batch fully complete + write tool → VALIDATE', () => {
     const state = makeState({
       plannedFileBatch: ['a.ts', 'b.ts'],
       completedBatchFiles: ['a.ts', 'b.ts'],
     });
-    const contract: StepContract = { kind: 'tool' };
-    const result = finalizer.decide(state, contract, 'write_file', 'b.ts');
+    const result = finalizer.decide(state, 'write_file', 'b.ts');
     expect(result.action).toBe('VALIDATE');
   });
 
@@ -159,8 +121,7 @@ describe('MilestoneFinalizer batch heartbeat', () => {
       plannedFileBatch: ['a.ts', 'b.ts', 'c.ts'],
       completedBatchFiles: ['a.ts'],
     });
-    const contract: StepContract = { kind: 'tool' };
-    const result = finalizer.decide(state, contract, 'write_file', 'a.ts');
+    const result = finalizer.decide(state, 'write_file', 'a.ts');
     // Default path returns CONTINUE
     expect(result.action).toBe('CONTINUE');
   });

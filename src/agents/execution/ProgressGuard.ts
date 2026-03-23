@@ -23,9 +23,24 @@ export type ProgressVerdict = 'PROGRESS' | 'NON_PROGRESS' | 'RECOVERY_REQUIRED';
 /** Tools that count as productive mutations. */
 const PROGRESS_TOOLS = new Set([
   'write_file', 'edit_file', 'multi_edit',
-  'declare_file_batch', 'update_task_state',
+  // NOTE: 'update_task_state' is intentionally excluded (bug-fix-009).
+  // Bookkeeping cannot substitute for real implementation progress.
   'create_document', 'create_presentation',
 ]);
+
+/**
+ * Returns true if the given tool call counts as material (implementation) progress.
+ *
+ * Bug-fix-009 Fix 1.5:
+ * `update_task_state` and `declare_file_batch` are bookkeeping-only actions.
+ * They must not reset or satisfy the non-progress guard during a write phase.
+ */
+export function countsAsMaterialProgress(
+  toolName: string,
+  toolStatus: string,
+): boolean {
+  return PROGRESS_TOOLS.has(toolName) && toolStatus === 'success';
+}
 
 /** Maximum non-progress turns before forced recovery. */
 const MAX_NON_PROGRESS = 3;

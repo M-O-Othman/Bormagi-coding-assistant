@@ -29,6 +29,12 @@ export class PromptComposer {
       result += `\n\n${evidence}\n\n[Output Guidelines]\nCite the sources provided in the evidence above when referencing specific facts.`;
     }
 
+    if (ctx.os_platform === 'win32') {
+      result += `\n\n## Environment Context\nOperating System: Windows (${ctx.os_platform})\nDefault Shell: ${ctx.shell}\n[CRITICAL HARD CONSTRAINT] DO NOT execute Linux/Unix commands like \`mkdir -p\`, \`touch\`, \`ls\`, \`find\`, \`rm\`, \`cp\`, \`mv\`. You are running in a Windows CMD environment. Use Windows equivalents or Node.js scripts.`;
+    } else {
+      result += `\n\n## Environment Context\nOperating System: ${ctx.os_platform}\nDefault Shell: ${ctx.shell}\nWhen running shell commands (e.g. via run_command), ensure you use syntax compatible with this OS and shell.`;
+    }
+
     return result;
   }
 

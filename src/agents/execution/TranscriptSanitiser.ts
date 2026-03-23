@@ -34,20 +34,12 @@ export function sanitiseContent(text: string): string {
     .replace(/\x00TOOL:[^\x00]*\x00/g, '')
     // <tool_result ...>...</tool_result> XML blocks
     .replace(/<tool_result[^>]*>[\s\S]*?<\/tool_result>/g, '')
-    // [SYSTEM ERROR] prefix lines
-    .replace(/\[SYSTEM ERROR\][^\n]*/g, '')
     // [Batch: N/M done. ...] progress lines
     .replace(/\[Batch(?:: [^\]]+)?\]/g, '')
     // [Milestone] lines
     .replace(/\[Milestone\][^\n]*/g, '')
     // [Discovery Budget] advisory lines
     .replace(/\[Discovery Budget\][^\n]*/g, '')
-    // [BLOCKED] runtime rejection lines
-    .replace(/\[BLOCKED\][^\n]*/g, '')
-    // [BUDGET EXHAUSTED] lines
-    .replace(/\[BUDGET EXHAUSTED\][^\n]*/g, '')
-    // [BATCH VIOLATION] lines
-    .replace(/\[BATCH VIOLATION\][^\n]*/g, '')
     // [Task state updated ...] internal lines
     .replace(/\[Task state updated[^\]]*\]/g, '')
     // [Cached] lines

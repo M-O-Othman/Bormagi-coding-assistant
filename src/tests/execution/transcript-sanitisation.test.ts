@@ -22,12 +22,7 @@ describe('sanitiseContent', () => {
     expect(sanitiseContent(input)).not.toContain('</tool_result>');
   });
 
-  test('strips [SYSTEM ERROR] lines', () => {
-    const input = '[SYSTEM ERROR] write_file REJECTED: "src/foo.ts" already written\ncontinued text';
-    const result = sanitiseContent(input);
-    expect(result).not.toContain('[SYSTEM ERROR]');
-    expect(result).toContain('continued text');
-  });
+
 
   test('strips [Batch: N/M done] progress lines', () => {
     const input = 'Writing files\n[Batch: 3/5 done. Remaining: d.ts, e.ts]\nDone.';
@@ -35,20 +30,6 @@ describe('sanitiseContent', () => {
     expect(result).not.toContain('[Batch:');
   });
 
-  test('strips [BLOCKED] runtime rejection lines', () => {
-    const input = '[BLOCKED] Agent access to .bormagi/ is not permitted.';
-    expect(sanitiseContent(input)).not.toContain('[BLOCKED]');
-  });
-
-  test('strips [BUDGET EXHAUSTED] lines', () => {
-    const input = '[BUDGET EXHAUSTED] Discovery limit reached for this run.';
-    expect(sanitiseContent(input)).not.toContain('[BUDGET EXHAUSTED]');
-  });
-
-  test('strips [BATCH VIOLATION] lines', () => {
-    const input = '[BATCH VIOLATION] Path not in declared batch.';
-    expect(sanitiseContent(input)).not.toContain('[BATCH VIOLATION]');
-  });
 
   test('preserves legitimate assistant text', () => {
     const text = 'I have written the main component with React hooks and TypeScript.';

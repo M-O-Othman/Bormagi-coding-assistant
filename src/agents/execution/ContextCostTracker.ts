@@ -97,11 +97,13 @@ export class ContextCostTracker {
   }
 
   /** Get a summary of total costs across all turns. */
-  getSummary(): { totalTurns: number; totalTokens: number; avgTokensPerTurn: number; llmCallsSkipped: number } {
+  getSummary(): { totalTurns: number; totalTokens: number; totalOutputTokens: number; avgTokensPerTurn: number; llmCallsSkipped: number } {
     const totalTokens = this.entries.reduce((sum, e) => sum + e.totalTokens, 0);
+    const totalOutputTokens = this.entries.reduce((sum, e) => sum + (e.outputTokens ?? 0), 0);
     return {
       totalTurns: this.entries.length,
       totalTokens,
+      totalOutputTokens,
       avgTokensPerTurn: this.entries.length > 0 ? Math.round(totalTokens / this.entries.length) : 0,
       llmCallsSkipped: this._llmCallsSkipped,
     };

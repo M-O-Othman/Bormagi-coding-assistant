@@ -2,13 +2,83 @@ import type { AssistantMode } from '../../context/types';
 import type { TaskTemplateName } from './TaskTemplate';
 import type { WorkspaceType } from './BatchEnforcer';
 
+// ─── Requirements-driven build detection (bug-fix-008 Fix 1) ─────────────────
+
+/**
+ * Returns true when the user message signals a requirements-driven greenfield
+ * implementation in a docs-only workspace with a preloaded spec.
+ *
+ * This rule must fire BEFORE generic greenfield / patch fallbacks so that
+ * "start implementing the system defined in requirements.md" in a docs-only
+ * workspace is never misclassified as `existing_project_patch`.
+ */
+function isRequirementsDrivenBuild(
+  userText: string,
+  workspaceType: WorkspaceType | undefined,
+  resolvedInputs: string[],
+): boolean {
+  const text = userText.toLowerCase();
+
+  // Must have explicit implementation intent
+  const hasImplementationIntent =
+    text.includes('implement') ||
+    text.includes('start implementing') ||
+    text.includes('build the system') ||
+    text.includes('build from') ||
+    text.includes('write the system');
+
+  if (!hasImplementationIntent) { return false; }
+
+  // Must reference a spec/requirements doc
+  const referencesSpec =
+    text.includes('requirements.md') ||
+    text.includes('spec') ||
+    text.includes('design document') ||
+    text.includes('defined in requirements') ||
+    text.includes('based on requirements') ||
+    text.includes('from requirements');
+
+  if (!referencesSpec) { return false; }
+
+  // Must be in a docs-only (or greenfield) workspace
+  const isDocsOnlyWorkspace =
+    workspaceType === 'docs_only' || workspaceType === 'greenfield';
+
+  if (!isDocsOnlyWorkspace) { return false; }
+
+  // Must have already resolved a requirements/spec file
+  const hasResolvedSpec = resolvedInputs.some(
+    p => /requirements\.md$/i.test(p) || /spec\.md$/i.test(p),
+  );
+
+  return hasResolvedSpec;
+}
+
 /**
  * Rule-based task shape classifier (PQ-7 Option A: no LLM call).
  *
  * Classifies the task once at run start from the user message, mode, and workspace type.
  * Drives stop rules, batch requirements, skill loading, and milestone decisions.
  */
-export function classifyTask(userMessage: string, mode: AssistantMode, workspaceType?: WorkspaceType): TaskTemplateName {
+/**
+ * Rule-based task shape classifier (PQ-7 Option A: no LLM call).
+ *
+ * Classifies the task once at run start from the user message, mode,
+ * workspace type, and already-resolved input file paths.
+ * Drives stop rules, batch requirements, skill loading, and milestone decisions.
+ *
+ * @param userMessage    Raw user message.
+ * @param mode           Active assistant mode.
+ * @param workspaceType  Detected workspace type (optional).
+ * @param resolvedInputs Paths of files already read/preloaded this session.
+ *                       Used for requirements_driven_build detection.
+ */
+export function classifyTask(
+  userMessage: string,
+  mode: AssistantMode,
+  workspaceType?: WorkspaceType,
+  resolvedInputs: string[] = [],
+): TaskTemplateName {
   // plan mode always → plan_only
   if (mode === 'plan') { return 'plan_only'; }
 
@@ -28,6 +98,12 @@ export function classifyTask(userMessage: string, mode: AssistantMode, workspace
     /\b(draft|document)\b.{0,30}(then\s+wait|and\s+wait|for\s+review)\b/i.test(text)
   ) {
     return 'document_then_wait';
+  }
+
+  // requirements_driven_build — must be checked BEFORE generic greenfield/patch rules
+  // so that implementation requests in docs-only workspaces are never misclassified
+  if (isRequirementsDrivenBuild(text, workspaceType, resolvedInputs)) {
+    return 'requirements_driven_build';
   }
 
   // greenfield signals

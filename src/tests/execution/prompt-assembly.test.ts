@@ -148,7 +148,7 @@ describe('PromptAssembler — assembleMessages', () => {
 describe('buildWorkspaceSummary', () => {
   test('greenfield returns factual summary without imperative instructions', () => {
     const summary = buildWorkspaceSummary('greenfield', []);
-    expect(summary.toLowerCase()).toContain('empty');
+    expect(summary.toLowerCase()).toContain('greenfield');
     // Item 10: workspace summaries must be factual, not directive
     expect(summary).not.toContain('Start by');
     expect(summary).not.toContain('file batch');

@@ -40,11 +40,29 @@ export class ApprovalService {
         }
     }
 
+    private matchesApprovalPattern(storedMatcher: string, incomingCommand: string): boolean {
+        // Exact match
+        if (storedMatcher === incomingCommand) return true;
+        // Wildcard project approvals
+        if (storedMatcher === '*') return true;
+        // Glob-style prefix match: "mkdir *" covers "mkdir sourcedocs", "mkdir foo/bar"
+        if (storedMatcher.endsWith(' *')) {
+            const prefix = storedMatcher.slice(0, -2); // strip ' *'
+            if (incomingCommand.startsWith(prefix + ' ') || incomingCommand === prefix) return true;
+        }
+        // Glob-style wildcard anywhere: convert simple '*' to regex
+        if (storedMatcher.includes('*')) {
+            const escaped = storedMatcher.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+            return new RegExp(`^${escaped}$`).test(incomingCommand);
+        }
+        return false;
+    }
+
     public checkPriorApproval(actionKind: ActionKind, matcher: string, taskId?: string): boolean {
         return this.scopedApprovals.some(approval => {
             if (!approval.allow) return false;
             if (approval.actionKind !== actionKind) return false;
-            if (approval.matcher !== matcher && approval.matcher !== '*') return false;
+            if (!this.matchesApprovalPattern(approval.matcher, matcher)) return false;
 
             // If scoped to a task, only works if this is the task
             if (approval.scope === 'task' && approval.reason !== taskId) return false;

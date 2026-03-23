@@ -41,8 +41,8 @@ export class ContextPacketBuilder {
     }
 
     if (state.artifactsCreated.length > 0) {
-      const files = state.artifactsCreated.slice(-5);
-      lines.push(`Files written: ${files.join(', ')}${state.artifactsCreated.length > 5 ? ` (+${state.artifactsCreated.length - 5} more)` : ''}`);
+      const files = state.artifactsCreated.slice(-40);
+      lines.push(`Files written: ${files.join(', ')}${state.artifactsCreated.length > 40 ? ` (+${state.artifactsCreated.length - 40} more)` : ''}`);
     }
 
     if (state.nextActions.length > 0) {
@@ -54,7 +54,7 @@ export class ContextPacketBuilder {
       const completed = state.completedBatchFiles ?? [];
       const remaining = planned.filter(f => !completed.includes(f));
       if (remaining.length > 0) {
-        lines.push(`Batch remaining: ${remaining.slice(0, 3).join(', ')}${remaining.length > 3 ? ` +${remaining.length - 3} more` : ''}`);
+        lines.push(`Batch remaining: ${remaining.slice(0, 20).join(', ')}${remaining.length > 20 ? ` +${remaining.length - 20} more` : ''}`);
       }
     }
 
@@ -65,7 +65,7 @@ export class ContextPacketBuilder {
     }
 
     const stateSummary = lines.join('\n');
-    const workspaceSummary = buildWorkspaceSummary(workspaceType, state.artifactsCreated.slice(-3));
+    const workspaceSummary = buildWorkspaceSummary(workspaceType, state.artifactsCreated.slice(-40));
 
     // FIX 9: Build resolved file contents block from stored content.
     // These are injected as authoritative context so the model never re-reads.

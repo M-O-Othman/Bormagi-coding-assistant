@@ -19,6 +19,7 @@ import { ExecutionOutcome } from '../workflow/enums';
 import { scanForSecrets, trimToContextLimit } from './execution/ContextWindow';
 import { parseStructuredCompletion, sanitiseExecutionResult } from './execution/CompletionParser';
 import { ToolDispatcher, type DispatchResult } from './execution/ToolDispatcher';
+import { classifyAndAdaptError } from './execution/ErrorClassifier';
 import {
   buildRepoSummary,
   formatRelevantContext,
@@ -59,9 +60,14 @@ import { PromptAssembler, buildWorkspaceSummary, type PromptContext } from './ex
 import { RecoveryManager } from './execution/RecoveryManager';
 import { FileSummaryStore } from './execution/FileSummaryStore';
 import { ContextPacketBuilder } from './execution/ContextPacketBuilder';
-import { ContextCostTracker } from './execution/ContextCostTracker';
-import { ProgressGuard } from './execution/ProgressGuard';
+import { ContextCostTracker, type ContextCostEntry } from './execution/ContextCostTracker';
+import { ProgressGuard, countsAsMaterialProgress } from './execution/ProgressGuard';
 import { classifyUserMessage } from './execution/ObjectiveNormalizer';
+import { classifyTurnIntent, isNonMutatingIntent, isContinuationIntent } from './execution/TurnIntentClassifier';
+import { createSessionLedger, recordToolExecution, renderSessionSummary, type SessionLedger } from './execution/SessionLedger';
+import { buildSafeSynthesisPayload, renderSafeEvidenceBlock } from './execution/SynthesisGuard';
+import { canAgentReadPath, getPathBlockReason } from './PathPolicy';
+import { buildListSourceFilesCommand, detectHostPlatform } from '../tools/CommandBuilder';
 import { authMethodRequiresCredential } from '../providers/AuthSupport';
 
 // ─── Sandbox imports ────────────────────────────────────────────────────────
@@ -432,6 +438,17 @@ export class AgentRunner {
     let detectedWorkspaceType: 'greenfield' | 'docs_only' | 'scaffolded' | 'mature' = _detectedWsType;
 
     const mode: AssistantMode = userMode ?? modeDecision.mode;
+
+    // Bug-fix 11: Seed ExecutionContext goal natively
+    try {
+      const bormagiPath = path.join(this.workspaceRoot, 'bormagi.json');
+      const manifest = await fs.readFile(bormagiPath, 'utf8');
+      const { ExecutionContext } = await import('../context/ExecutionContext.js');
+      ExecutionContext.get().setGoal(manifest);
+    } catch (e) {
+      // Ignore if unreadable
+    }
+
     this.toolDispatcher.resetGuardState(mode, true);
     const requestId = `${agentId}-${Date.now()}`;
     const agentLog = new AgentLogger(this.workspaceRoot, agentId);
@@ -840,6 +857,17 @@ export class AgentRunner {
     // Uses ObjectiveNormalizer (single source of truth) for intent classification.
     const messageIntent = classifyUserMessage(userMessage);
     const isContinueRequest = messageIntent === 'continue' || messageIntent === 'nudge';
+
+    // Bug-fix-008/009 — TurnIntentClassifier: per-turn intent (non-mutating vs continuation)
+    // This is separate from ObjectiveNormalizer — it fires every turn to guard mutation paths.
+    const turnIntent = classifyTurnIntent(userMessage);
+    execState.activeUserTurnIntent = turnIntent;
+    const isNonMutating = isNonMutatingIntent(turnIntent);
+    if (isNonMutating) {
+      execState.stopReason = 'diagnostic_answer_only';
+      onThought?.({ type: 'thinking', label: `[TurnIntent] ${turnIntent} — skipping file mutations this turn`, timestamp: new Date() });
+    }
+
     let effectiveUserContent = userMessage;
     let forceSilentOnResume = false;
     if (isContinueRequest) {
@@ -1072,6 +1100,9 @@ export class AgentRunner {
     const MAX_SILENT_REPROMPTS = 1;
     // Bug-fix004 item 15 — ProgressGuard: track productive vs non-productive turns
     const progressGuard = new ProgressGuard();
+    // Bug-fix-008/009 — SessionLedger: ground-truth record of all tool executions
+    // Used by SynthesisGuard to prevent phantom files in session summaries.
+    const sessionLedger: SessionLedger = createSessionLedger();
     // #15 — Milestone stopping: pause the session every N writes so the agent
     // does not attempt to scaffold an entire project in one run.
     const milestoneWriteSize = vsConfig.get<number>('agent.milestoneWriteSize', 8);
@@ -1497,6 +1528,9 @@ ${truncated}
       // All other modes use prepareMessagesForProvider.
       let messagesForProvider: ChatMessage[];
       let stepContractKind: 'discover' | 'mutate' | 'validate' = 'discover';
+      let costEntry: ContextCostEntry | undefined;
+      let turnInputTokens = 0;
+      let turnOutputTokens = 0;
       if (mode === 'code') {
         // DD7: Build compact context packet from execution state for prompt assembly.
         const contextPacket = contextPacketBuilder.build(
@@ -1532,7 +1566,7 @@ ${truncated}
         // DD12: Record per-turn context cost telemetry.
         const skillFragmentText = activeSkills.length > 0 ? activeSkills.join('\n') : '';
         const toolResultText = currentStepToolResults.map(m => m.content).join('\n');
-        const costEntry = contextCostTracker.record(
+        costEntry = contextCostTracker.record(
           iterationCount,
           fullSystem,
           compactSummary,
@@ -1596,6 +1630,11 @@ ${truncated}
             });
           }
         } else if (event.type === 'token_usage') {
+          turnInputTokens = event.usage.inputTokens;
+          turnOutputTokens = event.usage.outputTokens;
+          if (costEntry) {
+            costEntry.outputTokens = turnOutputTokens;
+          }
           onTokenUsage?.(event.usage);
           agentLog.logTokenUsage(
             iterationCount + 1,
@@ -1684,47 +1723,14 @@ ${truncated}
 
           // ─── Hard-enforce write_file uniqueness ──────────────────────────────
           // Text-based CONSTRAINT hints are ignored by Gemini after repeated exposure.
-          // Instead, intercept rewrite attempts in code and return a rejection so the
-          // model is forced to use edit_file rather than looping forever.
-          const isFileWrite = event.name === 'write_file';
+          // Instead, intercept duplicate write_file attempts in code so the model
+          // is told to use replace_range / multi_edit instead.
+          // IMPORTANT: replace_range and multi_edit are PARTIAL edits — they must
+          // never be blocked here, even if the file is already in writtenPaths.
+          const isFileWrite = ['write_file', 'edit_file', 'replace_range', 'multi_edit'].includes(event.name);
           let toolResultContent: string;
 
-          if (isFileWrite && toolCallPath && writtenPaths.has(toolCallPath)) {
-            const rewrittenContent = (event.input as Record<string, unknown>)?.content;
-            if (typeof rewrittenContent === 'string') {
-              // Preserve progress: repeated write_file attempts on the same path are
-              // auto-routed to edit_file instead of being hard-rejected.
-              const redirectedResult = await this.toolDispatcher.dispatch(
-                {
-                  id: `redirect-${Date.now()}`,
-                  name: 'edit_file',
-                  input: { path: toolCallPath, content: rewrittenContent },
-                },
-                agentId,
-                onApproval,
-                onDiff,
-                onThought,
-              );
-              const redirectNote = `[AUTO-REDIRECT] write_file→edit_file for "${toolCallPath}" because it was already written this task.`;
-              const redirectedText = `${redirectedResult.text}\n${redirectNote}`;
-              agentLog.logToolResult('edit_file', redirectedText);
-              turnMemory.addToolResult('edit_file', redirectedText);
-              toolResultContent = `<tool_result name="edit_file">\n${this.truncateToolResult(redirectedText, 'edit_file', iterationCount, toolCallPath)}\n</tool_result>`;
-              stateManager.markToolExecuted(execState, 'edit_file', toolCallPath, redirectedText.slice(0, 150));
-              stateManager.markProgress(execState);
-              if (execState.executionPhase === 'WRITE_ONLY') {
-                stateManager.setExecutionPhase(execState, 'EXECUTING_STEP');
-                this.toolDispatcher.setExecutionPhase('EXECUTING_STEP');
-              }
-            } else {
-              const pathList = Array.from(writtenPaths).map(p => `"${p}"`).join(', ');
-              const rejection = `[SYSTEM ERROR] write_file REJECTED: "${toolCallPath}" was already written this task. The file has NOT been changed. You MUST use edit_file for any corrections to existing files. Written paths: ${pathList}. Proceed with remaining tasks or summarise.`;
-              agentLog.logToolResult(event.name, rejection);
-              turnMemory.addToolResult(event.name, rejection);
-              toolResultContent = `<tool_result name="${event.name}" status="error">\n${rejection}\n</tool_result>`;
-              onThought({ type: 'error', label: `Rewrite blocked: ${toolCallPath}`, detail: rejection, timestamp: new Date() });
-            }
-          } else if (isFileWrite && toolCallPath && (() => {
+          if (isFileWrite && toolCallPath && (() => {
             // ─── Batch enforcement (Phase 4) ─────────────────────────────────
             // Greenfield/scaffolded: must declare a batch before first write_file.
             // Exempt plan mode document writes — plans are single-file documentation,
@@ -2004,13 +2010,40 @@ ${truncated}
                   path: loopTarget,
                 };
               }
+            } else if (
+              // Bug-fix-009 PathPolicy: block agent reads of .bormagi/ and .git/ in normal mode
+              toolCallPath &&
+              ['read_file', 'read_file_range', 'list_files'].includes(event.name) &&
+              !canAgentReadPath(toolCallPath)
+            ) {
+              const pathBlockReason = getPathBlockReason(toolCallPath) ?? `"${toolCallPath}" is an internal path.`;
+              onThought?.({ type: 'error', label: `[PathPolicy] Blocked read: ${toolCallPath}`, timestamp: new Date() });
+              toolResult = {
+                text: `[PATH_BLOCKED] ${pathBlockReason}`,
+                status: 'blocked',
+                reasonCode: 'BORMAGI_PATH_BLOCKED',
+                toolName: event.name,
+                path: toolCallPath,
+              };
             } else {
               toolResult = await this.toolDispatcher.dispatch(
                 event, agentId, onApproval, onDiff, onThought
               );
             }
+            // Apply Error-Classification Micro-Policy
+            toolResult.text = classifyAndAdaptError(event.name, event.input as Record<string, unknown>, toolResult.text, execState);
             agentLog.logToolResult(event.name, toolResult.text);
             turnMemory.addToolResult(event.name, toolResult.text);
+            // Bug-fix-008/009 — SessionLedger: record every tool execution
+            recordToolExecution(sessionLedger, {
+              tool: event.name,
+              path: toolCallPath ?? undefined,
+              status: toolResult.status === 'success' ? 'success'
+                : toolResult.status === 'blocked' ? 'blocked'
+                : toolResult.status === 'cached' ? 'cached'
+                : 'error',
+              summary: toolResult.text.slice(0, 200),
+            });
 
             // ── DD4: Structured dispatch result handling ──
             // Use structured status instead of parsing text prefixes.
@@ -2113,8 +2146,11 @@ ${truncated}
             } else if (isWriteOrActionTool) {
               consecutiveReadCount = 0;
             }
+            const isSuccessText = toolResult.text.startsWith('File written') || 
+                                  toolResult.text.startsWith('Lines replaced') || 
+                                  toolResult.text.startsWith('{"status":"success"');
 
-            if (isFileWrite && toolCallPath && toolResult.status === 'success' && toolResult.text.startsWith('File written')) {
+            if (isFileWrite && toolCallPath && toolResult.status === 'success' && (isSuccessText || toolResult.text.includes('[redirected: write_file'))) {
               writtenPaths.add(toolCallPath);
               // Task 10: Reset tool+path loop counter on successful write
               toolPathCounts.clear();
@@ -2177,8 +2213,7 @@ ${truncated}
 
             // Phase 4 — MilestoneFinalizer: check if we should stop/wait after this write
             if (event.name === 'write_file' || event.name === 'edit_file') {
-              const milestoneContract = inferStepContract([], '', execState.runPhase ?? 'RUNNING');
-              const milestoneDecision = milestoneFinalizer.decide(execState, milestoneContract, event.name, toolCallPath);
+              const milestoneDecision = milestoneFinalizer.decide(execState, event.name, toolCallPath);
               if (milestoneDecision.action === 'WAIT') {
                 stateManager.setRunPhase(execState, 'WAITING_FOR_USER_INPUT', milestoneDecision.message);
                 stateManager.setExecutionPhase(execState, 'INITIALISING');
@@ -2318,8 +2353,8 @@ ${truncated}
       agentLog.logTurnSummary({
         turn: iterationCount,
         phase: stateManager.getExecutionPhase(execState),
-        inputTokens: 0,
-        outputTokens: 0,
+        inputTokens: turnInputTokens,
+        outputTokens: turnOutputTokens,
         cacheHit: false,
         toolCalled: toolsUsed.length > 0 ? toolsUsed[toolsUsed.length - 1] : undefined,
         toolPath: undefined,
@@ -2481,13 +2516,16 @@ ${truncated}
       // After MAX_NON_PROGRESS consecutive non-productive turns, force recovery.
       {
         const lastToolUsed = toolsUsed.length > 0 ? toolsUsed[toolsUsed.length - 1] : undefined;
-        const lastToolStatus = calledATool ? 'success' : undefined; // simplified — blocked tools don't set calledATool
+        // Bug-fix-009 Fix 1.5: use centralized progress check instead of assuming any tool is progress
+        const lastToolStatusString = calledATool ? 'success' : 'blocked';
+        const isMaterialProgress = lastToolUsed ? countsAsMaterialProgress(lastToolUsed, lastToolStatusString) : false;
+        
         const hadTextOnly = !calledATool && !!(turnAssistantText || lastAssistantText);
         // bug_fix_007: detect repeated same-file rewrites and unavailable-tool cycles
         const loop = execState.sameToolLoop;
         const sameFileMutation = !!(loop && loop.count >= 2 && ['write_file', 'edit_file', 'multi_edit'].includes(loop.tool));
         const unavailableTool = !!(lastToolUsed && !calledATool && toolsUsed.length > 0);
-        const progressVerdict = progressGuard.evaluate(calledATool, lastToolUsed, lastToolStatus, hadTextOnly, sameFileMutation, unavailableTool);
+        const progressVerdict = progressGuard.evaluate(isMaterialProgress, lastToolUsed, lastToolStatusString, hadTextOnly, sameFileMutation, unavailableTool);
         if (progressVerdict === 'RECOVERY_REQUIRED') {
           onThought?.({
             type: 'thinking',
@@ -2583,19 +2621,24 @@ ${truncated}
       (progressGuard.getState().nonProgressCount * 5);
     const sessionHealth = Math.max(0, 100 - healthDeductions);
 
+    const costSummary = contextCostTracker.getSummary();
+    const tokenEfficiency = costSummary.totalTokens > 0
+      ? costSummary.totalOutputTokens / costSummary.totalTokens
+      : 0;
+
     agentLog.logSessionSummary({
-      totalInputTokens: 0,
-      totalOutputTokens: 0,
+      totalInputTokens: costSummary.totalTokens,
+      totalOutputTokens: costSummary.totalOutputTokens,
       totalTurns: iterationCount,
       uniqueFilesWritten: Array.from(writtenPaths),
       uniqueFilesRead: execState.resolvedInputs,
       loopDetections: execState.blockedReadCount ?? 0,
       discoveryBudgetExceeded: 0,
       recoveryAttempts,
-      llmCallsSkipped: contextCostTracker.getSkippedCount(),
+      llmCallsSkipped: costSummary.llmCallsSkipped,
       deterministicDispatches: deterministicDispatchCount,
       durationMs: Date.now() - sessionStartTime,
-      tokenEfficiency: 0,
+      tokenEfficiency,
       fsmPhases: [],
       sessionHealth,
     });
@@ -2641,9 +2684,12 @@ ${truncated}
         });
         // Use a lean context for synthesis — the full messages array may be too large
         // after many tool iterations, causing the model to return 0 tokens again.
+        // Bug-fix-008/009 — SynthesisGuard: Use ledger-backed payload to prevent phantom recitals
+        const synthesisEvidence = buildSafeSynthesisPayload(execState, sessionLedger);
+        const synthesisPayloadStr = renderSafeEvidenceBlock(synthesisEvidence);
         const synthesisMessages: ChatMessage[] = [
           messages[0], // system prompt only
-          { role: 'user', content: `You have completed ${toolsUsed.length} tool operations for the following request: "${userMessage}"\n\nPlease now provide your complete final answer as plain text. Do not call any tools. Summarise what you did and what the outcome was.` },
+          { role: 'user', content: `You have completed ${toolsUsed.length} tool operations for the following request: "${userMessage}"\n\nPlease now provide your complete final answer as plain text. Do not call any tools. Summarise what you did and what the outcome was.\n\n${synthesisPayloadStr}` },
         ];
         let synthText = '';
         try {
